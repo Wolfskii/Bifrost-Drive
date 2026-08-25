@@ -49,6 +49,9 @@ pub struct CreateSftpConnectionRequest {
     pub username: String,
     pub password: String,
     pub known_hosts: String,
+    pub authentication: String,
+    pub private_key_path: Option<String>,
+    pub passphrase: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +72,66 @@ pub struct ListFilesRequest {
     pub connection_id: ConnectionId,
     pub path: RemotePath,
     pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HydrateFileRequest {
+    pub connection_id: ConnectionId,
+    pub path: RemotePath,
+    pub pinned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HydrateFileResponse {
+    pub path: RemotePath,
+    pub local_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncReconcileRequest {
+    pub base: Option<String>,
+    pub local: Option<String>,
+    pub remote: Option<String>,
+    pub resolution: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncReconcileResponse {
+    pub decision: String,
+    pub conflict: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncRunRequest {
+    pub connection_id: ConnectionId,
+    pub path: RemotePath,
+    pub base: Option<String>,
+    pub local: Option<String>,
+    pub resolution: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncRunResponse {
+    pub decision: String,
+    pub conflict: bool,
+    pub conflict_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncRootRegisterRequest {
+    pub connection_id: ConnectionId,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncRootRegisterResponse {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolveConflictRequest {
+    pub id: Uuid,
+    pub resolution: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

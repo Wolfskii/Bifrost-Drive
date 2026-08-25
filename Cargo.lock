@@ -841,7 +841,9 @@ dependencies = [
 name = "bifrost-drive"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bifrost-api",
+ "bifrost-cache",
  "bifrost-common",
  "bifrost-core",
  "bifrost-crypto",
@@ -849,16 +851,23 @@ dependencies = [
  "bifrost-s3",
  "bifrost-sftp",
  "bifrost-storage",
+ "bifrost-sync",
+ "bifrost-transfer",
  "bifrost-webdav",
+ "bifrost-windows-cfapi",
  "bifrost-windows-credentials",
+ "chrono",
+ "futures-util",
  "serde",
  "serde_json",
+ "sqlx",
  "tauri",
  "tauri-build",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -918,11 +927,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "bifrost-transfer"
+name = "bifrost-sync"
 version = "0.1.0"
 dependencies = [
  "bifrost-common",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "bifrost-transfer"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bifrost-cache",
+ "bifrost-common",
+ "bifrost-storage",
+ "bytes",
+ "futures-util",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -939,6 +964,15 @@ dependencies = [
  "reqwest 0.12.28",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "bifrost-windows-cfapi"
+version = "0.1.0"
+dependencies = [
+ "bifrost-common",
+ "thiserror 2.0.20",
+ "windows 0.62.2",
 ]
 
 [[package]]

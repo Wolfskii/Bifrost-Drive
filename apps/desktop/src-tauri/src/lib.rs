@@ -1,21 +1,133 @@
 use bifrost_api::{
     AppStatus, ConnectionIdRequest, ConnectionSummary, CreateConnectionRequest,
     CreateS3ConnectionRequest, CreateSftpConnectionRequest, CreateWebDavConnectionRequest,
-    CredentialSummary, FilePage, FileSummary, ListFilesRequest, StoreS3CredentialRequest,
-    TestConnectionRequest,
+    CredentialSummary, FilePage, FileSummary, HydrateFileRequest, HydrateFileResponse,
+    ListFilesRequest, StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse,
+    SyncRunRequest, SyncRunResponse, TestConnectionRequest,
 };
+use bifrost_cache::CacheManager;
 use bifrost_common::{ConnectionState, ProviderKind};
 use bifrost_core::Application;
 use bifrost_crypto::{CredentialError, CredentialRef, CredentialStore, SecretString};
-use bifrost_db::{ConnectionRecord, Database};
+use bifrost_db::{ConflictRecord, ConnectionRecord, Database, SyncEntryRecord};
 use bifrost_s3::{S3Config, S3Provider};
 use bifrost_sftp::{SftpConfig, SftpProvider};
 use bifrost_storage::StorageProvider;
+use bifrost_sync::{resolve, ConflictResolution, ReconciliationInput, Revision, SyncDecision};
+use bifrost_transfer::TransferService;
+use bifrost_transfer::{TransferDirection, TransferSnapshot, TransferStatus, TransferStore};
 use bifrost_webdav::{WebDavConfig, WebDavProvider};
+use bifrost_windows_cfapi::{CfapiEvent, PlaceholderMetadata, SyncRoot, SyncRootConfig};
 use bifrost_windows_credentials::WindowsCredentialStore;
 use serde::Deserialize;
-use std::{fs, sync::Mutex};
+use std::{
+    collections::HashMap,
+    fs,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
 use tauri::{Manager, State};
+
+struct SyncRootRegistry(Mutex<HashMap<String, SyncRoot>>);
+
+struct SqliteTransferStore {
+    database: Database,
+}
+
+#[async_trait::async_trait]
+impl TransferStore for SqliteTransferStore {
+    async fn save(&self, transfer: TransferSnapshot) -> Result<(), String> {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO transfer_queue (id, connection_id, remote_path, direction, status, total_bytes, transferred_bytes, attempts, next_retry_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, total_bytes = excluded.total_bytes, transferred_bytes = excluded.transferred_bytes, attempts = excluded.attempts, next_retry_at = excluded.next_retry_at, updated_at = excluded.updated_at",
+        )
+        .bind(transfer.id.to_string())
+        .bind(transfer.connection_id.to_string())
+        .bind(transfer.path.as_str())
+        .bind(match transfer.direction {
+            TransferDirection::Download => "download",
+            TransferDirection::Upload => "upload",
+        })
+        .bind(match transfer.status {
+            TransferStatus::Pending => "pending",
+            TransferStatus::Running => "running",
+            TransferStatus::Paused => "paused",
+            TransferStatus::Completed => "completed",
+            TransferStatus::Failed => "failed",
+            TransferStatus::Cancelled => "cancelled",
+        })
+        .bind(transfer.total_bytes.map(|value| value as i64))
+        .bind(transfer.transferred_bytes as i64)
+        .bind(transfer.attempts as i64)
+        .bind(transfer.next_retry_at.map(system_time_string))
+        .bind(&now)
+        .bind(&now)
+        .execute(self.database.pool())
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    }
+
+    async fn load_recoverable(&self) -> Result<Vec<TransferSnapshot>, String> {
+        let rows = sqlx::query(
+            "SELECT id, connection_id, remote_path, direction, status, total_bytes, transferred_bytes, attempts, next_retry_at FROM transfer_queue WHERE status IN ('pending', 'running', 'paused') ORDER BY created_at",
+        )
+        .fetch_all(self.database.pool())
+        .await
+        .map_err(|error| error.to_string())?;
+        rows.into_iter()
+            .map(|row| {
+                let id = uuid::Uuid::parse_str(&sqlx::Row::get::<String, _>(&row, "id"))
+                    .map(bifrost_common::TransferId::from_uuid)
+                    .map_err(|error| error.to_string())?;
+                let connection_id =
+                    uuid::Uuid::parse_str(&sqlx::Row::get::<String, _>(&row, "connection_id"))
+                        .map(bifrost_common::ConnectionId::from_uuid)
+                        .map_err(|error| error.to_string())?;
+                let path = bifrost_common::RemotePath::parse(&sqlx::Row::get::<String, _>(
+                    &row,
+                    "remote_path",
+                ))
+                .map_err(|error| error.to_string())?;
+                let direction = match sqlx::Row::get::<String, _>(&row, "direction").as_str() {
+                    "download" => TransferDirection::Download,
+                    "upload" => TransferDirection::Upload,
+                    value => return Err(format!("unknown transfer direction: {value}")),
+                };
+                let status = match sqlx::Row::get::<String, _>(&row, "status").as_str() {
+                    "pending" => TransferStatus::Pending,
+                    "running" => TransferStatus::Running,
+                    "paused" => TransferStatus::Paused,
+                    value => return Err(format!("unknown recoverable transfer status: {value}")),
+                };
+                Ok(TransferSnapshot {
+                    id,
+                    connection_id,
+                    path,
+                    direction,
+                    status,
+                    total_bytes: sqlx::Row::get::<Option<i64>, _>(&row, "total_bytes")
+                        .map(|value| value as u64),
+                    transferred_bytes: sqlx::Row::get::<i64, _>(&row, "transferred_bytes") as u64,
+                    attempts: sqlx::Row::get::<i64, _>(&row, "attempts") as u32,
+                    next_retry_at: sqlx::Row::get::<Option<String>, _>(&row, "next_retry_at")
+                        .and_then(system_time_parse),
+                })
+            })
+            .collect()
+    }
+}
+
+fn system_time_string(value: SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(value).to_rfc3339()
+}
+
+fn system_time_parse(value: String) -> Option<SystemTime> {
+    chrono::DateTime::parse_from_rfc3339(&value)
+        .ok()
+        .map(|value| value.with_timezone(&chrono::Utc).into())
+}
 
 #[tauri::command]
 fn app_status(application: State<'_, Mutex<Application>>) -> AppStatus {
@@ -245,8 +357,22 @@ struct WebDavCredentials {
 struct SftpConfiguration {
     host: String,
     port: u16,
-    username: String,
     known_hosts: String,
+    #[serde(default = "default_sftp_authentication")]
+    authentication: String,
+    private_key_path: Option<String>,
+}
+
+fn default_sftp_authentication() -> String {
+    "password".to_owned()
+}
+
+#[derive(Debug, Deserialize)]
+struct SftpCredentials {
+    username: String,
+    password: Option<String>,
+    private_key_path: Option<String>,
+    passphrase: Option<String>,
 }
 
 async fn test_connection(
@@ -310,21 +436,33 @@ async fn test_connection(
         ProviderKind::Sftp => {
             let configuration: SftpConfiguration = serde_json::from_value(request.configuration)
                 .map_err(|_| "SFTP configuration is invalid".to_owned())?;
-            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
+            let stored: SftpCredentials = serde_json::from_str(secret.expose())
                 .map_err(|_| "Stored SFTP credential payload is invalid".to_owned())?;
-            SftpProvider::connect(
-                SftpConfig {
-                    host: configuration.host,
-                    port: configuration.port,
-                    username: configuration.username,
-                    known_hosts: configuration.known_hosts.into(),
-                },
-                stored.password,
-            )
-            .map_err(|error| error.to_string())?
-            .test_connection()
-            .await
-            .map_err(|error| error.to_string())
+            let config = SftpConfig {
+                host: configuration.host,
+                port: configuration.port,
+                username: stored.username,
+                known_hosts: configuration.known_hosts.into(),
+            };
+            let provider = (if configuration.authentication == "private_key" {
+                let key_path = configuration
+                    .private_key_path
+                    .or(stored.private_key_path)
+                    .ok_or_else(|| "SFTP private key path is required".to_owned())?;
+                SftpProvider::connect_with_private_key(config, key_path.into(), stored.passphrase)
+            } else {
+                SftpProvider::connect(
+                    config,
+                    stored
+                        .password
+                        .ok_or_else(|| "SFTP password is required".to_owned())?,
+                )
+            })
+            .map_err(|error| error.to_string())?;
+            provider
+                .test_connection()
+                .await
+                .map_err(|error| error.to_string())
         }
     }
 }
@@ -383,6 +521,96 @@ async fn create_tested_connection(
     })
 }
 
+async fn provider_for_connection(
+    connection: &ConnectionRecord,
+    credentials: &WindowsCredentialStore,
+) -> Result<Box<dyn StorageProvider>, String> {
+    let credential: CredentialRef = serde_json::from_str(&connection.credential_ref)
+        .map_err(|_| "Connection credential reference is invalid".to_owned())?;
+    let secret = credentials
+        .get(&credential)
+        .await
+        .map_err(|error| error.to_string())?;
+    match connection.kind {
+        ProviderKind::S3 => {
+            let stored: StoredS3Credentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored S3 credential payload is invalid".to_owned())?;
+            let configuration: S3ConnectionConfiguration =
+                serde_json::from_str(&connection.configuration_json)
+                    .map_err(|_| "S3 bucket configuration is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&connection.endpoint)
+                .map_err(|_| "Connection endpoint must be a valid URL".to_owned())?;
+            Ok(Box::new(
+                S3Provider::connect(
+                    S3Config {
+                        endpoint,
+                        region: configuration.region,
+                        bucket: configuration.bucket,
+                        path_style: configuration.path_style,
+                    },
+                    stored.access_key_id,
+                    stored.secret_access_key,
+                )
+                .await
+                .map_err(|error| error.to_string())?,
+            ))
+        }
+        ProviderKind::WebDav | ProviderKind::Nextcloud => {
+            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored WebDAV credential payload is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&connection.endpoint)
+                .map_err(|_| "WebDAV endpoint must be a valid URL".to_owned())?;
+            Ok(Box::new(
+                WebDavProvider::connect(
+                    WebDavConfig {
+                        endpoint,
+                        username: stored.username,
+                    },
+                    stored.password,
+                )
+                .map_err(|error| error.to_string())?,
+            ))
+        }
+        ProviderKind::Sftp => {
+            let configuration: SftpConfiguration =
+                serde_json::from_str(&connection.configuration_json)
+                    .map_err(|_| "SFTP configuration is invalid".to_owned())?;
+            let stored: SftpCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored SFTP credential payload is invalid".to_owned())?;
+            let config = SftpConfig {
+                host: configuration.host,
+                port: configuration.port,
+                username: stored.username,
+                known_hosts: configuration.known_hosts.into(),
+            };
+            if configuration.authentication == "private_key" {
+                let key_path = configuration
+                    .private_key_path
+                    .or(stored.private_key_path)
+                    .ok_or_else(|| "SFTP private key path is required".to_owned())?;
+                Ok(Box::new(
+                    SftpProvider::connect_with_private_key(
+                        config,
+                        key_path.into(),
+                        stored.passphrase,
+                    )
+                    .map_err(|error| error.to_string())?,
+                ))
+            } else {
+                Ok(Box::new(
+                    SftpProvider::connect(
+                        config,
+                        stored
+                            .password
+                            .ok_or_else(|| "SFTP password is required".to_owned())?,
+                    )
+                    .map_err(|error| error.to_string())?,
+                ))
+            }
+        }
+    }
+}
+
 #[tauri::command]
 async fn connections_create_webdav(
     database: State<'_, Database>,
@@ -415,14 +643,26 @@ async fn connections_create_sftp(
     {
         return Err("SFTP host, username, and known_hosts path are required".to_owned());
     }
+    if request.authentication == "private_key"
+        && request
+            .private_key_path
+            .as_deref()
+            .is_none_or(|path| path.trim().is_empty())
+    {
+        return Err("SFTP private key path is required".to_owned());
+    }
+    if request.authentication != "password" && request.authentication != "private_key" {
+        return Err("SFTP authentication must be password or private_key".to_owned());
+    }
+    let authentication = request.authentication.clone();
     create_tested_connection(
         &database,
         &credentials,
         request.name,
         ProviderKind::Sftp,
         format!("sftp://{}:{}", request.host, request.port),
-        serde_json::json!({ "host": request.host, "port": request.port, "username": request.username, "known_hosts": request.known_hosts }),
-        serde_json::json!({ "username": request.username, "password": request.password }),
+        serde_json::json!({ "host": request.host, "port": request.port, "username": request.username, "known_hosts": request.known_hosts, "authentication": authentication, "private_key_path": request.private_key_path }),
+        serde_json::json!({ "username": request.username, "password": (request.authentication == "password").then_some(request.password), "private_key_path": request.private_key_path, "passphrase": request.passphrase }),
     )
     .await
 }
@@ -446,72 +686,7 @@ async fn files_list(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Connection was not found".to_owned())?;
-    let credential: CredentialRef = serde_json::from_str(&connection.credential_ref)
-        .map_err(|_| "Connection credential reference is invalid".to_owned())?;
-    let secret = credentials
-        .get(&credential)
-        .await
-        .map_err(|error| error.to_string())?;
-    let provider: Box<dyn StorageProvider> = match connection.kind {
-        ProviderKind::S3 => {
-            let stored: StoredS3Credentials = serde_json::from_str(secret.expose())
-                .map_err(|_| "Stored S3 credential payload is invalid".to_owned())?;
-            let configuration: S3ConnectionConfiguration =
-                serde_json::from_str(&connection.configuration_json)
-                    .map_err(|_| "S3 bucket configuration is invalid".to_owned())?;
-            let endpoint = url::Url::parse(&connection.endpoint)
-                .map_err(|_| "Connection endpoint must be a valid URL".to_owned())?;
-            Box::new(
-                S3Provider::connect(
-                    S3Config {
-                        endpoint,
-                        region: configuration.region,
-                        bucket: configuration.bucket,
-                        path_style: configuration.path_style,
-                    },
-                    stored.access_key_id,
-                    stored.secret_access_key,
-                )
-                .await
-                .map_err(|error| error.to_string())?,
-            )
-        }
-        ProviderKind::WebDav | ProviderKind::Nextcloud => {
-            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
-                .map_err(|_| "Stored WebDAV credential payload is invalid".to_owned())?;
-            let endpoint = url::Url::parse(&connection.endpoint)
-                .map_err(|_| "WebDAV endpoint must be a valid URL".to_owned())?;
-            Box::new(
-                WebDavProvider::connect(
-                    WebDavConfig {
-                        endpoint,
-                        username: stored.username,
-                    },
-                    stored.password,
-                )
-                .map_err(|error| error.to_string())?,
-            )
-        }
-        ProviderKind::Sftp => {
-            let configuration: SftpConfiguration =
-                serde_json::from_str(&connection.configuration_json)
-                    .map_err(|_| "SFTP configuration is invalid".to_owned())?;
-            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
-                .map_err(|_| "Stored SFTP credential payload is invalid".to_owned())?;
-            Box::new(
-                SftpProvider::connect(
-                    SftpConfig {
-                        host: configuration.host,
-                        port: configuration.port,
-                        username: configuration.username,
-                        known_hosts: configuration.known_hosts.into(),
-                    },
-                    stored.password,
-                )
-                .map_err(|error| error.to_string())?,
-            )
-        }
-    };
+    let provider = provider_for_connection(&connection, &credentials).await?;
     let page = provider
         .list(&request.path, request.cursor.as_deref())
         .await
@@ -531,6 +706,354 @@ async fn files_list(
     })
 }
 
+#[tauri::command]
+async fn files_hydrate(
+    database: State<'_, Database>,
+    credentials: State<'_, WindowsCredentialStore>,
+    transfers: State<'_, TransferService>,
+    request: HydrateFileRequest,
+) -> Result<HydrateFileResponse, String> {
+    let connection = database
+        .find_connection(request.connection_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Connection was not found".to_owned())?;
+    let provider = provider_for_connection(&connection, &credentials).await?;
+    let metadata = provider
+        .stat(&request.path)
+        .await
+        .map_err(|error| error.to_string())?;
+    let local_path = transfers
+        .hydrate(
+            provider.as_ref(),
+            request.connection_id,
+            request.path.clone(),
+            metadata.size_bytes,
+            request.pinned,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(HydrateFileResponse {
+        path: request.path,
+        local_path: local_path.display().to_string(),
+    })
+}
+
+#[tauri::command]
+fn sync_reconcile(request: SyncReconcileRequest) -> Result<SyncReconcileResponse, String> {
+    let input = ReconciliationInput {
+        base: request.base.map(Revision::new),
+        local: request.local.map(Revision::new),
+        remote: request.remote.map(Revision::new),
+    };
+    let resolution = match request.resolution.as_deref() {
+        None => None,
+        Some("keep_local") => Some(ConflictResolution::KeepLocal),
+        Some("keep_remote") => Some(ConflictResolution::KeepRemote),
+        Some("keep_both") => Some(ConflictResolution::KeepBoth),
+        Some("rename_conflict") => Some(ConflictResolution::RenameConflict),
+        Some(value) => return Err(format!("unknown conflict resolution: {value}")),
+    };
+    let decision = resolve(&input, resolution).map_err(|error| error.to_string())?;
+    let conflict = matches!(decision, SyncDecision::Conflict);
+    Ok(SyncReconcileResponse {
+        decision: format!("{decision:?}"),
+        conflict,
+    })
+}
+
+#[tauri::command]
+async fn sync_run(
+    database: State<'_, Database>,
+    credentials: State<'_, WindowsCredentialStore>,
+    transfers: State<'_, TransferService>,
+    request: SyncRunRequest,
+) -> Result<SyncRunResponse, String> {
+    let connection = database
+        .find_connection(request.connection_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Connection was not found".to_owned())?;
+    let provider = provider_for_connection(&connection, &credentials).await?;
+    let remote = provider
+        .stat(&request.path)
+        .await
+        .map_err(|error| error.to_string())?;
+    let remote_fingerprint = remote.etag.clone().unwrap_or_else(|| {
+        format!(
+            "{}:{:?}",
+            remote.size_bytes.unwrap_or_default(),
+            remote.modified_at
+        )
+    });
+    let input = ReconciliationInput {
+        base: request.base.clone().map(Revision::new),
+        local: request.local.clone().map(Revision::new),
+        remote: Some(Revision::new(remote_fingerprint.clone())),
+    };
+    let resolution = parse_resolution(request.resolution.as_deref())?;
+    let decision = resolve(&input, resolution).map_err(|error| error.to_string())?;
+    let mut state = format!("{decision:?}").to_lowercase();
+    let mut conflict_id = None;
+    match decision {
+        SyncDecision::DownloadRemote => {
+            transfers
+                .hydrate(
+                    provider.as_ref(),
+                    request.connection_id,
+                    request.path.clone(),
+                    remote.size_bytes,
+                    false,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            state = "up_to_date".to_owned();
+        }
+        SyncDecision::UploadLocal => {
+            transfers
+                .upload_cached(
+                    provider.as_ref(),
+                    request.connection_id,
+                    request.path.clone(),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            state = "up_to_date".to_owned();
+        }
+        SyncDecision::Conflict => {
+            let id = uuid::Uuid::new_v4();
+            database
+                .insert_conflict(&ConflictRecord {
+                    id,
+                    connection_id: request.connection_id,
+                    remote_path: request.path.to_string(),
+                    local_fingerprint: request.local.clone(),
+                    remote_fingerprint: Some(remote_fingerprint.clone()),
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            conflict_id = Some(id);
+            state = "conflict".to_owned();
+        }
+        SyncDecision::Resolved(ConflictResolution::KeepRemote) => {
+            transfers
+                .hydrate(
+                    provider.as_ref(),
+                    request.connection_id,
+                    request.path.clone(),
+                    remote.size_bytes,
+                    false,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            state = "up_to_date".to_owned();
+        }
+        SyncDecision::Resolved(ConflictResolution::KeepLocal) => {
+            transfers
+                .upload_cached(
+                    provider.as_ref(),
+                    request.connection_id,
+                    request.path.clone(),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            state = "up_to_date".to_owned();
+        }
+        SyncDecision::Resolved(ConflictResolution::KeepBoth)
+        | SyncDecision::Resolved(ConflictResolution::RenameConflict) => {
+            return Err(
+                "this conflict resolution requires a materialized conflict filename and is not available yet"
+                    .to_owned(),
+            );
+        }
+        SyncDecision::UpToDate | SyncDecision::DeleteLocal | SyncDecision::DeleteRemote => {}
+    }
+    database
+        .upsert_sync_entry(&SyncEntryRecord {
+            connection_id: request.connection_id,
+            remote_path: request.path.to_string(),
+            state: state.clone(),
+            base_fingerprint: request.base,
+            local_fingerprint: request.local,
+            remote_fingerprint: Some(remote_fingerprint),
+            last_error: None,
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(SyncRunResponse {
+        decision: state.clone(),
+        conflict: state == "conflict",
+        conflict_id,
+    })
+}
+
+fn parse_resolution(value: Option<&str>) -> Result<Option<ConflictResolution>, String> {
+    match value {
+        None => Ok(None),
+        Some("keep_local") => Ok(Some(ConflictResolution::KeepLocal)),
+        Some("keep_remote") => Ok(Some(ConflictResolution::KeepRemote)),
+        Some("keep_both") => Ok(Some(ConflictResolution::KeepBoth)),
+        Some("rename_conflict") => Ok(Some(ConflictResolution::RenameConflict)),
+        Some(value) => Err(format!("unknown conflict resolution: {value}")),
+    }
+}
+
+#[tauri::command]
+async fn sync_conflict_resolve(
+    database: State<'_, Database>,
+    request: bifrost_api::ResolveConflictRequest,
+) -> Result<(), String> {
+    let resolution = parse_resolution(Some(&request.resolution))?
+        .ok_or_else(|| "a conflict resolution is required".to_owned())?;
+    if matches!(
+        resolution,
+        ConflictResolution::KeepBoth | ConflictResolution::RenameConflict
+    ) {
+        return Err(
+            "this conflict resolution requires a materialized conflict filename and is not available yet"
+                .to_owned(),
+        );
+    }
+    database
+        .resolve_conflict(request.id, &request.resolution)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn cfapi_handler(provider: Arc<dyn StorageProvider>) -> Arc<dyn Fn(CfapiEvent) + Send + Sync> {
+    Arc::new(move |event| {
+        let provider = Arc::clone(&provider);
+        let _ = std::thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(_) => return,
+            };
+            runtime.block_on(async move {
+                match &event {
+                    CfapiEvent::FetchData {
+                        file_identity,
+                        file_offset,
+                        required_length,
+                        ..
+                    } => {
+                        let path = match bifrost_common::RemotePath::parse(
+                            &String::from_utf8_lossy(file_identity),
+                        ) {
+                            Ok(path) => path,
+                            Err(_) => return,
+                        };
+                        let end = file_offset.saturating_add(*required_length);
+                        let range =
+                            (*required_length > 0).then_some(*file_offset as u64..end as u64);
+                        let mut stream = match provider
+                            .read(bifrost_storage::ReadRequest { path, range })
+                            .await
+                        {
+                            Ok(stream) => stream,
+                            Err(_) => return,
+                        };
+                        let mut offset = *file_offset;
+                        while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+                            let chunk = match chunk {
+                                Ok(chunk) => chunk,
+                                Err(_) => return,
+                            };
+                            if SyncRoot::complete_fetch_data(&event, offset, &chunk).is_err() {
+                                return;
+                            }
+                            offset = offset.saturating_add(chunk.len() as i64);
+                        }
+                    }
+                    CfapiEvent::FetchPlaceholders { file_identity, .. } => {
+                        let parent = match bifrost_common::RemotePath::parse(
+                            &String::from_utf8_lossy(file_identity),
+                        ) {
+                            Ok(path) => path,
+                            Err(_) => return,
+                        };
+                        let page = match provider.list(&parent, None).await {
+                            Ok(page) => page,
+                            Err(_) => return,
+                        };
+                        let entries = page
+                            .entries
+                            .into_iter()
+                            .map(|entry| {
+                                let path = entry.metadata.path.as_str();
+                                let relative = if parent.as_str().is_empty() {
+                                    path.to_owned()
+                                } else {
+                                    path.strip_prefix(&format!("{}/", parent.as_str()))
+                                        .unwrap_or(path)
+                                        .to_owned()
+                                };
+                                PlaceholderMetadata {
+                                    relative_name: relative,
+                                    identity: entry.metadata.path.as_str().as_bytes().to_vec(),
+                                    remote: entry.metadata,
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        let _ = SyncRoot::complete_fetch_placeholders(&event, &entries);
+                    }
+                }
+            });
+        })
+        .join();
+    })
+}
+
+#[tauri::command]
+async fn sync_root_register(
+    registry: State<'_, SyncRootRegistry>,
+    database: State<'_, Database>,
+    credentials: State<'_, WindowsCredentialStore>,
+    request: bifrost_api::SyncRootRegisterRequest,
+) -> Result<bifrost_api::SyncRootRegisterResponse, String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (registry, database, credentials, request);
+        return Err("Windows CFAPI is available only on Windows".to_owned());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let connection = database
+            .find_connection(request.connection_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Connection was not found".to_owned())?;
+        let provider = provider_for_connection(&connection, &credentials).await?;
+        let path = PathBuf::from(&request.path);
+        if !path.is_absolute() {
+            return Err("Sync root path must be absolute".to_owned());
+        }
+        fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+        let mut provider_id = [0; 16];
+        provider_id.copy_from_slice(connection.id.as_uuid().as_bytes());
+        let root = SyncRoot::register(SyncRootConfig {
+            path: path.clone(),
+            provider_name: "Bifrost Drive".to_owned(),
+            provider_version: env!("CARGO_PKG_VERSION").to_owned(),
+            provider_id,
+            sync_root_identity: request.path.as_bytes().to_vec(),
+            root_file_identity: b"root".to_vec(),
+        })
+        .map_err(|error| error.to_string())?
+        .connect_with_handler(cfapi_handler(Arc::from(provider)))
+        .map_err(|error| error.to_string())?;
+        registry
+            .0
+            .lock()
+            .expect("sync root registry poisoned")
+            .insert(request.path.clone(), root);
+        Ok(bifrost_api::SyncRootRegisterResponse { path: request.path })
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -546,11 +1069,19 @@ pub fn run() {
             let database_path = data_dir.join("bifrost-drive.db");
             let database = tauri::async_runtime::block_on(Database::connect_file(&database_path))?;
             tauri::async_runtime::block_on(database.migrate())?;
+            let cache = CacheManager::new(data_dir.join("cache"), 1024 * 1024 * 1024)?;
+            let transfer_store = Arc::new(SqliteTransferStore {
+                database: database.clone(),
+            });
+            let transfers = TransferService::with_store(cache, 4, 5, Some(transfer_store));
+            tauri::async_runtime::block_on(transfers.recover())?;
             app.manage(database);
+            app.manage(transfers);
             Ok(())
         })
         .manage(Mutex::new(Application::new()))
         .manage(WindowsCredentialStore::new())
+        .manage(SyncRootRegistry(Mutex::new(HashMap::new())))
         .invoke_handler(tauri::generate_handler![
             app_status,
             connections_list,
@@ -561,7 +1092,12 @@ pub fn run() {
             connections_remove,
             connections_test,
             files_list,
-            credentials_store_s3
+            files_hydrate,
+            credentials_store_s3,
+            sync_reconcile,
+            sync_run,
+            sync_conflict_resolve,
+            sync_root_register
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bifrost Drive");

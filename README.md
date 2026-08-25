@@ -6,11 +6,11 @@ Bifrost Drive is a cross-platform desktop client for remote storage. It is desig
 
 ## Status
 
-Early foundation. The repository currently contains shared Rust contracts, SQLite migrations, Windows Credential Manager support, connection wizards for S3/SFTP/WebDAV, provider implementations for S3/SFTP/WebDAV, remote root browsing, and real Docker-backed provider tests. Cache/transfer service integration and Windows CFAPI are next.
+Early foundation. The repository currently contains shared Rust contracts, SQLite migrations, Windows Credential Manager support, connection wizards for S3/SFTP/WebDAV, provider implementations for S3/SFTP/WebDAV, remote root browsing, durable cache-backed transfers, conflict-safe synchronization orchestration, synchronous Explorer callback completion, and real Docker-backed provider tests. Background scheduling, native Explorer acceptance coverage, conflict-resolution UI, and platform packaging remain in progress.
 
 ## Supported Targets
 
-- Windows 11 22H2+ is the first-release target. CFAPI integration is Planned.
+- Windows 11 22H2+ is the first-release target. The CFAPI adapter registers roots, creates placeholders, resolves provider data, and completes Explorer fetch callbacks; Windows VM acceptance coverage is still required.
 - macOS File Provider integration is Planned.
 - Linux FUSE integration is Planned.
 

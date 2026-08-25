@@ -41,6 +41,20 @@ export interface SftpConnectionForm {
     username: string;
     password: string;
     knownHosts: string;
+    authentication: "password" | "private_key";
+    privateKeyPath: string;
+    passphrase: string;
+}
+
+export interface HydrateFileResponse {
+    path: string;
+    local_path: string;
+}
+
+export interface SyncRunResponse {
+    decision: string;
+    conflict: boolean;
+    conflict_id: string | null;
 }
 
 function tauriAvailable(): boolean {
@@ -114,4 +128,42 @@ export async function listFiles(connectionId: string): Promise<FileSummary[]> {
         },
     });
     return page.entries;
+}
+
+export async function hydrateFile(
+    connectionId: string,
+    path: string,
+    pinned = false,
+): Promise<HydrateFileResponse> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<HydrateFileResponse>("files_hydrate", {
+        request: {
+            connection_id: connectionId,
+            path,
+            pinned,
+        },
+    });
+}
+
+export async function runSync(
+    connectionId: string,
+    path: string,
+    base: string | null = null,
+    local: string | null = null,
+    resolution: string | null = null,
+): Promise<SyncRunResponse> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<SyncRunResponse>("sync_run", {
+        request: {
+            connection_id: connectionId,
+            path,
+            base,
+            local,
+            resolution,
+        },
+    });
 }

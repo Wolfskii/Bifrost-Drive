@@ -1,4 +1,4 @@
-use bifrost_common::{ConnectionId, RemotePath};
+use bifrost_common::{ConnectionId, RemotePath, TransferId};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
@@ -51,6 +51,11 @@ impl CacheManager {
         hasher.update([0]);
         hasher.update(remote_path.as_str().as_bytes());
         self.root.join(hex::encode(hasher.finalize()))
+    }
+
+    pub fn temporary_path(&self, transfer_id: TransferId) -> PathBuf {
+        self.root
+            .join(format!(".{}.partial", transfer_id.as_uuid()))
     }
 
     pub fn open(

@@ -88,13 +88,17 @@ tasks:
 
   test:integration:
     desc: Start local provider services and run real integration tests
-    deps: [docker:up]
     env:
       BIFROST_S3_INTEGRATION: "1"
       BIFROST_WEBDAV_INTEGRATION: "1"
       BIFROST_SFTP_INTEGRATION: "1"
+      BIFROST_SFTP_KEY_INTEGRATION: "1"
     cmds:
       - mkdir -p .cache
+      - mkdir -p .cache/sftp_keys
+      - rm -f .cache/sftp_keys/id_ed25519 .cache/sftp_keys/id_ed25519.pub
+      - ssh-keygen -q -t ed25519 -N "" -f .cache/sftp_keys/id_ed25519
+      - task: docker:up
       - ssh-keyscan -p "${SFTP_PORT:-2222}" 127.0.0.1 > .cache/sftp_known_hosts
       - cargo test -p bifrost-s3 --test minio -- --ignored --nocapture
       - cargo test -p bifrost-webdav --test apache -- --ignored --nocapture

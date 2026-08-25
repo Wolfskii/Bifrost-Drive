@@ -5,5 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+async-trait.workspace = true
+bifrost-cache = { path = "../bifrost-cache" }
 bifrost-common = { path = "../bifrost-common" }
+bifrost-storage = { path = "../bifrost-storage" }
+futures-util = "0.3"
 thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+tempfile = "3.27"

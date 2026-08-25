@@ -16,14 +16,16 @@ import {
     createSftpConnection,
     createWebDavConnection,
     FileSummary,
+    hydrateFile,
     listConnections,
     listFiles,
+    runSync,
     S3ConnectionForm,
 } from "./api";
 
 const providerTypes = [
     { name: "S3", status: "Available now" },
-    { name: "SFTP", status: "Available now" },
+    { name: "SFTP", status: "Password sign-in available" },
     { name: "WebDAV", status: "Available now" },
 ];
 
@@ -36,6 +38,7 @@ export function App() {
     const [wizardOpen, setWizardOpen] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
+    const [hydratingPath, setHydratingPath] = useState<string | null>(null);
     const [providerChoice, setProviderChoice] = useState<
         "S3" | "SFTP" | "WebDAV"
     >("S3");
@@ -86,6 +89,13 @@ export function App() {
                 host: String(values.get("host") ?? "").trim(),
                 port: Number(values.get("port") ?? 22),
                 knownHosts: String(values.get("knownHosts") ?? "").trim(),
+                authentication: String(
+                    values.get("authentication") ?? "password",
+                ) as "password" | "private_key",
+                privateKeyPath: String(
+                    values.get("privateKeyPath") ?? "",
+                ).trim(),
+                passphrase: String(values.get("passphrase") ?? ""),
             });
         } else {
             const form: S3ConnectionForm = {
@@ -114,6 +124,40 @@ export function App() {
             );
         } finally {
             setSaving(false);
+        }
+    }
+
+    async function handleHydrate(path: string) {
+        if (!openedConnection) return;
+        setHydratingPath(path);
+        setError(null);
+        try {
+            await hydrateFile(openedConnection.id, path);
+        } catch (cause) {
+            setError(
+                cause instanceof Error
+                    ? cause.message
+                    : "Unable to download the file.",
+            );
+        } finally {
+            setHydratingPath(null);
+        }
+    }
+
+    async function handleSync(path: string) {
+        if (!openedConnection) return;
+        setHydratingPath(path);
+        setError(null);
+        try {
+            await runSync(openedConnection.id, path);
+        } catch (cause) {
+            setError(
+                cause instanceof Error
+                    ? cause.message
+                    : "Unable to synchronize the file.",
+            );
+        } finally {
+            setHydratingPath(null);
         }
     }
 
@@ -255,6 +299,40 @@ export function App() {
                                                 ? "Folder"
                                                 : formatBytes(file.size_bytes)}
                                         </span>
+                                        {openedConnection.kind === "S3" &&
+                                            !file.is_directory && (
+                                                <button
+                                                    className="link-button"
+                                                    type="button"
+                                                    onClick={() =>
+                                                        handleHydrate(file.path)
+                                                    }
+                                                    disabled={
+                                                        hydratingPath ===
+                                                        file.path
+                                                    }
+                                                >
+                                                    {hydratingPath === file.path
+                                                        ? "Downloading..."
+                                                        : "Download"}
+                                                </button>
+                                            )}
+                                        {!file.is_directory && (
+                                            <button
+                                                className="link-button"
+                                                type="button"
+                                                onClick={() =>
+                                                    handleSync(file.path)
+                                                }
+                                                disabled={
+                                                    hydratingPath === file.path
+                                                }
+                                            >
+                                                {hydratingPath === file.path
+                                                    ? "Syncing..."
+                                                    : "Sync"}
+                                            </button>
+                                        )}
                                     </div>
                                 ))}
                             </div>
@@ -414,6 +492,41 @@ export function App() {
                                         />
                                     </label>
                                 </div>
+                            )}
+                            {providerChoice === "SFTP" && (
+                                <>
+                                    <label>
+                                        Authentication
+                                        <select
+                                            name="authentication"
+                                            defaultValue="password"
+                                        >
+                                            <option value="password">
+                                                Password
+                                            </option>
+                                            <option value="private_key">
+                                                Private key
+                                            </option>
+                                        </select>
+                                    </label>
+                                    <div className="form-grid">
+                                        <label>
+                                            Private key path
+                                            <input
+                                                name="privateKeyPath"
+                                                placeholder="C:\\Users\\you\\.ssh\\id_ed25519"
+                                            />
+                                        </label>
+                                        <label>
+                                            Key passphrase
+                                            <input
+                                                name="passphrase"
+                                                type="password"
+                                                autoComplete="new-password"
+                                            />
+                                        </label>
+                                    </div>
+                                </>
                             )}
                             {providerChoice !== "S3" && (
                                 <div className="form-grid">

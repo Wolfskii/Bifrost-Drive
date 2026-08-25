@@ -25,6 +25,27 @@ pub struct ConnectionRecord {
     pub configuration_json: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncEntryRecord {
+    pub connection_id: ConnectionId,
+    pub remote_path: String,
+    pub state: String,
+    pub base_fingerprint: Option<String>,
+    pub local_fingerprint: Option<String>,
+    pub remote_fingerprint: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictRecord {
+    pub id: Uuid,
+    pub connection_id: ConnectionId,
+    pub remote_path: String,
+    pub local_fingerprint: Option<String>,
+    pub remote_fingerprint: Option<String>,
+}
+
+#[derive(Clone)]
 pub struct Database {
     pool: SqlitePool,
 }
@@ -107,6 +128,51 @@ impl Database {
         Ok(())
     }
 
+    pub async fn upsert_sync_entry(&self, entry: &SyncEntryRecord) -> Result<(), DatabaseError> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO sync_entries (connection_id, remote_path, state, base_fingerprint, local_fingerprint, remote_fingerprint, last_error, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(connection_id, remote_path) DO UPDATE SET state = excluded.state, base_fingerprint = excluded.base_fingerprint, local_fingerprint = excluded.local_fingerprint, remote_fingerprint = excluded.remote_fingerprint, last_error = excluded.last_error, updated_at = excluded.updated_at",
+        )
+        .bind(entry.connection_id.to_string())
+        .bind(&entry.remote_path)
+        .bind(&entry.state)
+        .bind(&entry.base_fingerprint)
+        .bind(&entry.local_fingerprint)
+        .bind(&entry.remote_fingerprint)
+        .bind(&entry.last_error)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn insert_conflict(&self, conflict: &ConflictRecord) -> Result<(), DatabaseError> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO conflicts (id, connection_id, remote_path, local_fingerprint, remote_fingerprint, detected_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(conflict.id.to_string())
+        .bind(conflict.connection_id.to_string())
+        .bind(&conflict.remote_path)
+        .bind(&conflict.local_fingerprint)
+        .bind(&conflict.remote_fingerprint)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn resolve_conflict(&self, id: Uuid, resolution: &str) -> Result<(), DatabaseError> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("UPDATE conflicts SET resolution = ?, resolved_at = ? WHERE id = ?")
+            .bind(resolution)
+            .bind(now)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     fn connection_from_row(
         row: sqlx::sqlite::SqliteRow,
     ) -> Result<ConnectionRecord, DatabaseError> {
@@ -128,8 +194,9 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConnectionRecord, Database};
+    use super::{ConflictRecord, ConnectionRecord, Database, SyncEntryRecord};
     use bifrost_common::{ConnectionId, ProviderKind};
+    use uuid::Uuid;
 
     #[tokio::test]
     async fn applies_initial_schema_to_a_fresh_database() {
@@ -170,5 +237,52 @@ mod tests {
 
         database.insert_connection(&connection).await.unwrap();
         assert_eq!(database.list_connections().await.unwrap(), vec![connection]);
+    }
+
+    #[tokio::test]
+    async fn persists_sync_entries_and_conflicts_durably() {
+        let database = Database::connect("sqlite::memory:").await.unwrap();
+        database.migrate().await.unwrap();
+        let connection = ConnectionRecord {
+            id: ConnectionId::new(),
+            name: "Sync target".to_owned(),
+            kind: ProviderKind::S3,
+            endpoint: "https://s3.example.test".to_owned(),
+            credential_ref: "native-reference".to_owned(),
+            configuration_json: "{}".to_owned(),
+        };
+        database.insert_connection(&connection).await.unwrap();
+        database
+            .upsert_sync_entry(&SyncEntryRecord {
+                connection_id: connection.id,
+                remote_path: "docs/report.txt".to_owned(),
+                state: "conflict".to_owned(),
+                base_fingerprint: Some("base".to_owned()),
+                local_fingerprint: Some("local".to_owned()),
+                remote_fingerprint: Some("remote".to_owned()),
+                last_error: None,
+            })
+            .await
+            .unwrap();
+        database
+            .insert_conflict(&ConflictRecord {
+                id: Uuid::new_v4(),
+                connection_id: connection.id,
+                remote_path: "docs/report.txt".to_owned(),
+                local_fingerprint: Some("local".to_owned()),
+                remote_fingerprint: Some("remote".to_owned()),
+            })
+            .await
+            .unwrap();
+        let sync_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_entries")
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+        let conflict_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM conflicts")
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+        assert_eq!(sync_count, 1);
+        assert_eq!(conflict_count, 1);
     }
 }

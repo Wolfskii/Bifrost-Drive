@@ -62,4 +62,34 @@ async fn webdav_round_trip_uses_real_dav_verbs() {
         Bytes::from_static(b"Bifrost")
     );
     provider.delete(&renamed).await.unwrap();
+
+    let advanced_directory = RemotePath::parse("advanced").unwrap();
+    let advanced_source = RemotePath::parse("advanced/source.txt").unwrap();
+    let advanced_copy = RemotePath::parse("advanced/copy.txt").unwrap();
+    provider
+        .create_directory(&advanced_directory)
+        .await
+        .unwrap();
+    provider
+        .write(WriteRequest {
+            path: advanced_source.clone(),
+            content: Box::pin(stream::iter(vec![Ok(payload)])),
+            size_bytes: Some(34),
+            modified_at: None,
+        })
+        .await
+        .unwrap();
+    provider
+        .copy(&advanced_source, &advanced_copy)
+        .await
+        .unwrap();
+    let lock = provider
+        .lock(&advanced_source, "bifrost-integration", 60)
+        .await
+        .unwrap();
+    assert!(!lock.token.is_empty());
+    provider.unlock(&advanced_source, &lock).await.unwrap();
+    provider.delete(&advanced_copy).await.unwrap();
+    provider.delete(&advanced_source).await.unwrap();
+    provider.delete(&advanced_directory).await.unwrap();
 }

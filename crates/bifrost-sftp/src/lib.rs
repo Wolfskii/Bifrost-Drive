@@ -8,7 +8,9 @@ use chrono::{DateTime, TimeZone, Utc};
 use futures_util::{stream, StreamExt};
 use russh::{
     client,
-    keys::{check_known_hosts_path, PublicKeyOrCertificate},
+    keys::{
+        check_known_hosts_path, load_secret_key, PrivateKeyWithHashAlg, PublicKeyOrCertificate,
+    },
 };
 use russh_sftp::{client::SftpSession, protocol::OpenFlags};
 use std::{ops::Range, path::PathBuf, sync::Arc};
@@ -22,9 +24,18 @@ pub struct SftpConfig {
     pub known_hosts: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SftpAuthentication {
+    Password(String),
+    PrivateKey {
+        path: PathBuf,
+        passphrase: Option<String>,
+    },
+}
+
 pub struct SftpProvider {
     config: SftpConfig,
-    password: String,
+    authentication: SftpAuthentication,
 }
 
 struct ClientHandler {
@@ -68,7 +79,42 @@ impl SftpProvider {
         }
         Ok(Self {
             config,
-            password: password.into(),
+            authentication: SftpAuthentication::Password(password.into()),
+        })
+    }
+
+    pub fn connect_with_private_key(
+        config: SftpConfig,
+        key_path: PathBuf,
+        passphrase: Option<String>,
+    ) -> Result<Self, StorageError> {
+        if config.host.trim().is_empty() || config.username.trim().is_empty() {
+            return Err(StorageError::Provider {
+                provider: ProviderKind::Sftp,
+                message: "SFTP host and username are required".to_owned(),
+            });
+        }
+        if !config.known_hosts.is_file() {
+            return Err(StorageError::Provider {
+                provider: ProviderKind::Sftp,
+                message: format!(
+                    "known_hosts file does not exist: {}",
+                    config.known_hosts.display()
+                ),
+            });
+        }
+        if !key_path.is_file() {
+            return Err(StorageError::Provider {
+                provider: ProviderKind::Sftp,
+                message: format!("private key file does not exist: {}", key_path.display()),
+            });
+        }
+        Ok(Self {
+            config,
+            authentication: SftpAuthentication::PrivateKey {
+                path: key_path,
+                passphrase,
+            },
         })
     }
 
@@ -88,15 +134,44 @@ impl SftpProvider {
             provider: ProviderKind::Sftp,
             message: error.to_string(),
         })?;
-        if !session
-            .authenticate_password(&self.config.username, &self.password)
-            .await
-            .map_err(|error| StorageError::Network {
-                provider: ProviderKind::Sftp,
-                message: error.to_string(),
-            })?
-            .success()
-        {
+        let authentication = match &self.authentication {
+            SftpAuthentication::Password(password) => session
+                .authenticate_password(&self.config.username, password)
+                .await
+                .map_err(|error| StorageError::Network {
+                    provider: ProviderKind::Sftp,
+                    message: error.to_string(),
+                })?,
+            SftpAuthentication::PrivateKey { path, passphrase } => {
+                let path = path.clone();
+                let passphrase = passphrase.clone();
+                let key = tokio::task::spawn_blocking(move || {
+                    load_secret_key(path, passphrase.as_deref())
+                })
+                .await
+                .map_err(|error| StorageError::Provider {
+                    provider: ProviderKind::Sftp,
+                    message: error.to_string(),
+                })?
+                .map_err(Self::map_error)?;
+                let key = PrivateKeyWithHashAlg::new(
+                    Arc::new(key),
+                    session
+                        .best_supported_rsa_hash()
+                        .await
+                        .map_err(Self::map_error)?
+                        .flatten(),
+                );
+                session
+                    .authenticate_publickey(&self.config.username, key)
+                    .await
+                    .map_err(|error| StorageError::Network {
+                        provider: ProviderKind::Sftp,
+                        message: error.to_string(),
+                    })?
+            }
+        };
+        if !authentication.success() {
             return Err(StorageError::AuthenticationFailed {
                 provider: ProviderKind::Sftp,
             });
@@ -165,6 +240,10 @@ impl SftpProvider {
             return Err(Self::map_error("read range must have a positive length"));
         }
         Ok((range.start, Some(range.end - range.start)))
+    }
+
+    pub fn uses_private_key(&self) -> bool {
+        matches!(self.authentication, SftpAuthentication::PrivateKey { .. })
     }
 }
 
@@ -333,6 +412,24 @@ mod tests {
                 known_hosts: PathBuf::from("missing-known-hosts"),
             },
             "secret",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn refuses_missing_private_keys_before_network_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        std::fs::write(&known_hosts, "").unwrap();
+        let result = SftpProvider::connect_with_private_key(
+            SftpConfig {
+                host: "example.test".to_owned(),
+                port: 22,
+                username: "user".to_owned(),
+                known_hosts,
+            },
+            directory.path().join("missing-key"),
+            None,
         );
         assert!(result.is_err());
     }

@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use bifrost_common::{Capability, CapabilitySet, ProviderKind, RemoteMetadata, RemotePath};
 use bifrost_storage::{
-    ByteStream, Page, ReadRequest, RemoteEntry, StorageError, StorageProvider, WriteRequest,
+    ByteStream, LockToken, Page, ReadRequest, RemoteEntry, StorageError, StorageProvider,
+    WriteRequest,
 };
 use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
@@ -242,6 +243,9 @@ impl StorageProvider for WebDavProvider {
             Capability::Write,
             Capability::Delete,
             Capability::Rename,
+            Capability::ServerSideCopy,
+            Capability::CreateDirectory,
+            Capability::Locking,
             Capability::RangeRead,
         ])
     }
@@ -366,6 +370,74 @@ impl StorageProvider for WebDavProvider {
     async fn create_directory(&self, path: &RemotePath) -> Result<(), StorageError> {
         self.send(
             self.request(Method::from_bytes(b"MKCOL").unwrap(), self.url_for(path)?)
+                .send()
+                .await
+                .map_err(|error| StorageError::Network {
+                    provider: ProviderKind::WebDav,
+                    message: error.to_string(),
+                })?,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn copy(&self, from: &RemotePath, to: &RemotePath) -> Result<(), StorageError> {
+        let destination = self.url_for(to)?.to_string();
+        self.send(
+            self.request(Method::from_bytes(b"COPY").unwrap(), self.url_for(from)?)
+                .header("Destination", destination)
+                .header("Overwrite", "F")
+                .send()
+                .await
+                .map_err(|error| StorageError::Network {
+                    provider: ProviderKind::WebDav,
+                    message: error.to_string(),
+                })?,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn lock(
+        &self,
+        path: &RemotePath,
+        owner: &str,
+        timeout_seconds: u64,
+    ) -> Result<LockToken, StorageError> {
+        let timeout = format!("Second-{}", timeout_seconds.max(1));
+        let body = format!(
+            r#"<?xml version="1.0" encoding="utf-8" ?><d:lockinfo xmlns:d="DAV:"><d:lockscope><d:exclusive/></d:lockscope><d:locktype><d:write/></d:locktype><d:owner><d:href>{owner}</d:href></d:owner></d:lockinfo>"#
+        );
+        let response = self
+            .send(
+                self.request(Method::from_bytes(b"LOCK").unwrap(), self.url_for(path)?)
+                    .header("Timeout", timeout)
+                    .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
+                    .body(body)
+                    .send()
+                    .await
+                    .map_err(|error| StorageError::Network {
+                        provider: ProviderKind::WebDav,
+                        message: error.to_string(),
+                    })?,
+            )
+            .await?;
+        let token = response
+            .headers()
+            .get("Lock-Token")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .ok_or_else(|| StorageError::Provider {
+                provider: ProviderKind::WebDav,
+                message: "WebDAV LOCK response did not include a Lock-Token".to_owned(),
+            })?;
+        Ok(LockToken { token })
+    }
+
+    async fn unlock(&self, path: &RemotePath, token: &LockToken) -> Result<(), StorageError> {
+        self.send(
+            self.request(Method::from_bytes(b"UNLOCK").unwrap(), self.url_for(path)?)
+                .header("Lock-Token", &token.token)
                 .send()
                 .await
                 .map_err(|error| StorageError::Network {

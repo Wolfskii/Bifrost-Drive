@@ -42,6 +42,11 @@ pub struct WriteRequest {
     pub modified_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockToken {
+    pub token: String,
+}
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("provider {provider} rejected authentication")]
@@ -98,6 +103,32 @@ pub trait StorageProvider: Send + Sync {
         Err(StorageError::Unsupported {
             provider: self.kind(),
             capability: "rename".to_owned(),
+        })
+    }
+
+    async fn copy(&self, _from: &RemotePath, _to: &RemotePath) -> Result<(), StorageError> {
+        Err(StorageError::Unsupported {
+            provider: self.kind(),
+            capability: "server_side_copy".to_owned(),
+        })
+    }
+
+    async fn lock(
+        &self,
+        _path: &RemotePath,
+        _owner: &str,
+        _timeout_seconds: u64,
+    ) -> Result<LockToken, StorageError> {
+        Err(StorageError::Unsupported {
+            provider: self.kind(),
+            capability: "locking".to_owned(),
+        })
+    }
+
+    async fn unlock(&self, _path: &RemotePath, _token: &LockToken) -> Result<(), StorageError> {
+        Err(StorageError::Unsupported {
+            provider: self.kind(),
+            capability: "locking".to_owned(),
         })
     }
 }

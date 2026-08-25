@@ -1,5 +1,5 @@
 # SFTP
 
-The SFTP adapter is implemented for password authentication and verified host keys. It supports configurable ports, known_hosts verification, streaming file reads/writes, listing, metadata, rename, and deletion. The pinned atmoz integration fixture exercises this contract with a generated host-key file, and the desktop wizard can create and test SFTP connections. Public-key authentication, encrypted keys/passphrases, SSH agents, keyboard-interactive authentication, and OpenSSH configuration remain Planned.
+The SFTP adapter supports password and private-key authentication with verified host keys. It supports configurable ports, known_hosts verification, streaming file reads/writes, listing, metadata, rename, and deletion. The pinned atmoz integration fixture exercises password authentication and an ephemeral Ed25519 private key. Private keys and passphrases are stored in the native credential store; the desktop wizard accepts a key path and optional passphrase. SSH agents, keyboard-interactive authentication, and OpenSSH configuration remain Planned.
 
 Host verification must never be disabled by default.

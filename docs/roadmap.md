@@ -10,10 +10,11 @@
 
 ## Phase 2: Windows MVP
 
-- S3, SFTP, and WebDAV
-- Metadata/file cache and offline pinning
-- Bounded transfers and conflict-safe synchronization
-- Windows CFAPI placeholders and hydration
+- [x] S3, SFTP, and WebDAV
+- [x] Metadata/file cache and offline pinning primitives
+- [x] Durable bounded transfers and conflict-safe one-shot synchronization
+- [x] Windows CFAPI registration, placeholders, and callback completion
+- [ ] Background synchronization scheduler and Windows Explorer VM acceptance
 - Tray, activity, history, and notifications
 - Windows x64 installer and automated stable releases
 

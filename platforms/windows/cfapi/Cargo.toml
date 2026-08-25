@@ -1,0 +1,17 @@
+[package]
+name = "bifrost-windows-cfapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bifrost-common = { path = "../../../crates/bifrost-common" }
+thiserror.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Storage_CloudFilters",
+    "Win32_Storage_FileSystem",
+    "Win32_System_CorrelationVector",
+    "Win32_System_IO",
+] }

@@ -43,6 +43,8 @@ services:
     command: bifrost-dev:bifrost-dev-secret:::upload
     ports:
       - "${SFTP_PORT:-2222}:22"
+    volumes:
+      - ./.cache/sftp_keys:/home/bifrost-dev/.ssh/keys:ro
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 22"]
       interval: 5s
