@@ -22,6 +22,13 @@ pub enum FuseError {
 pub struct MountHandle;
 
 #[cfg(not(target_os = "linux"))]
+impl MountHandle {
+    pub fn join(self) -> Result<(), FuseError> {
+        Err(FuseError::UnsupportedPlatform)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
 pub fn mount_read_only(
     _provider: Arc<dyn StorageProvider>,
     _config: FuseConfig,
@@ -50,6 +57,13 @@ mod linux {
 
     pub struct MountHandle {
         session: fuser::BackgroundSession,
+    }
+
+    impl MountHandle {
+        pub fn join(self) -> Result<(), FuseError> {
+            self.session.join();
+            Ok(())
+        }
     }
 
     struct RemoteFilesystem {
