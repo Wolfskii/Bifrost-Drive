@@ -80,6 +80,10 @@ impl SyncRoot {
         Err(CfapiError::UnsupportedPlatform)
     }
 
+    pub fn fail_fetch_data(_event: &CfapiEvent, _status: i32) -> Result<(), CfapiError> {
+        Err(CfapiError::UnsupportedPlatform)
+    }
+
     pub fn complete_fetch_placeholders(
         _event: &CfapiEvent,
         _entries: &[PlaceholderMetadata],
@@ -462,6 +466,19 @@ mod windows_impl {
             offset: i64,
             data: &[u8],
         ) -> Result<(), CfapiError> {
+            Self::complete_fetch_data_with_status(event, offset, data, NTSTATUS(0))
+        }
+
+        pub fn fail_fetch_data(event: &CfapiEvent, status: i32) -> Result<(), CfapiError> {
+            Self::complete_fetch_data_with_status(event, 0, &[], NTSTATUS(status))
+        }
+
+        fn complete_fetch_data_with_status(
+            event: &CfapiEvent,
+            offset: i64,
+            data: &[u8],
+            status: NTSTATUS,
+        ) -> Result<(), CfapiError> {
             let CfapiEvent::FetchData {
                 connection_key,
                 transfer_key,
@@ -483,7 +500,7 @@ mod windows_impl {
             };
             let transfer_data = CF_OPERATION_PARAMETERS_0_0 {
                 Flags: CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
-                CompletionStatus: NTSTATUS(0),
+                CompletionStatus: status,
                 Buffer: data.as_ptr().cast(),
                 Offset: offset,
                 Length: data.len() as i64,

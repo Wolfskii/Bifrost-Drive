@@ -1576,6 +1576,8 @@ fn cfapi_handler(
     transfers: Arc<TransferService>,
     connection_id: bifrost_common::ConnectionId,
 ) -> Arc<dyn Fn(CfapiEvent) + Send + Sync> {
+    const STATUS_UNSUCCESSFUL: i32 = -1_073_741_823;
+
     fn remote_path_from_identity(identity: &[u8]) -> Option<bifrost_common::RemotePath> {
         if identity == b"root" {
             Some(bifrost_common::RemotePath::root())
@@ -1604,7 +1606,7 @@ fn cfapi_handler(
                         ..
                     } => {
                         let Some(path) = remote_path_from_identity(file_identity) else {
-                            let _ = SyncRoot::complete_fetch_data(&event, *file_offset, &[]);
+                            let _ = SyncRoot::fail_fetch_data(&event, STATUS_UNSUCCESSFUL);
                             return;
                         };
                         let end = file_offset.saturating_add(*required_length);
@@ -1615,15 +1617,24 @@ fn cfapi_handler(
                             .await
                         {
                             Ok(stream) => stream,
-                            Err(_) => return,
+                            Err(error) => {
+                                tracing::error!(error = %error, "CFAPI fetch-data provider read failed");
+                                let _ = SyncRoot::fail_fetch_data(&event, STATUS_UNSUCCESSFUL);
+                                return;
+                            }
                         };
                         let mut offset = *file_offset;
                         while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
                             let chunk = match chunk {
                                 Ok(chunk) => chunk,
-                                Err(_) => return,
+                                Err(error) => {
+                                    tracing::error!(error = %error, "CFAPI fetch-data stream failed");
+                                    let _ = SyncRoot::fail_fetch_data(&event, STATUS_UNSUCCESSFUL);
+                                    return;
+                                }
                             };
-                            if SyncRoot::complete_fetch_data(&event, offset, &chunk).is_err() {
+                            if let Err(error) = SyncRoot::complete_fetch_data(&event, offset, &chunk) {
+                                tracing::error!(error = %error, "CFAPI fetch-data completion failed");
                                 return;
                             }
                             offset = offset.saturating_add(chunk.len() as i64);
@@ -1631,12 +1642,14 @@ fn cfapi_handler(
                     }
                     CfapiEvent::FetchPlaceholders { file_identity, .. } => {
                         let Some(parent) = remote_path_from_identity(file_identity) else {
+                            tracing::error!("CFAPI placeholder callback had an invalid file identity");
                             let _ = SyncRoot::complete_fetch_placeholders(&event, &[]);
                             return;
                         };
                         let page = match provider.list(&parent, None).await {
                             Ok(page) => page,
-                            Err(_) => {
+                            Err(error) => {
+                                tracing::error!(error = %error, "CFAPI placeholder listing failed");
                                 let _ = SyncRoot::complete_fetch_placeholders(&event, &[]);
                                 return;
                             }
@@ -1660,7 +1673,9 @@ fn cfapi_handler(
                                 }
                             })
                             .collect::<Vec<_>>();
-                        let _ = SyncRoot::complete_fetch_placeholders(&event, &entries);
+                        if let Err(error) = SyncRoot::complete_fetch_placeholders(&event, &entries) {
+                            tracing::error!(error = %error, "CFAPI placeholder completion failed");
+                        }
                     }
                     CfapiEvent::NotifyFileClose { file_identity } => {
                         let Ok(path) = bifrost_common::RemotePath::parse(&String::from_utf8_lossy(
