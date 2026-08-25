@@ -716,6 +716,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bifrost-cache"
+version = "0.1.0"
+dependencies = [
+ "bifrost-common",
+ "hex",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "bifrost-common"
 version = "0.1.0"
 dependencies = [
@@ -769,6 +780,8 @@ dependencies = [
  "bifrost-core",
  "bifrost-crypto",
  "bifrost-db",
+ "bifrost-s3",
+ "bifrost-storage",
  "bifrost-windows-credentials",
  "serde",
  "serde_json",
@@ -815,6 +828,14 @@ dependencies = [
  "serde",
  "thiserror 2.0.20",
  "url",
+]
+
+[[package]]
+name = "bifrost-transfer"
+version = "0.1.0"
+dependencies = [
+ "bifrost-common",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

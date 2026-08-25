@@ -52,6 +52,12 @@ impl fmt::Display for ConnectionId {
     }
 }
 
+impl fmt::Display for TransferId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 impl Default for TransferId {
     fn default() -> Self {
         Self::new()

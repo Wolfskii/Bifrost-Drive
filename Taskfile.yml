@@ -89,6 +89,8 @@ tasks:
   test:integration:
     desc: Start local provider services and run real integration tests
     deps: [docker:up]
+    defer:
+      - task: docker:down
     env:
       BIFROST_S3_INTEGRATION: "1"
     cmds:
@@ -122,7 +124,7 @@ tasks:
     desc: Remove generated build output
     cmds:
       - cargo clean
-      - npm exec rimraf -- -- dist
+      - npm exec -- rimraf apps/desktop/dist
 
   docker:up:
     desc: Start local integration services

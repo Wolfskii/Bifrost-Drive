@@ -6,7 +6,7 @@ Bifrost Drive is a cross-platform desktop client for remote storage. It is desig
 
 ## Status
 
-Early foundation. The repository currently contains the shared Rust contracts, SQLite migration boundary, credential-store abstraction, Tauri 2 shell, durable connection commands, and a working S3 provider tested against MinIO. Native credential storage, the connection wizard, cache, and Windows CFAPI integration are next.
+Early foundation. The repository currently contains the shared Rust contracts, SQLite migration boundary, Windows Credential Manager adapter, durable connection commands, an S3 connection wizard, and a working S3 provider tested against MinIO. Cache and Windows CFAPI integration are next.
 
 ## Supported Targets
 

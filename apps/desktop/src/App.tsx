@@ -5,11 +5,91 @@ import {
     Activity,
     Plus,
     ArrowUpRight,
+    File,
+    Folder,
+    RefreshCw,
 } from "lucide-react";
+import { FormEvent, useEffect, useState } from "react";
+import {
+    ConnectionSummary,
+    createS3Connection,
+    FileSummary,
+    listConnections,
+    listFiles,
+    S3ConnectionForm,
+} from "./api";
 
-const plannedProviders = ["S3", "SFTP", "WebDAV"];
+const providerTypes = [
+    { name: "S3", status: "Available now" },
+    { name: "SFTP", status: "Provider adapter in progress" },
+    { name: "WebDAV", status: "Provider adapter in progress" },
+];
 
 export function App() {
+    const [connections, setConnections] = useState<ConnectionSummary[]>([]);
+    const [files, setFiles] = useState<FileSummary[]>([]);
+    const [openedConnection, setOpenedConnection] =
+        useState<ConnectionSummary | null>(null);
+    const [loadingFiles, setLoadingFiles] = useState(false);
+    const [wizardOpen, setWizardOpen] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [saving, setSaving] = useState(false);
+
+    useEffect(() => {
+        listConnections()
+            .then(setConnections)
+            .catch(() => {
+                setError("Unable to load saved connections.");
+            });
+    }, []);
+
+    async function handleOpen(connection: ConnectionSummary) {
+        setLoadingFiles(true);
+        setError(null);
+        try {
+            setFiles(await listFiles(connection.id));
+            setOpenedConnection(connection);
+        } catch (cause) {
+            setError(
+                cause instanceof Error
+                    ? cause.message
+                    : "Unable to list remote files.",
+            );
+        } finally {
+            setLoadingFiles(false);
+        }
+    }
+
+    async function handleCreate(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        const values = new FormData(event.currentTarget);
+        const form: S3ConnectionForm = {
+            name: String(values.get("name") ?? "").trim(),
+            endpoint: String(values.get("endpoint") ?? "").trim(),
+            region: String(values.get("region") ?? "").trim(),
+            bucket: String(values.get("bucket") ?? "").trim(),
+            pathStyle: values.get("pathStyle") === "on",
+            accessKeyId: String(values.get("accessKeyId") ?? "").trim(),
+            secretAccessKey: String(values.get("secretAccessKey") ?? ""),
+        };
+        setSaving(true);
+        setError(null);
+        try {
+            const connection = await createS3Connection(form);
+            setConnections((current) => [...current, connection]);
+            setWizardOpen(false);
+            event.currentTarget.reset();
+        } catch (cause) {
+            setError(
+                cause instanceof Error
+                    ? cause.message
+                    : "Unable to create connection.",
+            );
+        } finally {
+            setSaving(false);
+        }
+    }
+
     return (
         <main className="app-shell">
             <aside className="sidebar">
@@ -47,10 +127,113 @@ export function App() {
                             Remote files, ready when you are.
                         </p>
                     </div>
-                    <button className="primary-button" type="button">
+                    <button
+                        className="primary-button"
+                        type="button"
+                        onClick={() => setWizardOpen(true)}
+                    >
                         <Plus size={17} /> Add connection
                     </button>
                 </header>
+                {error && (
+                    <p className="inline-error" role="alert">
+                        {error}
+                    </p>
+                )}
+                {connections.length > 0 && (
+                    <section
+                        className="saved-connections"
+                        aria-labelledby="saved-title"
+                    >
+                        <div className="section-heading">
+                            <div>
+                                <p className="eyebrow">Connected storage</p>
+                                <h2 id="saved-title">Your spaces</h2>
+                            </div>
+                            <span className="muted-label">
+                                {connections.length} saved
+                            </span>
+                        </div>
+                        <div className="connection-list">
+                            {connections.map((connection) => (
+                                <article
+                                    className="connection-row"
+                                    key={connection.id}
+                                >
+                                    <div className="provider-icon">
+                                        <Cloud size={20} />
+                                    </div>
+                                    <div>
+                                        <h3>{connection.name}</h3>
+                                        <p>{connection.endpoint}</p>
+                                    </div>
+                                    <span className="connection-state">
+                                        <span className="status-dot" />{" "}
+                                        {connection.state}
+                                    </span>
+                                    <button
+                                        className="link-button"
+                                        type="button"
+                                        onClick={() => handleOpen(connection)}
+                                        disabled={loadingFiles}
+                                    >
+                                        {loadingFiles ? "Loading..." : "Open"}
+                                    </button>
+                                </article>
+                            ))}
+                        </div>
+                    </section>
+                )}
+                {openedConnection && (
+                    <section
+                        className="file-browser"
+                        aria-labelledby="files-title"
+                    >
+                        <div className="section-heading">
+                            <div>
+                                <p className="eyebrow">Remote files</p>
+                                <h2 id="files-title">
+                                    {openedConnection.name}
+                                </h2>
+                            </div>
+                            <button
+                                className="icon-button"
+                                type="button"
+                                aria-label="Refresh files"
+                                onClick={() => handleOpen(openedConnection)}
+                            >
+                                <RefreshCw size={16} />
+                            </button>
+                        </div>
+                        {files.length === 0 ? (
+                            <p className="empty-files">
+                                This space has no items at its root.
+                            </p>
+                        ) : (
+                            <div className="file-list">
+                                {files.map((file) => (
+                                    <div className="file-row" key={file.path}>
+                                        <span className="file-icon">
+                                            {file.is_directory ? (
+                                                <Folder size={17} />
+                                            ) : (
+                                                <File size={17} />
+                                            )}
+                                        </span>
+                                        <span className="file-name">
+                                            {file.path}
+                                        </span>
+                                        <span className="file-size">
+                                            {file.is_directory
+                                                ? "Folder"
+                                                : formatBytes(file.size_bytes)}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </section>
+                )}
                 <section
                     className="welcome-panel"
                     aria-labelledby="welcome-title"
@@ -63,9 +246,9 @@ export function App() {
                             A quieter way to reach every file.
                         </h2>
                         <p>
-                            Bifrost Drive is establishing the secure bridge
-                            between your desktop and remote storage. The first
-                            provider workflow is being built now.
+                            Connect an S3-compatible space, keep its credentials
+                            in Windows Credential Manager, and browse remote
+                            metadata without downloading every file.
                         </p>
                     </div>
                     <div className="bridge-graphic" aria-hidden="true">
@@ -76,28 +259,148 @@ export function App() {
                 </section>
                 <section className="section-heading">
                     <div>
-                        <p className="eyebrow">Available soon</p>
+                        <p className="eyebrow">Provider support</p>
                         <h2>Connection types</h2>
                     </div>
                     <span className="muted-label">
-                        {plannedProviders.length} providers planned
+                        {
+                            providerTypes.filter(
+                                (provider) =>
+                                    provider.status === "Available now",
+                            ).length
+                        }{" "}
+                        available
                     </span>
                 </section>
                 <div className="provider-grid">
-                    {plannedProviders.map((provider) => (
-                        <article className="provider-card" key={provider}>
+                    {providerTypes.map((provider) => (
+                        <article className="provider-card" key={provider.name}>
                             <div className="provider-icon">
                                 <Cloud size={20} />
                             </div>
                             <div>
-                                <h3>{provider}</h3>
-                                <p>Provider adapter in progress</p>
+                                <h3>{provider.name}</h3>
+                                <p>{provider.status}</p>
                             </div>
                             <ArrowUpRight className="card-arrow" size={17} />
                         </article>
                     ))}
                 </div>
             </section>
+            {wizardOpen && (
+                <div className="modal-backdrop" role="presentation">
+                    <section
+                        className="wizard"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="wizard-title"
+                    >
+                        <div className="wizard-header">
+                            <div>
+                                <p className="eyebrow">New connection</p>
+                                <h2 id="wizard-title">Connect to S3</h2>
+                            </div>
+                            <button
+                                className="icon-button"
+                                type="button"
+                                aria-label="Close"
+                                onClick={() => setWizardOpen(false)}
+                            >
+                                ×
+                            </button>
+                        </div>
+                        <p className="wizard-copy">
+                            Your secret key is stored in the native Windows
+                            credential store.
+                        </p>
+                        <form onSubmit={handleCreate}>
+                            <label>
+                                Connection name
+                                <input
+                                    name="name"
+                                    required
+                                    placeholder="Production S3"
+                                />
+                            </label>
+                            <label>
+                                Endpoint
+                                <input
+                                    name="endpoint"
+                                    type="url"
+                                    required
+                                    defaultValue="https://s3.amazonaws.com"
+                                />
+                            </label>
+                            <div className="form-grid">
+                                <label>
+                                    Bucket
+                                    <input
+                                        name="bucket"
+                                        required
+                                        placeholder="company-data"
+                                    />
+                                </label>
+                                <label>
+                                    Region
+                                    <input
+                                        name="region"
+                                        required
+                                        defaultValue="us-east-1"
+                                    />
+                                </label>
+                            </div>
+                            <div className="form-grid">
+                                <label>
+                                    Access key ID
+                                    <input
+                                        name="accessKeyId"
+                                        required
+                                        autoComplete="off"
+                                    />
+                                </label>
+                                <label>
+                                    Secret access key
+                                    <input
+                                        name="secretAccessKey"
+                                        required
+                                        type="password"
+                                        autoComplete="new-password"
+                                    />
+                                </label>
+                            </div>
+                            <label className="checkbox-row">
+                                <input name="pathStyle" type="checkbox" /> Use
+                                path-style addressing
+                            </label>
+                            <div className="wizard-actions">
+                                <button
+                                    className="secondary-button"
+                                    type="button"
+                                    onClick={() => setWizardOpen(false)}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    className="primary-button"
+                                    disabled={saving}
+                                    type="submit"
+                                >
+                                    {saving ? "Connecting..." : "Test and save"}
+                                </button>
+                            </div>
+                        </form>
+                    </section>
+                </div>
+            )}
         </main>
     );
+}
+
+function formatBytes(value: number | null): string {
+    if (value === null) return "Size unavailable";
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    if (value < 1024 * 1024 * 1024)
+        return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }

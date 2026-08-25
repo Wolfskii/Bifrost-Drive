@@ -1,0 +1,9 @@
+[package]
+name = "bifrost-transfer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bifrost-common = { path = "../bifrost-common" }
+thiserror.workspace = true

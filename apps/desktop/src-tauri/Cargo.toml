@@ -21,6 +21,8 @@ bifrost-core = { path = "../../../crates/bifrost-core" }
 bifrost-db = { path = "../../../crates/bifrost-db" }
 bifrost-crypto = { path = "../../../crates/bifrost-crypto" }
 bifrost-windows-credentials = { path = "../../../platforms/windows/credentials" }
+bifrost-s3 = { path = "../../../crates/bifrost-s3" }
+bifrost-storage = { path = "../../../crates/bifrost-storage" }
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2.0", features = ["tray-icon"] }

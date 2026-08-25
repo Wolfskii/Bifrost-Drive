@@ -8,8 +8,8 @@ flowchart TD
   CLI[CLI Planned] --> API
   API --> CORE[bifrost-core]
   CORE --> DB[bifrost-db]
-  CORE --> CACHE[bifrost-cache Planned]
-  CORE --> TRANSFER[bifrost-transfer Planned]
+  CORE --> CACHE[bifrost-cache]
+  CORE --> TRANSFER[bifrost-transfer]
   CORE --> SYNC[bifrost-sync Planned]
   PROVIDERS[Provider crates] --> STORAGE[bifrost-storage contracts]
   CORE --> STORAGE

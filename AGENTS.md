@@ -16,6 +16,8 @@ Before changing code, read `README.md`, `docs/architecture.md`, `docs/developmen
 - `crates/bifrost-crypto`: credential-store ports and secret redaction.
 - `crates/bifrost-api`: typed UI/service commands and events.
 - `crates/bifrost-core`: application orchestration; it must not depend on concrete providers or OS APIs.
+- `crates/bifrost-cache`: filesystem cache identity, atomic commits, pinning, and eviction primitives.
+- `crates/bifrost-transfer`: bounded transfer queue and retry state machine.
 - `crates/bifrost-s3`, `bifrost-sftp`, and `bifrost-webdav`: isolated provider implementations.
 - `platforms/windows`, `platforms/macos`, and `platforms/linux`: native filesystem, credential, shell, notification, and installer adapters.
 - `apps/desktop`: thin React presentation and Tauri composition layer.
@@ -63,4 +65,4 @@ Feature work flows through `develop`; protected `main` is the stable release sou
 
 ## Unfinished Work
 
-CFAPI, macOS File Provider, Linux FUSE, SFTP, WebDAV, native credential backends, cache, transfers, sync, and release packaging must be marked Planned until implemented and tested. S3 capabilities may be exposed only where the provider implementation and tests verify them. Do not expose unavailable capabilities in the UI.
+CFAPI, macOS File Provider, Linux FUSE, SFTP, WebDAV, cache/transfer service integration, sync, and release packaging must be marked Planned until implemented and tested. The Windows Credential Manager adapter and provider-neutral cache/transfer primitives are implemented, while other native credential stores remain Planned. S3 capabilities may be exposed only where the provider implementation and tests verify them. Do not expose unavailable capabilities in the UI.

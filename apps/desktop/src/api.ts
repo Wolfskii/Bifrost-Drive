@@ -1,6 +1,6 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from "@tauri-apps/api/core";
 
-export type ProviderKind = 'S3' | 'Sftp' | 'WebDav' | 'Nextcloud';
+export type ProviderKind = "S3" | "Sftp" | "WebDav" | "Nextcloud";
 
 export interface ConnectionSummary {
     id: string;
@@ -8,6 +8,13 @@ export interface ConnectionSummary {
     kind: ProviderKind;
     state: string;
     endpoint: string;
+}
+
+export interface FileSummary {
+    path: string;
+    is_directory: boolean;
+    size_bytes: number | null;
+    modified_at: string | null;
 }
 
 export interface S3ConnectionForm {
@@ -21,45 +28,49 @@ export interface S3ConnectionForm {
 }
 
 function tauriAvailable(): boolean {
-    return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+    return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 export async function listConnections(): Promise<ConnectionSummary[]> {
     if (!tauriAvailable()) {
         return [];
     }
-    return invoke<ConnectionSummary[]>('connections_list');
+    return invoke<ConnectionSummary[]>("connections_list");
 }
 
 export async function createS3Connection(
     form: S3ConnectionForm,
 ): Promise<ConnectionSummary> {
     if (!tauriAvailable()) {
-        throw new Error('The desktop service is not available in this window');
+        throw new Error("The desktop service is not available in this window");
     }
 
-    const credential = await invoke<{ id: string; kind: string; label: string }>(
-        'credentials_store_s3',
-        {
-            request: {
-                label: form.name,
-                access_key_id: form.accessKeyId,
-                secret_access_key: form.secretAccessKey,
-            },
-        },
-    );
-
-    return invoke<ConnectionSummary>('connections_create', {
+    return invoke<ConnectionSummary>("connections_create_s3", {
         request: {
             name: form.name,
-            kind: 'S3',
             endpoint: form.endpoint,
-            credential_ref: JSON.stringify(credential),
-            configuration: {
-                region: form.region,
-                bucket: form.bucket,
-                path_style: form.pathStyle,
-            },
+            region: form.region,
+            bucket: form.bucket,
+            path_style: form.pathStyle,
+            access_key_id: form.accessKeyId,
+            secret_access_key: form.secretAccessKey,
         },
     });
+}
+
+export async function listFiles(connectionId: string): Promise<FileSummary[]> {
+    if (!tauriAvailable()) {
+        return [];
+    }
+    const page = await invoke<{
+        entries: FileSummary[];
+        next_cursor: string | null;
+    }>("files_list", {
+        request: {
+            connection_id: connectionId,
+            path: "",
+            cursor: null,
+        },
+    });
+    return page.entries;
 }

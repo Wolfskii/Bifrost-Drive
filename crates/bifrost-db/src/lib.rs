@@ -144,6 +144,15 @@ mod tests {
         .unwrap();
 
         assert_eq!(table_count, 1);
+
+        let durable_state_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('cache_entries', 'transfer_queue')",
+        )
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+
+        assert_eq!(durable_state_count, 2);
     }
 
     #[tokio::test]

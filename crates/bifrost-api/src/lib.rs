@@ -1,4 +1,4 @@
-use bifrost_common::{ConnectionId, ConnectionState, ProviderKind};
+use bifrost_common::{ConnectionId, ConnectionState, ProviderKind, RemotePath};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -23,15 +23,48 @@ pub struct CreateConnectionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateS3ConnectionRequest {
+    pub name: String,
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    pub path_style: bool,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionIdRequest {
     pub id: ConnectionId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoreCredentialRequest {
-    pub kind: String,
-    pub label: String,
-    pub secret: String,
+pub struct TestConnectionRequest {
+    pub kind: ProviderKind,
+    pub endpoint: String,
+    pub credential_ref: String,
+    pub configuration: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListFilesRequest {
+    pub connection_id: ConnectionId,
+    pub path: RemotePath,
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileSummary {
+    pub path: RemotePath,
+    pub is_directory: bool,
+    pub size_bytes: Option<u64>,
+    pub modified_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilePage {
+    pub entries: Vec<FileSummary>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
