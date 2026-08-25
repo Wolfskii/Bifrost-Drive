@@ -16,10 +16,12 @@ jobs:
   linux:
     name: Build Linux release assets
     needs: version
-    if: always() && (needs.version.result == 'skipped' || needs.version.outputs.bumped != 'true')
+    if: always() && (needs.version.result == 'success' || needs.version.result == 'skipped')
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.commit_sha || github.sha }}
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -45,10 +47,12 @@ jobs:
   macos:
     name: Build macOS release assets
     needs: version
-    if: always() && (needs.version.result == 'skipped' || needs.version.outputs.bumped != 'true')
+    if: always() && (needs.version.result == 'success' || needs.version.result == 'skipped')
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.commit_sha || github.sha }}
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -79,6 +83,7 @@ jobs:
       contents: write
     outputs:
       bumped: ${{ steps.bump.outputs.bumped }}
+      commit_sha: ${{ steps.bump.outputs.commit_sha }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -94,6 +99,7 @@ jobs:
         shell: bash
         run: |
           echo "bumped=false" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
           cargo run -p xtask -- version-bump
           if git diff --quiet; then
             exit 0
@@ -105,15 +111,17 @@ jobs:
           git commit -m "[auto-version] bump patch version"
           git push origin HEAD:develop
           echo "bumped=true" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   release:
     needs: [version, linux, macos]
-    if: always() && needs.linux.result == 'success' && needs.macos.result == 'success' && (needs.version.result == 'skipped' || needs.version.outputs.bumped != 'true')
+    if: always() && needs.linux.result == 'success' && needs.macos.result == 'success' && (needs.version.result == 'success' || needs.version.result == 'skipped')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          ref: ${{ needs.version.outputs.commit_sha || github.sha }}
       - uses: actions/setup-node@v5
         with:
           node-version: 22
