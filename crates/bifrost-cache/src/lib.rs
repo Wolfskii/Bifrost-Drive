@@ -58,6 +58,16 @@ impl CacheManager {
             .join(format!(".{}.partial", transfer_id.as_uuid()))
     }
 
+    pub fn restore(&mut self, record: CacheRecord) -> Result<bool, CacheError> {
+        if !record.local_path.is_file() {
+            return Ok(false);
+        }
+        self.records
+            .insert((record.connection_id, record.remote_path.clone()), record);
+        self.evict_until_within_limit()?;
+        Ok(true)
+    }
+
     pub fn open(
         &mut self,
         connection_id: ConnectionId,

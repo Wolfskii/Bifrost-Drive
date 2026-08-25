@@ -36,6 +36,16 @@ pub enum CfapiEvent {
         request_key: i64,
         pattern: Option<String>,
     },
+    NotifyFileClose {
+        file_identity: Vec<u8>,
+    },
+    NotifyDelete {
+        file_identity: Vec<u8>,
+    },
+    NotifyRename {
+        file_identity: Vec<u8>,
+        target_path: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -94,10 +104,11 @@ mod windows_impl {
                 CfConnectSyncRoot, CfCreatePlaceholders, CfDisconnectSyncRoot, CfExecute,
                 CfRegisterSyncRoot, CfUnregisterSyncRoot, CF_CALLBACK_INFO, CF_CALLBACK_PARAMETERS,
                 CF_CALLBACK_REGISTRATION, CF_CALLBACK_TYPE_FETCH_DATA,
-                CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS, CF_CALLBACK_TYPE_NONE, CF_CONNECTION_KEY,
-                CF_CONNECT_FLAGS, CF_CONNECT_FLAG_REQUIRE_FULL_FILE_PATH, CF_CREATE_FLAGS,
-                CF_FS_METADATA, CF_HARDLINK_POLICY_NONE, CF_HYDRATION_POLICY,
-                CF_HYDRATION_POLICY_MODIFIER,
+                CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS, CF_CALLBACK_TYPE_NONE,
+                CF_CALLBACK_TYPE_NOTIFY_DELETE, CF_CALLBACK_TYPE_NOTIFY_FILE_CLOSE_COMPLETION,
+                CF_CALLBACK_TYPE_NOTIFY_RENAME, CF_CONNECTION_KEY, CF_CONNECT_FLAGS,
+                CF_CONNECT_FLAG_REQUIRE_FULL_FILE_PATH, CF_CREATE_FLAGS, CF_FS_METADATA,
+                CF_HARDLINK_POLICY_NONE, CF_HYDRATION_POLICY, CF_HYDRATION_POLICY_MODIFIER,
                 CF_HYDRATION_POLICY_MODIFIER_AUTO_DEHYDRATION_ALLOWED,
                 CF_HYDRATION_POLICY_MODIFIER_STREAMING_ALLOWED, CF_HYDRATION_POLICY_PROGRESSIVE,
                 CF_INSYNC_POLICY_TRACK_ALL, CF_OPERATION_INFO, CF_OPERATION_PARAMETERS,
@@ -210,7 +221,87 @@ mod windows_impl {
         }
     }
 
-    static CALLBACKS: [CF_CALLBACK_REGISTRATION; 3] = [
+    unsafe extern "system" fn notify_file_close(
+        info: *const CF_CALLBACK_INFO,
+        _parameters: *const CF_CALLBACK_PARAMETERS,
+    ) {
+        notify(info, |identity| CfapiEvent::NotifyFileClose {
+            file_identity: identity,
+        });
+    }
+
+    unsafe extern "system" fn notify_delete(
+        info: *const CF_CALLBACK_INFO,
+        _parameters: *const CF_CALLBACK_PARAMETERS,
+    ) {
+        notify(info, |identity| CfapiEvent::NotifyDelete {
+            file_identity: identity,
+        });
+    }
+
+    unsafe extern "system" fn notify_rename(
+        info: *const CF_CALLBACK_INFO,
+        parameters: *const CF_CALLBACK_PARAMETERS,
+    ) {
+        if info.is_null() || parameters.is_null() {
+            return;
+        }
+        let info = unsafe { &*info };
+        let Some(context) = (unsafe { (info.CallbackContext as *const CallbackContext).as_ref() })
+        else {
+            return;
+        };
+        let identity = unsafe {
+            std::slice::from_raw_parts(
+                info.FileIdentity.cast::<u8>(),
+                info.FileIdentityLength as usize,
+            )
+        };
+        let target = unsafe { (*parameters).Anonymous.Rename.TargetPath };
+        if target.is_null() {
+            return;
+        }
+        let length = (0..)
+            .take_while(|index| unsafe { *target.0.add(*index) != 0 })
+            .count();
+        dispatch(
+            context,
+            CfapiEvent::NotifyRename {
+                file_identity: identity.to_vec(),
+                target_path: String::from_utf16_lossy(unsafe {
+                    std::slice::from_raw_parts(target.0, length)
+                }),
+            },
+        );
+    }
+
+    unsafe fn notify(info: *const CF_CALLBACK_INFO, build: fn(Vec<u8>) -> CfapiEvent) {
+        if info.is_null() {
+            return;
+        }
+        let info = unsafe { &*info };
+        let Some(context) = (unsafe { (info.CallbackContext as *const CallbackContext).as_ref() })
+        else {
+            return;
+        };
+        let identity = unsafe {
+            std::slice::from_raw_parts(
+                info.FileIdentity.cast::<u8>(),
+                info.FileIdentityLength as usize,
+            )
+        };
+        dispatch(context, build(identity.to_vec()));
+    }
+
+    fn dispatch(context: &CallbackContext, event: CfapiEvent) {
+        if let Some(handler) = &context.handler {
+            handler(event);
+        } else {
+            let _ = context.sender.send(event);
+        }
+    }
+
+    static CALLBACKS: [CF_CALLBACK_REGISTRATION; 6] = [
         CF_CALLBACK_REGISTRATION {
             Type: CF_CALLBACK_TYPE_FETCH_DATA,
             Callback: Some(fetch_data),
@@ -218,6 +309,18 @@ mod windows_impl {
         CF_CALLBACK_REGISTRATION {
             Type: CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS,
             Callback: Some(fetch_placeholders),
+        },
+        CF_CALLBACK_REGISTRATION {
+            Type: CF_CALLBACK_TYPE_NOTIFY_FILE_CLOSE_COMPLETION,
+            Callback: Some(notify_file_close),
+        },
+        CF_CALLBACK_REGISTRATION {
+            Type: CF_CALLBACK_TYPE_NOTIFY_DELETE,
+            Callback: Some(notify_delete),
+        },
+        CF_CALLBACK_REGISTRATION {
+            Type: CF_CALLBACK_TYPE_NOTIFY_RENAME,
+            Callback: Some(notify_rename),
         },
         CF_CALLBACK_REGISTRATION {
             Type: CF_CALLBACK_TYPE_NONE,

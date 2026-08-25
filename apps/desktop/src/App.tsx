@@ -11,14 +11,19 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import {
+    ActivitySummary,
     ConnectionSummary,
+    ConflictSummary,
     createS3Connection,
     createSftpConnection,
     createWebDavConnection,
     FileSummary,
     hydrateFile,
     listConnections,
+    listActivity,
+    listConflicts,
     listFiles,
+    resolveConflict,
     runSync,
     S3ConnectionForm,
 } from "./api";
@@ -31,6 +36,8 @@ const providerTypes = [
 
 export function App() {
     const [connections, setConnections] = useState<ConnectionSummary[]>([]);
+    const [conflicts, setConflicts] = useState<ConflictSummary[]>([]);
+    const [activity, setActivity] = useState<ActivitySummary[]>([]);
     const [files, setFiles] = useState<FileSummary[]>([]);
     const [openedConnection, setOpenedConnection] =
         useState<ConnectionSummary | null>(null);
@@ -48,6 +55,22 @@ export function App() {
             .then(setConnections)
             .catch(() => {
                 setError("Unable to load saved connections.");
+            });
+    }, []);
+
+    useEffect(() => {
+        listActivity()
+            .then(setActivity)
+            .catch(() => {
+                setError("Unable to load activity history.");
+            });
+    }, []);
+
+    useEffect(() => {
+        listConflicts()
+            .then(setConflicts)
+            .catch(() => {
+                setError("Unable to load unresolved conflicts.");
             });
     }, []);
 
@@ -149,7 +172,10 @@ export function App() {
         setHydratingPath(path);
         setError(null);
         try {
-            await runSync(openedConnection.id, path);
+            const result = await runSync(openedConnection.id, path);
+            if (result.conflict) {
+                setConflicts(await listConflicts());
+            }
         } catch (cause) {
             setError(
                 cause instanceof Error
@@ -158,6 +184,25 @@ export function App() {
             );
         } finally {
             setHydratingPath(null);
+        }
+    }
+
+    async function handleResolveConflict(
+        conflict: ConflictSummary,
+        resolution: "keep_local" | "keep_remote",
+    ) {
+        setError(null);
+        try {
+            await resolveConflict(conflict.id, resolution);
+            setConflicts((current) =>
+                current.filter((item) => item.id !== conflict.id),
+            );
+        } catch (cause) {
+            setError(
+                cause instanceof Error
+                    ? cause.message
+                    : "Unable to resolve the conflict.",
+            );
         }
     }
 
@@ -210,6 +255,62 @@ export function App() {
                     <p className="inline-error" role="alert">
                         {error}
                     </p>
+                )}
+                {conflicts.length > 0 && (
+                    <section
+                        className="saved-connections"
+                        aria-labelledby="conflicts-title"
+                    >
+                        <div className="section-heading">
+                            <div>
+                                <p className="eyebrow">Needs attention</p>
+                                <h2 id="conflicts-title">File conflicts</h2>
+                            </div>
+                            <span className="muted-label">
+                                {conflicts.length} unresolved
+                            </span>
+                        </div>
+                        <div className="connection-list">
+                            {conflicts.map((conflict) => (
+                                <article
+                                    className="connection-row"
+                                    key={conflict.id}
+                                >
+                                    <div className="provider-icon">
+                                        <Activity size={20} />
+                                    </div>
+                                    <div>
+                                        <h3>{conflict.remote_path}</h3>
+                                        <p>Local and remote changes differ.</p>
+                                    </div>
+                                    <button
+                                        className="link-button"
+                                        type="button"
+                                        onClick={() =>
+                                            handleResolveConflict(
+                                                conflict,
+                                                "keep_remote",
+                                            )
+                                        }
+                                    >
+                                        Keep remote
+                                    </button>
+                                    <button
+                                        className="link-button"
+                                        type="button"
+                                        onClick={() =>
+                                            handleResolveConflict(
+                                                conflict,
+                                                "keep_local",
+                                            )
+                                        }
+                                    >
+                                        Keep local
+                                    </button>
+                                </article>
+                            ))}
+                        </div>
+                    </section>
                 )}
                 {connections.length > 0 && (
                     <section
@@ -339,6 +440,38 @@ export function App() {
                         )}
                     </section>
                 )}
+                <section
+                    className="file-browser"
+                    id="activity"
+                    aria-labelledby="activity-title"
+                >
+                    <div className="section-heading">
+                        <div>
+                            <p className="eyebrow">Recent work</p>
+                            <h2 id="activity-title">Activity</h2>
+                        </div>
+                        <span className="muted-label">Last 100 events</span>
+                    </div>
+                    {activity.length === 0 ? (
+                        <p className="empty-files">No transfer activity yet.</p>
+                    ) : (
+                        <div className="file-list">
+                            {activity.map((event) => (
+                                <div className="file-row" key={event.id}>
+                                    <span className="file-icon">
+                                        <Activity size={17} />
+                                    </span>
+                                    <span className="file-name">
+                                        {event.kind} {event.remote_path ?? ""}
+                                    </span>
+                                    <span className="file-size">
+                                        {event.status}
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </section>
                 <section
                     className="welcome-panel"
                     aria-labelledby="welcome-title"

@@ -16,7 +16,7 @@ flowchart TD
   PLATFORM[platforms/windows, macos, linux] --> API
 ```
 
-The shared crates do not import Tauri or operating-system APIs. Provider implementations are isolated in their own crates and expose only verified capabilities. The desktop host persists transfers, hydrates all current providers, and runs one-shot synchronization; background scheduling and native acceptance coverage remain separate concerns.
+The shared crates do not import Tauri or operating-system APIs. Provider implementations are isolated in their own crates and expose only verified capabilities. The desktop host persists transfers, hydrates all current providers, runs scheduled synchronization, and routes local CFAPI mutations; native acceptance coverage remains a separate concern.
 
 ## Database
 
@@ -24,4 +24,4 @@ SQLite stores connections, metadata, cache state, transfers, activity, history, 
 
 ## Native boundaries
 
-Windows CFAPI, Credential Manager, Explorer services, and installer integration belong under `platforms/windows/`. macOS File Provider/Keychain and Linux FUSE/Secret Service are Planned adapters. The CFAPI adapter provides registration, callback dispatch, provider hydration, placeholder transfer, and explicit completion through `CfExecute`; Windows VM acceptance remains required. The design uses placeholders and hydration, not a legacy kernel filesystem driver or periodic mirror folder.
+Windows CFAPI, Credential Manager, Explorer services, and installer integration belong under `platforms/windows/`. macOS File Provider/Keychain and Linux FUSE/Secret Service are Planned adapters. The CFAPI adapter provides registration, callback dispatch, provider hydration, placeholder transfer, explicit completion through `CfExecute`, and local mutation routing; Windows VM acceptance remains required. The design uses placeholders and hydration, not a legacy kernel filesystem driver or periodic mirror folder.

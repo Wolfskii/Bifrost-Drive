@@ -45,6 +45,23 @@ pub struct ConflictRecord {
     pub remote_fingerprint: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictSummary {
+    pub id: Uuid,
+    pub connection_id: ConnectionId,
+    pub remote_path: String,
+    pub local_fingerprint: Option<String>,
+    pub remote_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivityRecord {
+    pub id: Uuid,
+    pub kind: String,
+    pub remote_path: Option<String>,
+    pub status: String,
+}
+
 #[derive(Clone)]
 pub struct Database {
     pool: SqlitePool,
@@ -146,6 +163,30 @@ impl Database {
         Ok(())
     }
 
+    pub async fn list_sync_entries(&self) -> Result<Vec<SyncEntryRecord>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT connection_id, remote_path, state, base_fingerprint, local_fingerprint, remote_fingerprint, last_error FROM sync_entries ORDER BY updated_at",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let connection_id = Uuid::parse_str(row.get::<String, _>("connection_id").as_str())
+                    .map(ConnectionId::from_uuid)
+                    .map_err(|error| DatabaseError::InvalidValue(error.to_string()))?;
+                Ok(SyncEntryRecord {
+                    connection_id,
+                    remote_path: row.get("remote_path"),
+                    state: row.get("state"),
+                    base_fingerprint: row.get("base_fingerprint"),
+                    local_fingerprint: row.get("local_fingerprint"),
+                    remote_fingerprint: row.get("remote_fingerprint"),
+                    last_error: row.get("last_error"),
+                })
+            })
+            .collect()
+    }
+
     pub async fn insert_conflict(&self, conflict: &ConflictRecord) -> Result<(), DatabaseError> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
@@ -162,6 +203,54 @@ impl Database {
         Ok(())
     }
 
+    pub async fn list_unresolved_conflicts(&self) -> Result<Vec<ConflictSummary>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT id, connection_id, remote_path, local_fingerprint, remote_fingerprint FROM conflicts WHERE resolution IS NULL ORDER BY detected_at",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let id = Uuid::parse_str(row.get::<String, _>("id").as_str())
+                    .map_err(|error| DatabaseError::InvalidValue(error.to_string()))?;
+                let connection_id = Uuid::parse_str(row.get::<String, _>("connection_id").as_str())
+                    .map(ConnectionId::from_uuid)
+                    .map_err(|error| DatabaseError::InvalidValue(error.to_string()))?;
+                Ok(ConflictSummary {
+                    id,
+                    connection_id,
+                    remote_path: row.get("remote_path"),
+                    local_fingerprint: row.get("local_fingerprint"),
+                    remote_fingerprint: row.get("remote_fingerprint"),
+                })
+            })
+            .collect()
+    }
+
+    pub async fn find_conflict(&self, id: Uuid) -> Result<Option<ConflictSummary>, DatabaseError> {
+        let row = sqlx::query(
+            "SELECT id, connection_id, remote_path, local_fingerprint, remote_fingerprint FROM conflicts WHERE id = ? AND resolution IS NULL",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            let id = Uuid::parse_str(row.get::<String, _>("id").as_str())
+                .map_err(|error| DatabaseError::InvalidValue(error.to_string()))?;
+            let connection_id = Uuid::parse_str(row.get::<String, _>("connection_id").as_str())
+                .map(ConnectionId::from_uuid)
+                .map_err(|error| DatabaseError::InvalidValue(error.to_string()))?;
+            Ok(ConflictSummary {
+                id,
+                connection_id,
+                remote_path: row.get("remote_path"),
+                local_fingerprint: row.get("local_fingerprint"),
+                remote_fingerprint: row.get("remote_fingerprint"),
+            })
+        })
+        .transpose()
+    }
+
     pub async fn resolve_conflict(&self, id: Uuid, resolution: &str) -> Result<(), DatabaseError> {
         let now = Utc::now().to_rfc3339();
         sqlx::query("UPDATE conflicts SET resolution = ?, resolved_at = ? WHERE id = ?")
@@ -171,6 +260,44 @@ impl Database {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    pub async fn insert_activity(
+        &self,
+        kind: &str,
+        remote_path: Option<&str>,
+        status: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "INSERT INTO activity_events (id, kind, remote_path, status, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(kind)
+        .bind(remote_path)
+        .bind(status)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_activity(&self) -> Result<Vec<ActivityRecord>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT id, kind, remote_path, status FROM activity_events ORDER BY created_at DESC LIMIT 100",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ActivityRecord {
+                    id: Uuid::parse_str(row.get::<String, _>("id").as_str())
+                        .map_err(|error| DatabaseError::InvalidValue(error.to_string()))?,
+                    kind: row.get("kind"),
+                    remote_path: row.get("remote_path"),
+                    status: row.get("status"),
+                })
+            })
+            .collect()
     }
 
     fn connection_from_row(

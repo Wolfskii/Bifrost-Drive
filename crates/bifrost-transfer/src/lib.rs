@@ -1,4 +1,4 @@
-use bifrost_cache::{CacheError, CacheManager};
+use bifrost_cache::{CacheError, CacheManager, CacheRecord};
 use bifrost_common::{ConnectionId, RemotePath, TransferId};
 use bifrost_storage::{StorageError, StorageProvider};
 use futures_util::StreamExt;
@@ -57,6 +57,14 @@ pub struct TransferSnapshot {
 pub trait TransferStore: Send + Sync {
     async fn save(&self, transfer: TransferSnapshot) -> Result<(), String>;
     async fn load_recoverable(&self) -> Result<Vec<TransferSnapshot>, String>;
+
+    async fn save_cache(&self, _record: CacheRecord) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn load_cache(&self) -> Result<Vec<CacheRecord>, String> {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -344,6 +352,16 @@ impl TransferService {
         let Some(store) = &self.store else {
             return Ok(0);
         };
+        let cache_records = store
+            .load_cache()
+            .await
+            .map_err(TransferServiceError::Persistence)?;
+        {
+            let mut cache = self.cache.lock().expect("cache manager poisoned");
+            for record in cache_records {
+                cache.restore(record)?;
+            }
+        }
         let snapshots = store
             .load_recoverable()
             .await
@@ -424,6 +442,12 @@ impl TransferService {
         })
         .await
         .map_err(|error| TransferServiceError::CommitTask(error.to_string()))??;
+        if let Some(store) = &self.store {
+            store
+                .save_cache(record.clone())
+                .await
+                .map_err(TransferServiceError::Persistence)?;
+        }
         self.queue
             .lock()
             .expect("transfer queue poisoned")

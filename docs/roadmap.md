@@ -14,9 +14,12 @@
 - [x] Metadata/file cache and offline pinning primitives
 - [x] Durable bounded transfers and conflict-safe one-shot synchronization
 - [x] Windows CFAPI registration, placeholders, and callback completion
-- [ ] Background synchronization scheduler and Windows Explorer VM acceptance
-- Tray, activity, history, and notifications
-- Windows x64 installer and automated stable releases
+- [x] Background synchronization scheduler and conflict resolution UI
+- [x] CFAPI local close, delete, and rename mutation routing
+- [x] Tray entry point and durable activity history
+- [ ] Windows Explorer VM acceptance and crash/reconnect validation
+- [ ] Native notifications and richer transfer history
+- [ ] Windows x64 signing, updater, and automated stable releases
 
 ## Phase 3: Expansion
 

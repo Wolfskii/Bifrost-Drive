@@ -57,6 +57,21 @@ export interface SyncRunResponse {
     conflict_id: string | null;
 }
 
+export interface ConflictSummary {
+    id: string;
+    connection_id: string;
+    remote_path: string;
+    local_fingerprint: string | null;
+    remote_fingerprint: string | null;
+}
+
+export interface ActivitySummary {
+    id: string;
+    kind: string;
+    remote_path: string | null;
+    status: string;
+}
+
 function tauriAvailable(): boolean {
     return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
@@ -165,5 +180,31 @@ export async function runSync(
             local,
             resolution,
         },
+    });
+}
+
+export async function listConflicts(): Promise<ConflictSummary[]> {
+    if (!tauriAvailable()) {
+        return [];
+    }
+    return invoke<ConflictSummary[]>("sync_conflicts_list");
+}
+
+export async function listActivity(): Promise<ActivitySummary[]> {
+    if (!tauriAvailable()) {
+        return [];
+    }
+    return invoke<ActivitySummary[]>("activity_list");
+}
+
+export async function resolveConflict(
+    id: string,
+    resolution: "keep_local" | "keep_remote",
+): Promise<void> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    await invoke("sync_conflict_resolve", {
+        request: { id, resolution },
     });
 }

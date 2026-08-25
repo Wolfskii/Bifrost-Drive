@@ -135,6 +135,23 @@ pub struct ResolveConflictRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivitySummary {
+    pub id: Uuid,
+    pub kind: String,
+    pub remote_path: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConflictSummary {
+    pub id: Uuid,
+    pub connection_id: ConnectionId,
+    pub remote_path: String,
+    pub local_fingerprint: Option<String>,
+    pub remote_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSummary {
     pub path: RemotePath,
     pub is_directory: bool,
