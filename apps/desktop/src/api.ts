@@ -18,6 +18,12 @@ export interface ConnectionSummary {
     endpoint: string;
 }
 
+export interface ConnectionDetails {
+    summary: ConnectionSummary;
+    configuration: Record<string, unknown>;
+    username: string | null;
+}
+
 export interface FileSummary {
     path: string;
     is_directory: boolean;
@@ -33,6 +39,7 @@ export interface S3ConnectionForm {
     pathStyle: boolean;
     accessKeyId: string;
     secretAccessKey: string;
+    driveLetter: string;
 }
 
 export interface WebDavConnectionForm {
@@ -40,6 +47,7 @@ export interface WebDavConnectionForm {
     endpoint: string;
     username: string;
     password: string;
+    driveLetter: string;
 }
 
 export interface FtpConnectionForm {
@@ -47,6 +55,7 @@ export interface FtpConnectionForm {
     endpoint: string;
     username: string;
     password: string;
+    driveLetter: string;
 }
 
 export interface SmbConnectionForm {
@@ -55,6 +64,7 @@ export interface SmbConnectionForm {
     username: string;
     password: string;
     domain: string;
+    driveLetter: string;
 }
 
 export interface SftpConnectionForm {
@@ -68,6 +78,7 @@ export interface SftpConnectionForm {
     trustOnFirstUse: boolean;
     privateKeyPath: string;
     passphrase: string;
+    driveLetter: string;
 }
 
 export interface HydrateFileResponse {
@@ -96,6 +107,11 @@ export interface ActivitySummary {
     status: string;
 }
 
+export interface SyncRootRegisterResponse {
+    path: string;
+    drive_letter: string | null;
+}
+
 function tauriAvailable(): boolean {
     return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
@@ -105,6 +121,39 @@ export async function listConnections(): Promise<ConnectionSummary[]> {
         return [];
     }
     return invoke<ConnectionSummary[]>("connections_list");
+}
+
+export async function getConnectionDetails(
+    connectionId: string,
+): Promise<ConnectionDetails> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<ConnectionDetails>("connections_details", {
+        request: { id: connectionId },
+    });
+}
+
+export async function removeConnection(connectionId: string): Promise<void> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    await invoke("connections_remove", {
+        request: { id: connectionId },
+    });
+}
+
+export async function updateConnection(request: {
+    id: string;
+    name: string;
+    endpoint: string;
+    configuration: Record<string, unknown>;
+    credentials: Record<string, string>;
+}): Promise<ConnectionSummary> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<ConnectionSummary>("connections_update", { request });
 }
 
 export async function getAutostartEnabled(): Promise<boolean> {
@@ -159,6 +208,7 @@ export async function createS3Connection(
             path_style: form.pathStyle,
             access_key_id: form.accessKeyId,
             secret_access_key: form.secretAccessKey,
+            drive_letter: form.driveLetter || null,
         },
     });
 }
@@ -170,7 +220,7 @@ export async function createWebDavConnection(
         throw new Error("The desktop service is not available in this window");
     }
     return invoke<ConnectionSummary>("connections_create_webdav", {
-        request: form,
+        request: { ...form, drive_letter: form.driveLetter || null },
     });
 }
 
@@ -181,7 +231,7 @@ export async function createFtpConnection(
         throw new Error("The desktop service is not available in this window");
     }
     return invoke<ConnectionSummary>("connections_create_ftp", {
-        request: form,
+        request: { ...form, drive_letter: form.driveLetter || null },
     });
 }
 
@@ -192,7 +242,7 @@ export async function createSmbConnection(
         throw new Error("The desktop service is not available in this window");
     }
     return invoke<ConnectionSummary>("connections_create_smb", {
-        request: form,
+        request: { ...form, drive_letter: form.driveLetter || null },
     });
 }
 
@@ -207,6 +257,7 @@ export async function createSftpConnection(
             ...form,
             root_path: form.rootPath,
             trust_on_first_use: form.trustOnFirstUse,
+            drive_letter: form.driveLetter || null,
         },
     });
 }
@@ -290,4 +341,26 @@ export async function resolveConflict(
     await invoke("sync_conflict_resolve", {
         request: { id, resolution },
     });
+}
+
+export async function registerSyncRoot(
+    connectionId: string,
+    driveLetter = "",
+): Promise<SyncRootRegisterResponse> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<SyncRootRegisterResponse>("sync_root_register", {
+        request: {
+            connection_id: connectionId,
+            drive_letter: driveLetter || null,
+        },
+    });
+}
+
+export async function getAvailableDriveLetters(): Promise<string[]> {
+    if (!tauriAvailable()) {
+        return [];
+    }
+    return invoke<string[]>("available_drive_letters");
 }

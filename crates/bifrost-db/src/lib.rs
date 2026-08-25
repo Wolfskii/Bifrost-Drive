@@ -157,6 +157,38 @@ impl Database {
         Ok(())
     }
 
+    pub async fn update_connection_configuration(
+        &self,
+        id: ConnectionId,
+        configuration_json: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query("UPDATE connections SET configuration_json = ?, updated_at = ? WHERE id = ?")
+            .bind(configuration_json)
+            .bind(Utc::now().to_rfc3339())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_connection(
+        &self,
+        connection: &ConnectionRecord,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "UPDATE connections SET name = ?, endpoint = ?, credential_ref = ?, configuration_json = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&connection.name)
+        .bind(&connection.endpoint)
+        .bind(&connection.credential_ref)
+        .bind(&connection.configuration_json)
+        .bind(Utc::now().to_rfc3339())
+        .bind(connection.id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn upsert_sync_entry(&self, entry: &SyncEntryRecord) -> Result<(), DatabaseError> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(

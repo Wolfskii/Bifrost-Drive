@@ -4,10 +4,12 @@ import {
     Settings,
     Activity,
     Plus,
+    Pencil,
     ArrowUpRight,
     File,
     Folder,
     RefreshCw,
+    Trash2,
 } from "lucide-react";
 import {
     isPermissionGranted,
@@ -26,6 +28,8 @@ import {
     createWebDavConnection,
     checkForUpdate,
     getAutostartEnabled,
+    getAvailableDriveLetters,
+    getConnectionDetails,
     FileSummary,
     hydrateFile,
     installUpdate,
@@ -33,10 +37,14 @@ import {
     listActivity,
     listConflicts,
     listFiles,
+    registerSyncRoot,
+    removeConnection,
     resolveConflict,
     runSync,
     setAutostartEnabled,
     S3ConnectionForm,
+    SyncRootRegisterResponse,
+    updateConnection,
 } from "./api";
 
 const providerTypes = [
@@ -48,6 +56,8 @@ const providerTypes = [
 ];
 
 type ProviderChoice = "S3" | "SFTP" | "WebDAV" | "FTP" | "SMB";
+
+type FormDefaults = Record<string, boolean | number | string>;
 
 export function App() {
     const [connections, setConnections] = useState<ConnectionSummary[]>([]);
@@ -68,14 +78,83 @@ export function App() {
     const [sftpAuthentication, setSftpAuthentication] = useState<
         "password" | "private_key"
     >("password");
+    const [explorerPaths, setExplorerPaths] = useState<Record<string, string>>(
+        {},
+    );
+    const [driveAssignments, setDriveAssignments] = useState<
+        Record<string, string>
+    >({});
+    const [availableDriveLetters, setAvailableDriveLetters] = useState<
+        string[]
+    >([]);
+    const [selectedDriveLetter, setSelectedDriveLetter] = useState("");
+    const [editingConnection, setEditingConnection] =
+        useState<ConnectionSummary | null>(null);
+    const [formDefaults, setFormDefaults] = useState<FormDefaults>({});
     const [providerChoice, setProviderChoice] = useState<ProviderChoice>("S3");
 
     useEffect(() => {
         listConnections()
-            .then(setConnections)
+            .then(async (loadedConnections) => {
+                setConnections(loadedConnections);
+                const registeredRoots = await Promise.all(
+                    loadedConnections.map(async (connection) => {
+                        try {
+                            const root = await registerSyncRoot(connection.id);
+                            return [connection.id, root] as const;
+                        } catch {
+                            return null;
+                        }
+                    }),
+                );
+                setExplorerPaths(
+                    Object.fromEntries(
+                        registeredRoots
+                            .filter(
+                                (
+                                    root,
+                                ): root is readonly [
+                                    string,
+                                    SyncRootRegisterResponse,
+                                ] => root !== null,
+                            )
+                            .map(([id, root]) => [id, root.path]),
+                    ),
+                );
+                setDriveAssignments(
+                    Object.fromEntries(
+                        registeredRoots
+                            .filter(
+                                (
+                                    root,
+                                ): root is readonly [
+                                    string,
+                                    SyncRootRegisterResponse,
+                                ] =>
+                                    root !== null &&
+                                    root[1].drive_letter !== null,
+                            )
+                            .map(([id, root]) => [
+                                id,
+                                root.drive_letter as string,
+                            ]),
+                    ),
+                );
+            })
             .catch(() => {
                 setError("Unable to load saved connections.");
             });
+    }, []);
+
+    useEffect(() => {
+        getAvailableDriveLetters()
+            .then((letters) => {
+                setAvailableDriveLetters(letters);
+                setSelectedDriveLetter(
+                    (current) => current || (letters.includes("Z") ? "Z" : ""),
+                );
+            })
+            .catch(() => undefined);
     }, []);
 
     useEffect(() => {
@@ -140,6 +219,81 @@ export function App() {
         }
     }
 
+    async function handleEdit(connection: ConnectionSummary) {
+        setError(null);
+        try {
+            const details = await getConnectionDetails(connection.id);
+            const configuration = details.configuration;
+            const sftpUrl =
+                connection.kind === "Sftp"
+                    ? new URL(connection.endpoint)
+                    : null;
+            setFormDefaults({
+                name: connection.name,
+                endpoint: connection.endpoint,
+                username: details.username ?? "",
+                host: sftpUrl?.hostname ?? "",
+                port: sftpUrl?.port ? Number(sftpUrl.port) : 22,
+                rootPath: String(configuration.root_path ?? ""),
+                domain: String(configuration.domain ?? ""),
+                bucket: String(configuration.bucket ?? ""),
+                region: String(configuration.region ?? ""),
+                pathStyle: Boolean(configuration.path_style),
+                privateKeyPath: String(configuration.private_key_path ?? ""),
+                trustOnFirstUse: Boolean(configuration.trust_on_first_use),
+                knownHosts: String(configuration.known_hosts ?? ""),
+            });
+            const driveLetter = String(configuration.drive_letter ?? "");
+            setSelectedDriveLetter(driveLetter);
+            if (driveLetter) {
+                setAvailableDriveLetters((current) =>
+                    current.includes(driveLetter)
+                        ? current
+                        : [...current, driveLetter].sort(),
+                );
+            }
+            setProviderChoice(providerChoiceFor(connection.kind));
+            setSftpAuthentication(
+                configuration.authentication === "private_key"
+                    ? "private_key"
+                    : "password",
+            );
+            setEditingConnection(connection);
+            setWizardOpen(true);
+        } catch (cause) {
+            setError(errorMessage(cause, "Unable to load connection details."));
+        }
+    }
+
+    async function handleRemove(connection: ConnectionSummary) {
+        if (!window.confirm(`Remove connection "${connection.name}"?`)) {
+            return;
+        }
+        setError(null);
+        try {
+            await removeConnection(connection.id);
+            setConnections((current) =>
+                current.filter((item) => item.id !== connection.id),
+            );
+            setExplorerPaths((current) => {
+                const next = { ...current };
+                delete next[connection.id];
+                return next;
+            });
+            setDriveAssignments((current) => {
+                const next = { ...current };
+                delete next[connection.id];
+                return next;
+            });
+            if (openedConnection?.id === connection.id) {
+                setOpenedConnection(null);
+                setFiles([]);
+            }
+        } catch (cause) {
+            setError(errorMessage(cause, "Unable to remove connection."));
+        }
+    }
+
     async function handleCreate(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
         const form = event.currentTarget;
@@ -149,26 +303,103 @@ export function App() {
             name,
             username: String(values.get("username") ?? "").trim(),
             password: String(values.get("password") ?? ""),
+            driveLetter: String(values.get("driveLetter") ?? ""),
         };
-        let createConnection: Promise<ConnectionSummary>;
-        if (providerChoice === "FTP") {
-            createConnection = createFtpConnection({
+        let connectionOperation: Promise<ConnectionSummary>;
+        const endpoint = String(values.get("endpoint") ?? "").trim();
+        const driveLetter = String(values.get("driveLetter") ?? "");
+        if (editingConnection) {
+            let updateEndpoint = endpoint;
+            let configuration: Record<string, unknown>;
+            let credentials: Record<string, string>;
+            if (providerChoice === "FTP") {
+                configuration = { drive_letter: driveLetter || null };
+                credentials = {
+                    username: common.username,
+                    password: common.password,
+                };
+            } else if (providerChoice === "SMB") {
+                configuration = {
+                    domain: String(values.get("domain") ?? "").trim(),
+                    drive_letter: driveLetter || null,
+                };
+                credentials = {
+                    username: common.username,
+                    password: common.password,
+                };
+            } else if (providerChoice === "WebDAV") {
+                configuration = { drive_letter: driveLetter || null };
+                credentials = {
+                    username: common.username,
+                    password: common.password,
+                };
+            } else if (providerChoice === "SFTP") {
+                const host = String(values.get("host") ?? "").trim();
+                const port = Number(values.get("port") ?? 22);
+                updateEndpoint = `sftp://${host}:${port}`;
+                configuration = {
+                    host,
+                    port,
+                    root_path: String(values.get("rootPath") ?? "").trim(),
+                    known_hosts: formDefaults.knownHosts ?? "",
+                    authentication: String(
+                        values.get("authentication") ?? "password",
+                    ),
+                    trust_on_first_use: values.get("trustOnFirstUse") === "on",
+                    private_key_path: String(
+                        values.get("privateKeyPath") ?? "",
+                    ).trim(),
+                    drive_letter: driveLetter || null,
+                };
+                credentials = {
+                    username: common.username,
+                    password: common.password,
+                    private_key_path: String(
+                        values.get("privateKeyPath") ?? "",
+                    ).trim(),
+                    passphrase: String(values.get("passphrase") ?? ""),
+                };
+            } else {
+                configuration = {
+                    region: String(values.get("region") ?? "").trim(),
+                    bucket: String(values.get("bucket") ?? "").trim(),
+                    path_style: values.get("pathStyle") === "on",
+                    drive_letter: driveLetter || null,
+                };
+                credentials = {
+                    access_key_id: String(
+                        values.get("accessKeyId") ?? "",
+                    ).trim(),
+                    secret_access_key: String(
+                        values.get("secretAccessKey") ?? "",
+                    ),
+                };
+            }
+            connectionOperation = updateConnection({
+                id: editingConnection.id,
+                name,
+                endpoint: updateEndpoint,
+                configuration,
+                credentials,
+            });
+        } else if (providerChoice === "FTP") {
+            connectionOperation = createFtpConnection({
                 ...common,
                 endpoint: String(values.get("endpoint") ?? "").trim(),
             });
         } else if (providerChoice === "SMB") {
-            createConnection = createSmbConnection({
+            connectionOperation = createSmbConnection({
                 ...common,
                 endpoint: String(values.get("endpoint") ?? "").trim(),
                 domain: String(values.get("domain") ?? "").trim(),
             });
         } else if (providerChoice === "WebDAV") {
-            createConnection = createWebDavConnection({
+            connectionOperation = createWebDavConnection({
                 ...common,
                 endpoint: String(values.get("endpoint") ?? "").trim(),
             });
         } else if (providerChoice === "SFTP") {
-            createConnection = createSftpConnection({
+            connectionOperation = createSftpConnection({
                 ...common,
                 host: String(values.get("host") ?? "").trim(),
                 port: Number(values.get("port") ?? 22),
@@ -191,18 +422,48 @@ export function App() {
                 pathStyle: values.get("pathStyle") === "on",
                 accessKeyId: String(values.get("accessKeyId") ?? "").trim(),
                 secretAccessKey: String(values.get("secretAccessKey") ?? ""),
+                driveLetter: String(values.get("driveLetter") ?? ""),
             };
-            createConnection = createS3Connection(form);
+            connectionOperation = createS3Connection(form);
         }
         setSaving(true);
         setError(null);
         try {
-            const connection = await createConnection;
-            setConnections((current) => [...current, connection]);
+            const connection = await connectionOperation;
+            setConnections((current) => [
+                ...current.filter((item) => item.id !== editingConnection?.id),
+                connection,
+            ]);
+            try {
+                const root = await registerSyncRoot(
+                    connection.id,
+                    String(values.get("driveLetter") ?? ""),
+                );
+                setExplorerPaths((current) => ({
+                    ...current,
+                    [connection.id]: root.path,
+                }));
+                if (root.drive_letter) {
+                    setDriveAssignments((current) => ({
+                        ...current,
+                        [connection.id]: root.drive_letter as string,
+                    }));
+                }
+                const remainingLetters = await getAvailableDriveLetters();
+                setAvailableDriveLetters(remainingLetters);
+            } catch (cause) {
+                setError(
+                    `Connection saved, but it could not be registered in Explorer: ${errorMessage(cause, "unknown error")}`,
+                );
+            }
             setWizardOpen(false);
             form.reset();
+            setEditingConnection(null);
+            setFormDefaults({});
+            setSftpAuthentication("password");
+            setSelectedDriveLetter("");
         } catch (cause) {
-            setError(errorMessage(cause, "Unable to create connection."));
+            setError(errorMessage(cause, "Unable to save connection."));
         } finally {
             setSaving(false);
         }
@@ -310,6 +571,12 @@ export function App() {
                         type="button"
                         onClick={() => {
                             setError(null);
+                            setEditingConnection(null);
+                            setFormDefaults({});
+                            setSftpAuthentication("password");
+                            setSelectedDriveLetter(
+                                availableDriveLetters.includes("Z") ? "Z" : "",
+                            );
                             setWizardOpen(true);
                         }}
                     >
@@ -431,6 +698,23 @@ export function App() {
                                     <div>
                                         <h3>{connection.name}</h3>
                                         <p>{connection.endpoint}</p>
+                                        {driveAssignments[connection.id] && (
+                                            <p className="explorer-location">
+                                                Drive:{" "}
+                                                {
+                                                    driveAssignments[
+                                                        connection.id
+                                                    ]
+                                                }
+                                                :\
+                                            </p>
+                                        )}
+                                        {explorerPaths[connection.id] && (
+                                            <p className="explorer-location">
+                                                Explorer:{" "}
+                                                {explorerPaths[connection.id]}
+                                            </p>
+                                        )}
                                     </div>
                                     <span className="connection-state">
                                         <span className="status-dot" />{" "}
@@ -443,6 +727,22 @@ export function App() {
                                         disabled={loadingFiles}
                                     >
                                         {loadingFiles ? "Loading..." : "Open"}
+                                    </button>
+                                    <button
+                                        className="icon-button"
+                                        type="button"
+                                        aria-label={`Edit ${connection.name}`}
+                                        onClick={() => handleEdit(connection)}
+                                    >
+                                        <Pencil size={15} />
+                                    </button>
+                                    <button
+                                        className="icon-button"
+                                        type="button"
+                                        aria-label={`Remove ${connection.name}`}
+                                        onClick={() => handleRemove(connection)}
+                                    >
+                                        <Trash2 size={15} />
                                     </button>
                                 </article>
                             ))}
@@ -651,9 +951,14 @@ export function App() {
                     >
                         <div className="wizard-header">
                             <div>
-                                <p className="eyebrow">New connection</p>
+                                <p className="eyebrow">
+                                    {editingConnection
+                                        ? "Edit connection"
+                                        : "New connection"}
+                                </p>
                                 <h2 id="wizard-title">
-                                    Connect to {providerChoice}
+                                    {editingConnection ? "Edit" : "Connect to"}{" "}
+                                    {providerChoice}
                                 </h2>
                             </div>
                             <button
@@ -707,8 +1012,28 @@ export function App() {
                                 <input
                                     name="name"
                                     required
+                                    defaultValue={formDefaults.name as string}
                                     placeholder="Production S3"
                                 />
+                            </label>
+                            <label>
+                                Explorer drive letter
+                                <select
+                                    name="driveLetter"
+                                    value={selectedDriveLetter}
+                                    onChange={(event) =>
+                                        setSelectedDriveLetter(
+                                            event.target.value,
+                                        )
+                                    }
+                                >
+                                    <option value="">Folder only</option>
+                                    {availableDriveLetters.map((letter) => (
+                                        <option value={letter} key={letter}>
+                                            {letter}:
+                                        </option>
+                                    ))}
+                                </select>
                             </label>
                             {providerChoice !== "SFTP" && (
                                 <label>
@@ -717,7 +1042,10 @@ export function App() {
                                         name="endpoint"
                                         type="url"
                                         required
-                                        defaultValue="https://s3.amazonaws.com"
+                                        defaultValue={
+                                            (formDefaults.endpoint as string) ??
+                                            "https://s3.amazonaws.com"
+                                        }
                                     />
                                 </label>
                             )}
@@ -727,6 +1055,9 @@ export function App() {
                                     <input
                                         name="host"
                                         required
+                                        defaultValue={
+                                            formDefaults.host as string
+                                        }
                                         placeholder="files.example.com"
                                     />
                                 </label>
@@ -736,6 +1067,9 @@ export function App() {
                                     Domain
                                     <input
                                         name="domain"
+                                        defaultValue={
+                                            formDefaults.domain as string
+                                        }
                                         placeholder="WORKGROUP"
                                     />
                                 </label>
@@ -749,7 +1083,10 @@ export function App() {
                                             type="number"
                                             min="1"
                                             max="65535"
-                                            defaultValue="22"
+                                            defaultValue={
+                                                (formDefaults.port as number) ??
+                                                22
+                                            }
                                             required
                                         />
                                     </label>
@@ -757,6 +1094,9 @@ export function App() {
                                         Start path
                                         <input
                                             name="rootPath"
+                                            defaultValue={
+                                                formDefaults.rootPath as string
+                                            }
                                             placeholder="documents/projects"
                                         />
                                     </label>
@@ -792,6 +1132,9 @@ export function App() {
                                                 <input
                                                     name="privateKeyPath"
                                                     required
+                                                    defaultValue={
+                                                        formDefaults.privateKeyPath as string
+                                                    }
                                                     placeholder="C:\\Users\\you\\.ssh\\id_ed25519"
                                                 />
                                             </label>
@@ -809,6 +1152,9 @@ export function App() {
                                         <input
                                             name="trustOnFirstUse"
                                             type="checkbox"
+                                            defaultChecked={Boolean(
+                                                formDefaults.trustOnFirstUse,
+                                            )}
                                         />
                                         Trust a new server key on first use
                                     </label>
@@ -821,6 +1167,9 @@ export function App() {
                                         <input
                                             name="username"
                                             required
+                                            defaultValue={
+                                                formDefaults.username as string
+                                            }
                                             autoComplete="username"
                                         />
                                     </label>
@@ -830,8 +1179,13 @@ export function App() {
                                             Password
                                             <input
                                                 name="password"
-                                                required
+                                                required={!editingConnection}
                                                 type="password"
+                                                placeholder={
+                                                    editingConnection
+                                                        ? "Leave blank to keep current password"
+                                                        : undefined
+                                                }
                                                 autoComplete="current-password"
                                             />
                                         </label>
@@ -846,6 +1200,9 @@ export function App() {
                                             <input
                                                 name="bucket"
                                                 required
+                                                defaultValue={
+                                                    formDefaults.bucket as string
+                                                }
                                                 placeholder="company-data"
                                             />
                                         </label>
@@ -854,7 +1211,10 @@ export function App() {
                                             <input
                                                 name="region"
                                                 required
-                                                defaultValue="us-east-1"
+                                                defaultValue={
+                                                    (formDefaults.region as string) ??
+                                                    "us-east-1"
+                                                }
                                             />
                                         </label>
                                     </div>
@@ -863,7 +1223,7 @@ export function App() {
                                             Access key ID
                                             <input
                                                 name="accessKeyId"
-                                                required
+                                                required={!editingConnection}
                                                 autoComplete="off"
                                             />
                                         </label>
@@ -871,8 +1231,13 @@ export function App() {
                                             Secret access key
                                             <input
                                                 name="secretAccessKey"
-                                                required
+                                                required={!editingConnection}
                                                 type="password"
+                                                placeholder={
+                                                    editingConnection
+                                                        ? "Leave blank to keep current key"
+                                                        : undefined
+                                                }
                                                 autoComplete="new-password"
                                             />
                                         </label>
@@ -881,7 +1246,13 @@ export function App() {
                             )}
                             {providerChoice === "S3" && (
                                 <label className="checkbox-row">
-                                    <input name="pathStyle" type="checkbox" />{" "}
+                                    <input
+                                        name="pathStyle"
+                                        type="checkbox"
+                                        defaultChecked={Boolean(
+                                            formDefaults.pathStyle,
+                                        )}
+                                    />{" "}
                                     Use path-style addressing
                                 </label>
                             )}
@@ -898,7 +1269,11 @@ export function App() {
                                     disabled={saving}
                                     type="submit"
                                 >
-                                    {saving ? "Connecting..." : "Test and save"}
+                                    {saving
+                                        ? "Connecting..."
+                                        : editingConnection
+                                          ? "Test and save changes"
+                                          : "Test and save"}
                                 </button>
                             </div>
                         </form>
@@ -934,4 +1309,20 @@ function errorMessage(cause: unknown, fallback: string): string {
     if (cause instanceof Error) return cause.message;
     if (typeof cause === "string") return cause;
     return fallback;
+}
+
+function providerChoiceFor(kind: ConnectionSummary["kind"]): ProviderChoice {
+    switch (kind) {
+        case "Sftp":
+            return "SFTP";
+        case "WebDav":
+        case "Nextcloud":
+            return "WebDAV";
+        case "Ftp":
+            return "FTP";
+        case "Smb":
+            return "SMB";
+        case "S3":
+            return "S3";
+    }
 }

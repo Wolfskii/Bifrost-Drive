@@ -51,6 +51,7 @@ pub enum CfapiEvent {
 #[derive(Debug, Clone)]
 pub struct SyncRootConfig {
     pub path: PathBuf,
+    pub drive_letter: Option<String>,
     pub provider_name: String,
     pub provider_version: String,
     pub provider_id: [u8; 16],
@@ -488,7 +489,7 @@ mod windows_impl {
                 Length: data.len() as i64,
             };
             let mut parameters = CF_OPERATION_PARAMETERS {
-                ParamSize: size_of::<CF_OPERATION_PARAMETERS>() as u32,
+                ParamSize: size_of::<CF_OPERATION_PARAMETERS_0_0>() as u32,
                 Anonymous: CF_OPERATION_PARAMETERS_0 {
                     TransferData: transfer_data,
                 },
@@ -549,7 +550,7 @@ mod windows_impl {
                 EntriesProcessed: 0,
             };
             let mut parameters = CF_OPERATION_PARAMETERS {
-                ParamSize: size_of::<CF_OPERATION_PARAMETERS>() as u32,
+                ParamSize: size_of::<CF_OPERATION_PARAMETERS_0_4>() as u32,
                 Anonymous: CF_OPERATION_PARAMETERS_0 {
                     TransferPlaceholders: transfer_placeholders,
                 },
@@ -567,6 +568,12 @@ mod windows_impl {
             }
             let path = wide_path(&self.config.path);
             let _ = unsafe { CfUnregisterSyncRoot(PCWSTR(path.as_ptr())) };
+            if let Some(letter) = &self.config.drive_letter {
+                let _ = std::process::Command::new("subst")
+                    .arg(format!("{letter}:"))
+                    .arg("/D")
+                    .status();
+            }
         }
     }
 
