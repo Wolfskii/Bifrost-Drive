@@ -37,6 +37,7 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
+    "icon": ["icons/icon.png", "icons/128x128.png", "icons/128x128@2x.png"],
     "targets": ["nsis"],
     "category": "Utility",
     "shortDescription": "One gateway. Every storage.",
