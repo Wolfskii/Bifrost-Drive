@@ -13,13 +13,109 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  linux:
+    name: Build Linux release assets
+    needs: version
+    if: always() && (needs.version.result == 'skipped' || needs.version.outputs.bumped != 'true')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Tauri dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf libgtk-3-dev libglib2.0-dev libayatana-appindicator3-dev libfuse3-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      - run: npm ci
+      - name: Build Linux updater assets
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm --prefix apps/desktop run tauri -- build --bundles appimage --config src-tauri/tauri.release.conf.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: bifrost-drive-linux-assets
+          path: target/release/bundle/appimage/*
+          if-no-files-found: error
+
+  macos:
+    name: Build macOS release assets
+    needs: version
+    if: always() && (needs.version.result == 'skipped' || needs.version.outputs.bumped != 'true')
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      - run: npm ci
+      - name: Build macOS updater assets
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm --prefix apps/desktop run tauri -- build --bundles dmg --config src-tauri/tauri.release.conf.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: bifrost-drive-macos-assets
+          path: |
+            target/release/bundle/dmg/*
+            target/release/bundle/macos/*
+          if-no-files-found: error
+
+  version:
+    name: Synchronize development version
+    if: github.event_name == 'push' && !contains(github.event.head_commit.message, '[auto-version]')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      bumped: ${{ steps.bump.outputs.bumped }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install workspace check dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev
+      - id: bump
+        shell: bash
+        run: |
+          echo "bumped=false" >> "$GITHUB_OUTPUT"
+          cargo run -p xtask -- version-bump
+          if git diff --quiet; then
+            exit 0
+          fi
+          npm install --package-lock-only
+          cargo check --workspace --all-targets
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock package.json package-lock.json apps/desktop/package.json
+          git commit -m "[auto-version] bump patch version"
+          git push origin HEAD:develop
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+
   release:
+    needs: [version, linux, macos]
+    if: always() && needs.linux.result == 'success' && needs.macos.result == 'success' && (needs.version.result == 'skipped' || needs.version.outputs.bumped != 'true')
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -114,6 +210,16 @@ jobs:
           $env:TAURI_SIGNING_PRIVATE_KEY = $null
           npm --prefix apps/desktop run tauri -- signer sign --private-key-path $keyPath --password "" $installer.FullName
           if ($LASTEXITCODE -ne 0) { throw "Tauri updater signing failed" }
+      - uses: actions/download-artifact@v5
+        if: steps.existing.outputs.exists != 'true'
+        with:
+          name: bifrost-drive-linux-assets
+          path: release-assets/linux
+      - uses: actions/download-artifact@v5
+        if: steps.existing.outputs.exists != 'true'
+        with:
+          name: bifrost-drive-macos-assets
+          path: release-assets/macos
       - name: Generate updater manifest
         if: steps.existing.outputs.exists != 'true'
         shell: pwsh
@@ -122,6 +228,10 @@ jobs:
           $artifact = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           if ($null -eq $artifact) { throw "Signed updater artifact was not produced" }
           $signature = Get-Content "$($artifact.FullName).sig" -Raw
+          $linuxArtifact = Get-ChildItem release-assets/linux -Recurse -Filter *.AppImage | Select-Object -First 1
+          $linuxSignature = Get-Content "$($linuxArtifact.FullName).sig" -Raw
+          $macArtifact = Get-ChildItem release-assets/macos -Recurse -Filter *.app.tar.gz | Select-Object -First 1
+          $macSignature = Get-Content "$($macArtifact.FullName).sig" -Raw
           $manifest = @{
             version = $version
             notes = "Bifrost Drive development build $version. The Authenticode certificate is self-signed and intended for testing only."
@@ -129,7 +239,15 @@ jobs:
             platforms = @{
               "windows-x86_64" = @{
                 signature = $signature.Trim()
-                url = "https://github.com/Wolfskii/Bifrost-Drive/releases/download/v$version/$($artifact.Name)"
+                url = "https://github.com/Wolfskii/Bifrost-Drive/releases/download/v$version/Bifrost-Drive-Setup-x64.exe"
+              }
+              "linux-x86_64" = @{
+                signature = $linuxSignature.Trim()
+                url = "https://github.com/Wolfskii/Bifrost-Drive/releases/download/v$version/$($linuxArtifact.Name)"
+              }
+              "darwin-x86_64" = @{
+                signature = $macSignature.Trim()
+                url = "https://github.com/Wolfskii/Bifrost-Drive/releases/download/v$version/$($macArtifact.Name)"
               }
             }
           }
@@ -150,9 +268,16 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ steps.version.outputs.version }}"
-          gh release create "v$version" `
-            target/x86_64-pc-windows-msvc/release/bundle/nsis/Bifrost-Drive-Setup-x64.exe `
-            target/x86_64-pc-windows-msvc/release/bundle/nsis/SHA256SUMS.txt `
-            target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe.sig `
-            target/x86_64-pc-windows-msvc/release/bundle/nsis/latest.json `
-            --title "Bifrost Drive development $version" --prerelease --generate-notes
+          $releaseArgs = @(
+            "release", "create", "v$version",
+            "target/x86_64-pc-windows-msvc/release/bundle/nsis/Bifrost-Drive-Setup-x64.exe",
+            "target/x86_64-pc-windows-msvc/release/bundle/nsis/SHA256SUMS.txt",
+            "target/x86_64-pc-windows-msvc/release/bundle/nsis/latest.json",
+            "--title", "Bifrost Drive development $version",
+            "--generate-notes"
+          )
+          $releaseArgs += (Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe.sig | Select-Object -First 1).FullName
+          $releaseArgs += @(Get-ChildItem release-assets/linux -Recurse -File | ForEach-Object { $_.FullName })
+          $releaseArgs += @(Get-ChildItem release-assets/macos -Recurse -File | ForEach-Object { $_.FullName })
+          & gh @releaseArgs
+          if ($LASTEXITCODE -ne 0) { throw "GitHub release creation failed" }

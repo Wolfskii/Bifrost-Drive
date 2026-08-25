@@ -8882,6 +8882,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "semver",
  "serde_json",
  "toml 0.8.2",
 ]

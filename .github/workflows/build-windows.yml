@@ -12,8 +12,8 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -48,7 +48,7 @@ jobs:
           if ($null -eq $signTool) { throw "Windows SDK signtool.exe was not found under $sdkRoot" }
           & $signTool.FullName sign /sha1 $certificate.Thumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $installer.FullName
           if ($LASTEXITCODE -ne 0) { throw "signtool failed: $($signTool.FullName)" }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: bifrost-drive-windows-x64
           path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe

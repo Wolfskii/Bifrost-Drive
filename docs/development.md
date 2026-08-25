@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Install Rust stable with Cargo, Node.js LTS with npm, Task, and the Tauri 2 prerequisites for your host. Windows development additionally needs Visual Studio Build Tools with the Desktop C++ workload, Windows SDK, and WebView2. Docker Desktop is needed for integration services. Do not install these globally through the repository.
+Install Rust stable with Cargo, Node.js LTS with npm, Task, and the Tauri 2 prerequisites for your host. Windows development additionally needs Visual Studio Build Tools with the Desktop C++ workload, Windows SDK, and WebView2. Docker Desktop is needed for integration services. Do not install these globally through the repository. Release Windows installers use per-machine installation under `Program Files` and require administrator approval.
 
 ## Commands
 

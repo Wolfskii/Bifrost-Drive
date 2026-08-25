@@ -16,7 +16,7 @@ jobs:
     name: Provider integration services
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Tauri Linux dependencies
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf libgtk-3-dev libglib2.0-dev libayatana-appindicator3-dev openssh-client
       - uses: dtolnay/rust-toolchain@stable

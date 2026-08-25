@@ -1,6 +1,6 @@
 # Release
 
-Development releases run from `develop` in GitHub Actions after Rust, frontend, and integration checks pass.
+Development releases run from `develop` in GitHub Actions after Rust, frontend, and integration checks pass. Every push that does not manually change the synchronized version creates one `[auto-version]` patch bump commit before building; manually specified versions are retained. Windows, Linux, and macOS release artifacts are published together.
 
 ## Required repository secrets
 
@@ -14,7 +14,7 @@ Provision the updater key without printing it to logs:
 gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.bifrost-drive/tauri-updater.key
 ```
 
-The development workflow builds without automatic updater signing, creates a temporary self-signed code-signing certificate, signs the installer with SHA-256, then signs the updater artifact with the Tauri updater key and publishes a GitHub prerelease, manifest, and checksum. The updater key never belongs in the repository.
+The development workflow builds without automatic updater signing, creates a temporary self-signed Windows code-signing certificate, signs the Windows installer with SHA-256, signs Windows/Linux/macOS updater artifacts with the Tauri updater key, and publishes a normal GitHub Release, manifest, and checksum. A normal release is required because the configured `/releases/latest/download/latest.json` endpoint excludes prereleases. The updater key never belongs in the repository.
 
 ## Local verification
 

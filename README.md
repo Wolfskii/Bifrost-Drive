@@ -11,8 +11,8 @@ Early foundation. The repository currently contains shared Rust contracts, SQLit
 ## Supported Targets
 
 - Windows 11 22H2+ is the first-release target. The CFAPI adapter registers roots, creates placeholders, resolves provider data, and completes Explorer fetch callbacks; Windows VM acceptance coverage is still required.
-- macOS File Provider integration is Planned.
-- Linux FUSE integration is Planned.
+- macOS Keychain and File Provider package support are available; signed extension transport wiring remains platform-specific.
+- Linux Secret Service and read-only FUSE integration are available; writable FUSE mutation semantics remain in progress.
 
 ## Development
 

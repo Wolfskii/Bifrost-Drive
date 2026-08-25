@@ -20,6 +20,7 @@
 - [ ] Windows Explorer VM acceptance and crash/reconnect validation
 - [x] Native notifications and durable transfer history
 - [x] Windows x64 signing and updater workflow configuration
+- [x] Linux AppImage and macOS update artifacts in development releases
 - [ ] Provision protected release secrets and execute a signed stable release
 
 ## Phase 3: Expansion
