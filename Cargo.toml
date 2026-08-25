@@ -37,7 +37,7 @@ anyhow = "1.0"
 async-trait = "0.1"
 aws-config = { version = "=1.8.8", default-features = false, features = ["rt-tokio", "rustls"] }
 aws-credential-types = "=1.2.14"
-aws-sdk-s3 = { version = "=1.130.0", default-features = false, features = ["behavior-version-latest", "http-1x", "rt-tokio", "rustls"] }
+aws-sdk-s3 = { version = "=1.132.0", default-features = false, features = ["behavior-version-latest", "http-1x", "rt-tokio", "rustls"] }
 aws-smithy-async = "=1.2.14"
 aws-smithy-runtime-api-macros = "=1.0.0"
 aws-smithy-types = "=1.4.7"
