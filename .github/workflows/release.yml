@@ -111,6 +111,7 @@ jobs:
           $installer = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           if ($null -eq $installer) { throw "Windows installer was not produced" }
           $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $keyPath
+          $env:TAURI_SIGNING_PRIVATE_KEY = $null
           npm --prefix apps/desktop run tauri -- signer sign --private-key-path $keyPath --password "" $installer.FullName
           if ($LASTEXITCODE -ne 0) { throw "Tauri updater signing failed" }
       - name: Generate updater manifest
