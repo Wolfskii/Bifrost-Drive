@@ -1,0 +1,19 @@
+[package]
+name = "bifrost-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bifrost-db-migrate"
+path = "src/bin/migrate.rs"
+
+[dependencies]
+anyhow.workspace = true
+bifrost-common = { path = "../bifrost-common" }
+chrono.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["chrono", "macros", "migrate", "runtime-tokio-rustls", "sqlite", "uuid"] }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true

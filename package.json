@@ -1,0 +1,21 @@
+{
+  "name": "bifrost-drive",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "npm@11.6.0",
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "scripts": {
+    "build": "npm --prefix apps/desktop run build",
+    "dev": "npm --prefix apps/desktop run tauri -- dev",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "npm --prefix apps/desktop run lint",
+    "test": "npm --prefix apps/desktop run test"
+  },
+  "devDependencies": {
+    "prettier": "^3.5.3",
+    "rimraf": "^6.0.1"
+  }
+}

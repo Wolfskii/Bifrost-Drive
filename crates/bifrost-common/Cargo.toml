@@ -1,0 +1,12 @@
+[package]
+name = "bifrost-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+url.workspace = true
+uuid.workspace = true

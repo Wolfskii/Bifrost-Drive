@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Bifrost Drive",
+  "identifier": "com.bifrost.drive",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Bifrost Drive",
+        "width": 1180,
+        "height": 780,
+        "minWidth": 720,
+        "minHeight": 560,
+        "center": true,
+        "visible": true,
+        "theme": "Light"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "category": "Utility",
+    "shortDescription": "One gateway. Every storage.",
+    "longDescription": "A modern desktop client for remote storage.",
+    "copyright": "Bifrost Drive contributors",
+    "license": "Apache-2.0",
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper" },
+      "nsis": { "installMode": "currentUser" }
+    }
+  }
+}

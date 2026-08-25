@@ -1,0 +1,30 @@
+[package]
+name = "bifrost-drive"
+version.workspace = true
+description = "One gateway. Every storage."
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "bifrost_drive_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+bifrost-api = { path = "../../../crates/bifrost-api" }
+bifrost-common = { path = "../../../crates/bifrost-common" }
+bifrost-core = { path = "../../../crates/bifrost-core" }
+bifrost-db = { path = "../../../crates/bifrost-db" }
+bifrost-crypto = { path = "../../../crates/bifrost-crypto" }
+bifrost-windows-credentials = { path = "../../../platforms/windows/credentials" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.0", features = ["tray-icon"] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url.workspace = true

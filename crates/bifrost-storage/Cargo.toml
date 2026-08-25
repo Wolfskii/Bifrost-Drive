@@ -1,0 +1,15 @@
+[package]
+name = "bifrost-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bifrost-common = { path = "../bifrost-common" }
+bytes.workspace = true
+chrono.workspace = true
+futures-core = "0.3"
+serde.workspace = true
+thiserror.workspace = true
+url.workspace = true

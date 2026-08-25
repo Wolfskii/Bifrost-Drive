@@ -1,0 +1,176 @@
+version: "3"
+
+vars:
+  DESKTOP_DIR: apps/desktop
+  RUST_TARGET: x86_64-pc-windows-msvc
+
+silent: true
+
+tasks:
+  setup:
+    desc: Check prerequisites and install workspace dependencies
+    cmds:
+      - task: check:tools
+      - npm install
+      - cargo fetch
+
+  install:
+    desc: Install JavaScript dependencies
+    cmds:
+      - npm install
+
+  check:tools:
+    desc: Verify required developer tools are available
+    cmds:
+      - cargo --version
+      - rustc --version
+      - node --version
+      - npm --version
+      - task --version
+
+  dev:
+    desc: Start the Tauri desktop application
+    deps: [install]
+    cmds:
+      - task: dev:desktop
+
+  dev:desktop:
+    desc: Start the Tauri desktop application with frontend hot reload
+    dir: "{{.DESKTOP_DIR}}"
+    cmds:
+      - npm run tauri -- dev
+
+  dev:rust:
+    desc: Run the Rust workspace checks in watch mode when cargo-watch is installed
+    cmds:
+      - cargo watch -x check
+
+  dev:windows:
+    desc: Start the Windows development build
+    cmds:
+      - task: dev:desktop
+
+  build:
+    desc: Build Rust workspace and frontend
+    cmds:
+      - cargo build --workspace
+      - npm --prefix '{{.DESKTOP_DIR}}' run build
+
+  build:windows:
+    desc: Build the Windows x64 Tauri bundle
+    dir: "{{.DESKTOP_DIR}}"
+    cmds:
+      - npm run tauri -- build --target '{{.RUST_TARGET}}'
+
+  build:macos:
+    desc: Build the macOS Tauri bundle on macOS
+    dir: "{{.DESKTOP_DIR}}"
+    cmds:
+      - npm run tauri -- build
+
+  build:linux:
+    desc: Build the Linux Tauri bundle on Linux
+    dir: "{{.DESKTOP_DIR}}"
+    cmds:
+      - npm run tauri -- build
+
+  test:
+    desc: Run Rust and frontend tests
+    cmds:
+      - task: test:unit
+      - task: test:integration
+
+  test:unit:
+    desc: Run all unit tests
+    cmds:
+      - cargo test --workspace
+      - npm --prefix '{{.DESKTOP_DIR}}' run test
+
+  test:integration:
+    desc: Start local provider services and run real integration tests
+    deps: [docker:up]
+    env:
+      BIFROST_S3_INTEGRATION: "1"
+    cmds:
+      - cargo test -p bifrost-s3 --test minio -- --ignored --nocapture
+
+  lint:
+    desc: Run Rust and frontend linters
+    cmds:
+      - cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - npm --prefix '{{.DESKTOP_DIR}}' run lint
+
+  format:
+    desc: Format Rust and frontend sources
+    cmds:
+      - cargo fmt --all
+      - npm exec prettier -- --write .
+
+  format:check:
+    desc: Check formatting without modifying files
+    cmds:
+      - cargo fmt --all -- --check
+      - npm exec prettier -- --check .
+
+  check:
+    desc: Run compiler and frontend production checks
+    cmds:
+      - cargo check --workspace --all-targets
+      - npm --prefix '{{.DESKTOP_DIR}}' run build
+
+  clean:
+    desc: Remove generated build output
+    cmds:
+      - cargo clean
+      - npm exec rimraf -- -- dist
+
+  docker:up:
+    desc: Start local integration services
+    cmds:
+      - docker compose up -d --wait
+
+  docker:down:
+    desc: Stop local integration services
+    cmds:
+      - docker compose down
+
+  docker:logs:
+    desc: Follow local integration service logs
+    cmds:
+      - docker compose logs -f
+
+  db:migrate:
+    desc: Apply SQLite migrations through the application migration runner
+    cmds:
+      - cargo run -p bifrost-db --bin bifrost-db-migrate
+
+  db:reset:
+    desc: Delete the local development database and apply migrations
+    cmds:
+      - cargo run -p xtask -- db-reset
+
+  package:
+    desc: Build the native Tauri bundle for the current host
+    dir: "{{.DESKTOP_DIR}}"
+    cmds:
+      - npm run tauri -- build
+
+  package:windows:
+    desc: Produce the Windows x64 setup executable
+    cmds:
+      - task: build:windows
+
+  version:
+    desc: Check synchronized workspace versions
+    cmds:
+      - cargo run -p xtask -- version-check
+
+  release:
+    desc: Validate release metadata; publishing is performed by protected CI
+    cmds:
+      - cargo run -p xtask -- release-check
+
+  release:dry-run:
+    desc: Show the release decision without changing files or tags
+    cmds:
+      - cargo run -p xtask -- release-dry-run

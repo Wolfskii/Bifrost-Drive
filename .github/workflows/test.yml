@@ -1,0 +1,32 @@
+name: Integration Tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "docker-compose.yml"
+      - ".github/workflows/test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  provider-integration:
+    name: Provider integration services
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start MinIO
+        run: docker compose up -d --wait
+      - name: Run integration tests
+        run: cargo test -p bifrost-s3 --test minio -- --ignored --nocapture
+        env:
+          BIFROST_S3_INTEGRATION: "1"
+      - if: always()
+        name: Service logs
+        run: docker compose logs
+      - if: always()
+        run: docker compose down -v

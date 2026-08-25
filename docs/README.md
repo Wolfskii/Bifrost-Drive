@@ -1,0 +1,25 @@
+# Bifrost Drive Documentation
+
+Start with [architecture.md](architecture.md), then [development.md](development.md) and [getting-started.md](getting-started.md). Feature documents describe current behavior and mark future work as **Planned**.
+
+- [Architecture](architecture.md)
+- [Development](development.md)
+- [Getting started](getting-started.md)
+- [Windows](windows.md)
+- [macOS](macos.md)
+- [Linux](linux.md)
+- [Filesystem](filesystem.md)
+- [Protocols](protocols.md)
+- [S3](s3.md)
+- [SFTP](sftp.md)
+- [WebDAV](webdav.md)
+- [Nextcloud](nextcloud.md)
+- [Synchronization](synchronization.md)
+- [Caching](caching.md)
+- [Transfers](transfers.md)
+- [Credentials](credentials.md)
+- [Security](security.md)
+- [Testing](testing.md)
+- [Troubleshooting](troubleshooting.md)
+- [Releases](releases.md)
+- [Roadmap](roadmap.md)

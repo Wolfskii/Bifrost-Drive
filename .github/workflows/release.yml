@@ -1,0 +1,67 @@
+name: Stable Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - name: Validate release metadata
+        run: cargo run -p xtask -- release-check
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Skip existing release
+        id: existing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v${{ steps.version.outputs.version }}"
+          gh release view $tag *> $null
+          "exists=$($LASTEXITCODE -eq 0)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Build Windows installer
+        if: steps.existing.outputs.exists != 'true'
+        run: npm --prefix apps/desktop run tauri -- build --target x86_64-pc-windows-msvc
+      - name: Generate checksum
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+          "$hash  Bifrost-Drive-Setup-x64.exe" | Out-File "$($installer.DirectoryName)/SHA256SUMS.txt"
+          Copy-Item $installer "$($installer.DirectoryName)/Bifrost-Drive-Setup-x64.exe"
+      - name: Publish GitHub release
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          gh release create "v$version" `
+            apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/Bifrost-Drive-Setup-x64.exe `
+            apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SHA256SUMS.txt `
+            --title "Bifrost Drive $version" --generate-notes

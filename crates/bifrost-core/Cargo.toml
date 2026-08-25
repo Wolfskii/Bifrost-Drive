@@ -1,0 +1,10 @@
+[package]
+name = "bifrost-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bifrost-api = { path = "../bifrost-api" }
+bifrost-common = { path = "../bifrost-common" }
+tracing.workspace = true

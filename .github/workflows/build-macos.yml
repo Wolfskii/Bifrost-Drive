@@ -1,0 +1,27 @@
+name: macOS Build Check
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/desktop/**"
+      - "crates/**"
+      - ".github/workflows/build-macos.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npm --prefix apps/desktop run build
+      - run: cargo check --workspace
