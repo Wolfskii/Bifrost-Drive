@@ -48,7 +48,7 @@ aws-credential-types = "=1.2.14"
 aws-sdk-s3 = { version = "=1.130.0", default-features = false, features = ["behavior-version-latest", "http-1x", "rt-tokio", "rustls"] }
 aws-smithy-async = "=1.2.14"
 aws-smithy-runtime-api-macros = "=1.0.0"
-aws-smithy-types = "=1.4.7"
+aws-smithy-types = "=1.6.2"
 bytes = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
 quick-xml = { version = "0.38", features = ["serialize"] }
