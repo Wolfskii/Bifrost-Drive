@@ -1,0 +1,22 @@
+[package]
+name = "bifrost-sftp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bifrost-common = { path = "../bifrost-common" }
+bifrost-storage = { path = "../bifrost-storage" }
+bytes.workspace = true
+chrono.workspace = true
+futures-util = "0.3"
+russh.workspace = true
+russh-sftp.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27"

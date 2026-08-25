@@ -2,7 +2,7 @@ name: Stable Release
 
 on:
   push:
-    branches: [develop]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -25,7 +25,21 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
       - run: npm ci
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Run Rust lint
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Run Rust tests
+        run: cargo test --workspace
+      - name: Build frontend
+        run: npm --prefix apps/desktop run build
+      - name: Lint frontend
+        run: npm --prefix apps/desktop run lint
+      - name: Test frontend
+        run: npm --prefix apps/desktop run test
       - name: Validate release metadata
         run: cargo run -p xtask -- release-check
       - name: Read version
@@ -42,7 +56,9 @@ jobs:
         run: |
           $tag = "v${{ steps.version.outputs.version }}"
           gh release view $tag *> $null
-          "exists=$($LASTEXITCODE -eq 0)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $exists = $LASTEXITCODE -eq 0
+          "exists=$($exists.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          exit 0
       - name: Build Windows installer
         if: steps.existing.outputs.exists != 'true'
         run: npm --prefix apps/desktop run tauri -- build --target x86_64-pc-windows-msvc
@@ -50,7 +66,8 @@ jobs:
         if: steps.existing.outputs.exists != 'true'
         shell: pwsh
         run: |
-          $installer = Get-ChildItem apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $installer = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if ($null -eq $installer) { throw "Windows installer was not produced" }
           $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
           "$hash  Bifrost-Drive-Setup-x64.exe" | Out-File "$($installer.DirectoryName)/SHA256SUMS.txt"
           Copy-Item $installer "$($installer.DirectoryName)/Bifrost-Drive-Setup-x64.exe"
@@ -62,6 +79,6 @@ jobs:
         run: |
           $version = "${{ steps.version.outputs.version }}"
           gh release create "v$version" `
-            apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/Bifrost-Drive-Setup-x64.exe `
-            apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SHA256SUMS.txt `
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/Bifrost-Drive-Setup-x64.exe `
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/SHA256SUMS.txt `
             --title "Bifrost Drive $version" --generate-notes

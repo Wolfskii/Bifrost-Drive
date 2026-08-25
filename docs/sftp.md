@@ -1,5 +1,5 @@
 # SFTP
 
-SFTP support is **Planned**. The adapter must support password and public-key authentication, encrypted keys and passphrases, configurable ports, known_hosts verification, and safe handling of changed host keys. SSH agents, keyboard-interactive authentication, and OpenSSH configuration will be enabled only when the selected library supports them safely.
+The SFTP adapter is implemented for password authentication and verified host keys. It supports configurable ports, known_hosts verification, streaming file reads/writes, listing, metadata, rename, and deletion. The pinned atmoz integration fixture exercises this contract with a generated host-key file, and the desktop wizard can create and test SFTP connections. Public-key authentication, encrypted keys/passphrases, SSH agents, keyboard-interactive authentication, and OpenSSH configuration remain Planned.
 
 Host verification must never be disabled by default.

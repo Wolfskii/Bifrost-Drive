@@ -1,0 +1,20 @@
+[package]
+name = "bifrost-webdav"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bifrost-common = { path = "../bifrost-common" }
+bifrost-storage = { path = "../bifrost-storage" }
+chrono.workspace = true
+futures-util = "0.3"
+quick-xml.workspace = true
+reqwest.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+bytes.workspace = true
+futures-util = "0.3"
+tokio.workspace = true

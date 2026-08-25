@@ -27,6 +27,22 @@ export interface S3ConnectionForm {
     secretAccessKey: string;
 }
 
+export interface WebDavConnectionForm {
+    name: string;
+    endpoint: string;
+    username: string;
+    password: string;
+}
+
+export interface SftpConnectionForm {
+    name: string;
+    host: string;
+    port: number;
+    username: string;
+    password: string;
+    knownHosts: string;
+}
+
 function tauriAvailable(): boolean {
     return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
@@ -54,6 +70,31 @@ export async function createS3Connection(
             path_style: form.pathStyle,
             access_key_id: form.accessKeyId,
             secret_access_key: form.secretAccessKey,
+        },
+    });
+}
+
+export async function createWebDavConnection(
+    form: WebDavConnectionForm,
+): Promise<ConnectionSummary> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<ConnectionSummary>("connections_create_webdav", {
+        request: form,
+    });
+}
+
+export async function createSftpConnection(
+    form: SftpConnectionForm,
+): Promise<ConnectionSummary> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<ConnectionSummary>("connections_create_sftp", {
+        request: {
+            ...form,
+            known_hosts: form.knownHosts,
         },
     });
 }

@@ -1,14 +1,17 @@
 use bifrost_api::{
     AppStatus, ConnectionIdRequest, ConnectionSummary, CreateConnectionRequest,
-    CreateS3ConnectionRequest, CredentialSummary, FilePage, FileSummary, ListFilesRequest,
-    StoreS3CredentialRequest, TestConnectionRequest,
+    CreateS3ConnectionRequest, CreateSftpConnectionRequest, CreateWebDavConnectionRequest,
+    CredentialSummary, FilePage, FileSummary, ListFilesRequest, StoreS3CredentialRequest,
+    TestConnectionRequest,
 };
 use bifrost_common::{ConnectionState, ProviderKind};
 use bifrost_core::Application;
 use bifrost_crypto::{CredentialError, CredentialRef, CredentialStore, SecretString};
 use bifrost_db::{ConnectionRecord, Database};
 use bifrost_s3::{S3Config, S3Provider};
+use bifrost_sftp::{SftpConfig, SftpProvider};
 use bifrost_storage::StorageProvider;
+use bifrost_webdav::{WebDavConfig, WebDavProvider};
 use bifrost_windows_credentials::WindowsCredentialStore;
 use serde::Deserialize;
 use std::{fs, sync::Mutex};
@@ -232,50 +235,196 @@ struct S3ConnectionConfiguration {
     path_style: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct WebDavCredentials {
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SftpConfiguration {
+    host: String,
+    port: u16,
+    username: String,
+    known_hosts: String,
+}
+
 async fn test_connection(
     credentials: &WindowsCredentialStore,
     request: TestConnectionRequest,
 ) -> Result<(), String> {
-    if request.kind != ProviderKind::S3 {
-        return Err(format!(
-            "{} connections are not implemented yet",
-            request.kind
-        ));
-    }
-    let endpoint = url::Url::parse(&request.endpoint)
-        .map_err(|_| "Connection endpoint must be a valid URL".to_owned())?;
-    if !matches!(endpoint.scheme(), "http" | "https") {
-        return Err("Connection endpoint must use HTTP or HTTPS".to_owned());
-    }
     let credential: CredentialRef = serde_json::from_str(&request.credential_ref)
         .map_err(|_| "Connection credential reference is invalid".to_owned())?;
     let secret = credentials
         .get(&credential)
         .await
         .map_err(|error| error.to_string())?;
-    let stored: StoredS3Credentials = serde_json::from_str(secret.expose())
-        .map_err(|_| "Stored S3 credential payload is invalid".to_owned())?;
-    let configuration: S3ConnectionConfiguration = serde_json::from_value(request.configuration)
-        .map_err(|_| "S3 bucket configuration is invalid".to_owned())?;
-    if configuration.bucket.trim().is_empty() || configuration.region.trim().is_empty() {
-        return Err("S3 bucket and region are required".to_owned());
+    match request.kind {
+        ProviderKind::S3 => {
+            let endpoint = url::Url::parse(&request.endpoint)
+                .map_err(|_| "Connection endpoint must be a valid URL".to_owned())?;
+            if !matches!(endpoint.scheme(), "http" | "https") {
+                return Err("Connection endpoint must use HTTP or HTTPS".to_owned());
+            }
+            let stored: StoredS3Credentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored S3 credential payload is invalid".to_owned())?;
+            let configuration: S3ConnectionConfiguration =
+                serde_json::from_value(request.configuration)
+                    .map_err(|_| "S3 bucket configuration is invalid".to_owned())?;
+            if configuration.bucket.trim().is_empty() || configuration.region.trim().is_empty() {
+                return Err("S3 bucket and region are required".to_owned());
+            }
+            S3Provider::connect(
+                S3Config {
+                    endpoint,
+                    region: configuration.region,
+                    bucket: configuration.bucket,
+                    path_style: configuration.path_style,
+                },
+                stored.access_key_id,
+                stored.secret_access_key,
+            )
+            .await
+            .map_err(|error| error.to_string())?
+            .test_connection()
+            .await
+            .map_err(|error| error.to_string())
+        }
+        ProviderKind::WebDav | ProviderKind::Nextcloud => {
+            let endpoint = url::Url::parse(&request.endpoint)
+                .map_err(|_| "WebDAV endpoint must be a valid URL".to_owned())?;
+            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored WebDAV credential payload is invalid".to_owned())?;
+            WebDavProvider::connect(
+                WebDavConfig {
+                    endpoint,
+                    username: stored.username,
+                },
+                stored.password,
+            )
+            .map_err(|error| error.to_string())?
+            .test_connection()
+            .await
+            .map_err(|error| error.to_string())
+        }
+        ProviderKind::Sftp => {
+            let configuration: SftpConfiguration = serde_json::from_value(request.configuration)
+                .map_err(|_| "SFTP configuration is invalid".to_owned())?;
+            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored SFTP credential payload is invalid".to_owned())?;
+            SftpProvider::connect(
+                SftpConfig {
+                    host: configuration.host,
+                    port: configuration.port,
+                    username: configuration.username,
+                    known_hosts: configuration.known_hosts.into(),
+                },
+                stored.password,
+            )
+            .map_err(|error| error.to_string())?
+            .test_connection()
+            .await
+            .map_err(|error| error.to_string())
+        }
     }
-    let provider = S3Provider::connect(
-        S3Config {
-            endpoint,
-            region: configuration.region,
-            bucket: configuration.bucket,
-            path_style: configuration.path_style,
+}
+
+async fn create_tested_connection(
+    database: &Database,
+    credentials: &WindowsCredentialStore,
+    name: String,
+    kind: ProviderKind,
+    endpoint: String,
+    configuration: serde_json::Value,
+    secret_payload: serde_json::Value,
+) -> Result<ConnectionSummary, String> {
+    let credential = credentials
+        .put(
+            "connection",
+            &name,
+            SecretString::new(secret_payload.to_string()),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let credential_ref = serde_json::to_string(&credential)
+        .map_err(|_| "Connection credential reference is invalid".to_owned())?;
+    if let Err(error) = test_connection(
+        credentials,
+        TestConnectionRequest {
+            kind,
+            endpoint: endpoint.clone(),
+            credential_ref: credential_ref.clone(),
+            configuration: configuration.clone(),
         },
-        stored.access_key_id,
-        stored.secret_access_key,
     )
     .await
-    .map_err(|error| error.to_string())?;
-    provider
-        .test_connection()
-        .await
-        .map_err(|error| error.to_string())
+    {
+        let _ = credentials.delete(&credential).await;
+        return Err(error);
+    }
+    let record = ConnectionRecord {
+        id: bifrost_common::ConnectionId::new(),
+        name,
+        kind,
+        endpoint,
+        credential_ref,
+        configuration_json: configuration.to_string(),
+    };
+    if let Err(error) = database.insert_connection(&record).await {
+        let _ = credentials.delete(&credential).await;
+        return Err(error.to_string());
+    }
+    Ok(ConnectionSummary {
+        id: record.id,
+        name: record.name,
+        kind: record.kind,
+        state: ConnectionState::Connected,
+        endpoint: record.endpoint,
+    })
+}
+
+#[tauri::command]
+async fn connections_create_webdav(
+    database: State<'_, Database>,
+    credentials: State<'_, WindowsCredentialStore>,
+    request: CreateWebDavConnectionRequest,
+) -> Result<ConnectionSummary, String> {
+    let endpoint = url::Url::parse(&request.endpoint)
+        .map_err(|_| "WebDAV endpoint must be a valid URL".to_owned())?;
+    create_tested_connection(
+        &database,
+        &credentials,
+        request.name,
+        ProviderKind::WebDav,
+        endpoint.to_string(),
+        serde_json::json!({}),
+        serde_json::json!({ "username": request.username, "password": request.password }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn connections_create_sftp(
+    database: State<'_, Database>,
+    credentials: State<'_, WindowsCredentialStore>,
+    request: CreateSftpConnectionRequest,
+) -> Result<ConnectionSummary, String> {
+    if request.host.trim().is_empty()
+        || request.username.trim().is_empty()
+        || request.known_hosts.trim().is_empty()
+    {
+        return Err("SFTP host, username, and known_hosts path are required".to_owned());
+    }
+    create_tested_connection(
+        &database,
+        &credentials,
+        request.name,
+        ProviderKind::Sftp,
+        format!("sftp://{}:{}", request.host, request.port),
+        serde_json::json!({ "host": request.host, "port": request.port, "username": request.username, "known_hosts": request.known_hosts }),
+        serde_json::json!({ "username": request.username, "password": request.password }),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -297,37 +446,72 @@ async fn files_list(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Connection was not found".to_owned())?;
-    if connection.kind != ProviderKind::S3 {
-        return Err(format!(
-            "{} file listing is not implemented yet",
-            connection.kind
-        ));
-    }
     let credential: CredentialRef = serde_json::from_str(&connection.credential_ref)
         .map_err(|_| "Connection credential reference is invalid".to_owned())?;
     let secret = credentials
         .get(&credential)
         .await
         .map_err(|error| error.to_string())?;
-    let stored: StoredS3Credentials = serde_json::from_str(secret.expose())
-        .map_err(|_| "Stored S3 credential payload is invalid".to_owned())?;
-    let configuration: S3ConnectionConfiguration =
-        serde_json::from_str(&connection.configuration_json)
-            .map_err(|_| "S3 bucket configuration is invalid".to_owned())?;
-    let endpoint = url::Url::parse(&connection.endpoint)
-        .map_err(|_| "Connection endpoint must be a valid URL".to_owned())?;
-    let provider = S3Provider::connect(
-        S3Config {
-            endpoint,
-            region: configuration.region,
-            bucket: configuration.bucket,
-            path_style: configuration.path_style,
-        },
-        stored.access_key_id,
-        stored.secret_access_key,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    let provider: Box<dyn StorageProvider> = match connection.kind {
+        ProviderKind::S3 => {
+            let stored: StoredS3Credentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored S3 credential payload is invalid".to_owned())?;
+            let configuration: S3ConnectionConfiguration =
+                serde_json::from_str(&connection.configuration_json)
+                    .map_err(|_| "S3 bucket configuration is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&connection.endpoint)
+                .map_err(|_| "Connection endpoint must be a valid URL".to_owned())?;
+            Box::new(
+                S3Provider::connect(
+                    S3Config {
+                        endpoint,
+                        region: configuration.region,
+                        bucket: configuration.bucket,
+                        path_style: configuration.path_style,
+                    },
+                    stored.access_key_id,
+                    stored.secret_access_key,
+                )
+                .await
+                .map_err(|error| error.to_string())?,
+            )
+        }
+        ProviderKind::WebDav | ProviderKind::Nextcloud => {
+            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored WebDAV credential payload is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&connection.endpoint)
+                .map_err(|_| "WebDAV endpoint must be a valid URL".to_owned())?;
+            Box::new(
+                WebDavProvider::connect(
+                    WebDavConfig {
+                        endpoint,
+                        username: stored.username,
+                    },
+                    stored.password,
+                )
+                .map_err(|error| error.to_string())?,
+            )
+        }
+        ProviderKind::Sftp => {
+            let configuration: SftpConfiguration =
+                serde_json::from_str(&connection.configuration_json)
+                    .map_err(|_| "SFTP configuration is invalid".to_owned())?;
+            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored SFTP credential payload is invalid".to_owned())?;
+            Box::new(
+                SftpProvider::connect(
+                    SftpConfig {
+                        host: configuration.host,
+                        port: configuration.port,
+                        username: configuration.username,
+                        known_hosts: configuration.known_hosts.into(),
+                    },
+                    stored.password,
+                )
+                .map_err(|error| error.to_string())?,
+            )
+        }
+    };
     let page = provider
         .list(&request.path, request.cursor.as_deref())
         .await
@@ -372,6 +556,8 @@ pub fn run() {
             connections_list,
             connections_create,
             connections_create_s3,
+            connections_create_webdav,
+            connections_create_sftp,
             connections_remove,
             connections_test,
             files_list,

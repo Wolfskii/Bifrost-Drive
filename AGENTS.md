@@ -65,4 +65,4 @@ Feature work flows through `develop`; protected `main` is the stable release sou
 
 ## Unfinished Work
 
-CFAPI, macOS File Provider, Linux FUSE, SFTP, WebDAV, cache/transfer service integration, sync, and release packaging must be marked Planned until implemented and tested. The Windows Credential Manager adapter and provider-neutral cache/transfer primitives are implemented, while other native credential stores remain Planned. S3 capabilities may be exposed only where the provider implementation and tests verify them. Do not expose unavailable capabilities in the UI.
+CFAPI, macOS File Provider, Linux FUSE, cache/transfer service integration, sync, and release packaging must be marked Planned until implemented and tested. The Windows Credential Manager adapter, provider-neutral cache/transfer primitives, S3 provider, and verified WebDAV/SFTP operations are implemented, while SFTP public-key flows, WebDAV MKCOL/COPY/locking, and other native credential stores remain capability-limited or Planned. Capabilities may be exposed only where the provider implementation and tests verify them. Do not expose unavailable capabilities in the UI.

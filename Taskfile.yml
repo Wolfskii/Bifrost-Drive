@@ -89,12 +89,17 @@ tasks:
   test:integration:
     desc: Start local provider services and run real integration tests
     deps: [docker:up]
-    defer:
-      - task: docker:down
     env:
       BIFROST_S3_INTEGRATION: "1"
+      BIFROST_WEBDAV_INTEGRATION: "1"
+      BIFROST_SFTP_INTEGRATION: "1"
     cmds:
+      - mkdir -p .cache
+      - ssh-keyscan -p "${SFTP_PORT:-2222}" 127.0.0.1 > .cache/sftp_known_hosts
       - cargo test -p bifrost-s3 --test minio -- --ignored --nocapture
+      - cargo test -p bifrost-webdav --test apache -- --ignored --nocapture
+      - cargo test -p bifrost-sftp --test atmoz -- --ignored --nocapture
+      - task: docker:down
 
   lint:
     desc: Run Rust and frontend linters
@@ -129,7 +134,7 @@ tasks:
   docker:up:
     desc: Start local integration services
     cmds:
-      - docker compose up -d --wait
+      - docker compose up -d --build --wait
 
   docker:down:
     desc: Stop local integration services

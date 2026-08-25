@@ -11,6 +11,8 @@ members = [
     "crates/bifrost-s3",
     "crates/bifrost-storage",
     "crates/bifrost-transfer",
+    "crates/bifrost-sftp",
+    "crates/bifrost-webdav",
     "platforms/windows/credentials",
     "xtask",
 ]
@@ -25,6 +27,8 @@ default-members = [
     "crates/bifrost-s3",
     "crates/bifrost-storage",
     "crates/bifrost-transfer",
+    "crates/bifrost-sftp",
+    "crates/bifrost-webdav",
     "platforms/windows/credentials",
 ]
 
@@ -47,6 +51,10 @@ aws-smithy-runtime-api-macros = "=1.0.0"
 aws-smithy-types = "=1.4.7"
 bytes = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
+quick-xml = { version = "0.38", features = ["serialize"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+russh = { version = "=0.63.1", default-features = false, features = ["ring"] }
+russh-sftp = "=2.4.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"

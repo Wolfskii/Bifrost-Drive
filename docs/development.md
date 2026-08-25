@@ -18,13 +18,13 @@ Run commands from the repository root:
 | `task lint`            | Run Clippy and ESLint                                |
 | `task format`          | Format Rust and frontend                             |
 | `task format:check`    | Verify formatting                                    |
-| `task docker:up`       | Start MinIO integration service                      |
-| `task docker:down`     | Stop integration services                            |
+| `task docker:up`       | Start MinIO, WebDAV, and SFTP services               |
+| `task docker:down`     | Stop provider integration services                   |
 | `task db:migrate`      | Apply SQLite migrations                              |
 | `task package:windows` | Build Windows x64 bundle on Windows                  |
 | `task release:dry-run` | Validate release metadata without publishing         |
 
-The real S3 integration test uses `task test:integration`. If ports 9000 or 9001 are already in use, set `MINIO_API_PORT`, `MINIO_CONSOLE_PORT`, and `BIFROST_S3_ENDPOINT` for that invocation, for example `MINIO_API_PORT=19000 MINIO_CONSOLE_PORT=19001 BIFROST_S3_ENDPOINT=http://127.0.0.1:19000 task test:integration`.
+The real S3, WebDAV, and SFTP integration tests use `task test:integration`. If the default ports are already in use, set `MINIO_API_PORT`, `MINIO_CONSOLE_PORT`, `WEBDAV_PORT`, `SFTP_PORT`, `BIFROST_S3_ENDPOINT`, and `BIFROST_WEBDAV_ENDPOINT`, for example `MINIO_API_PORT=19000 MINIO_CONSOLE_PORT=19001 WEBDAV_PORT=18080 SFTP_PORT=2222 BIFROST_S3_ENDPOINT=http://127.0.0.1:19000 BIFROST_WEBDAV_ENDPOINT=http://127.0.0.1:18080/ task test:integration`.
 
 The root `package.json` declares npm as the package manager. `npm ci` is used in CI from the committed `package-lock.json`; use `npm install` when dependency manifests change.
 

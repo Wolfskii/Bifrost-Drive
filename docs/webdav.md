@@ -1,3 +1,3 @@
 # WebDAV
 
-WebDAV support is **Planned**. The adapter will use HTTPS/TLS verification by default and implement PROPFIND, streamed GET/PUT, DELETE, MKCOL, MOVE, COPY, and capability probes. LOCK/UNLOCK and range requests will be exposed only when the server confirms support.
+The WebDAV adapter is implemented with HTTPS/TLS verification by default, Basic Auth, PROPFIND metadata listing, streamed GET/PUT, DELETE, MOVE, and range reads. The pinned rclone integration fixture verifies connection testing, listing, upload, rename, range download, and deletion, and the desktop wizard can create and test WebDAV connections. MKCOL, COPY, and locking capability probes require additional server-specific validation before being exposed as supported.

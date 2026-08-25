@@ -22,11 +22,11 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/desktop/src-tauri -> target
+          workspaces: . -> target
       - run: npm ci
       - run: npm --prefix apps/desktop run tauri -- build --target x86_64-pc-windows-msvc
       - uses: actions/upload-artifact@v4
         with:
           name: bifrost-drive-windows-x64
-          path: apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
           if-no-files-found: error

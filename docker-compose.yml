@@ -16,5 +16,39 @@ services:
       timeout: 5s
       retries: 10
 
+  webdav:
+    image: rclone/rclone@sha256:01f220de5ee751913c95a6b92c02661b72d1821e36b9ec0ef31c03c3f4edcd23
+    command:
+      - serve
+      - webdav
+      - /data
+      - --addr
+      - ":80"
+      - --user
+      - "${WEBDAV_USERNAME:-bifrost-dev}"
+      - --pass
+      - "${WEBDAV_PASSWORD:-bifrost-dev-secret}"
+    ports:
+      - "${WEBDAV_PORT:-8080}:80"
+    volumes:
+      - webdav-data:/data
+    healthcheck:
+      test: ["CMD", "rclone", "version"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  sftp:
+    image: atmoz/sftp@sha256:81fa92512bf8ead4849f33c1c153907b86d32d77704d1c62a9c70b4316ae9e50
+    command: bifrost-dev:bifrost-dev-secret:::upload
+    ports:
+      - "${SFTP_PORT:-2222}:22"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 22"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   minio-data:
+  webdav-data:

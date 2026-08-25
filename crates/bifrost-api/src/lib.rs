@@ -34,6 +34,24 @@ pub struct CreateS3ConnectionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateWebDavConnectionRequest {
+    pub name: String,
+    pub endpoint: String,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateSftpConnectionRequest {
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub known_hosts: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionIdRequest {
     pub id: ConnectionId,
 }

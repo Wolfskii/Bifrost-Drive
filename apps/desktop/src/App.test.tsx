@@ -27,4 +27,23 @@ describe("App", () => {
             screen.getByRole("dialog", { name: "Connect to S3" }),
         ).toBeTruthy();
     });
+
+    it("shows provider-specific fields when the storage type changes", () => {
+        render(<App />);
+        fireEvent.click(
+            screen.getByRole("button", { name: /add connection/i }),
+        );
+
+        fireEvent.change(
+            screen.getByRole("combobox", { name: /storage type/i }),
+            {
+                target: { value: "SFTP" },
+            },
+        );
+
+        expect(
+            screen.getByRole("heading", { name: "Connect to SFTP" }),
+        ).toBeTruthy();
+        expect(screen.getByLabelText("Known hosts path")).toBeTruthy();
+    });
 });

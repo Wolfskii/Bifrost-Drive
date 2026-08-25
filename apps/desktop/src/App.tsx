@@ -13,6 +13,8 @@ import { FormEvent, useEffect, useState } from "react";
 import {
     ConnectionSummary,
     createS3Connection,
+    createSftpConnection,
+    createWebDavConnection,
     FileSummary,
     listConnections,
     listFiles,
@@ -21,8 +23,8 @@ import {
 
 const providerTypes = [
     { name: "S3", status: "Available now" },
-    { name: "SFTP", status: "Provider adapter in progress" },
-    { name: "WebDAV", status: "Provider adapter in progress" },
+    { name: "SFTP", status: "Available now" },
+    { name: "WebDAV", status: "Available now" },
 ];
 
 export function App() {
@@ -34,6 +36,9 @@ export function App() {
     const [wizardOpen, setWizardOpen] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
+    const [providerChoice, setProviderChoice] = useState<
+        "S3" | "SFTP" | "WebDAV"
+    >("S3");
 
     useEffect(() => {
         listConnections()
@@ -63,19 +68,41 @@ export function App() {
     async function handleCreate(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
         const values = new FormData(event.currentTarget);
-        const form: S3ConnectionForm = {
-            name: String(values.get("name") ?? "").trim(),
-            endpoint: String(values.get("endpoint") ?? "").trim(),
-            region: String(values.get("region") ?? "").trim(),
-            bucket: String(values.get("bucket") ?? "").trim(),
-            pathStyle: values.get("pathStyle") === "on",
-            accessKeyId: String(values.get("accessKeyId") ?? "").trim(),
-            secretAccessKey: String(values.get("secretAccessKey") ?? ""),
+        const name = String(values.get("name") ?? "").trim();
+        const common = {
+            name,
+            username: String(values.get("username") ?? "").trim(),
+            password: String(values.get("password") ?? ""),
         };
+        let createConnection: Promise<ConnectionSummary>;
+        if (providerChoice === "WebDAV") {
+            createConnection = createWebDavConnection({
+                ...common,
+                endpoint: String(values.get("endpoint") ?? "").trim(),
+            });
+        } else if (providerChoice === "SFTP") {
+            createConnection = createSftpConnection({
+                ...common,
+                host: String(values.get("host") ?? "").trim(),
+                port: Number(values.get("port") ?? 22),
+                knownHosts: String(values.get("knownHosts") ?? "").trim(),
+            });
+        } else {
+            const form: S3ConnectionForm = {
+                name,
+                endpoint: String(values.get("endpoint") ?? "").trim(),
+                region: String(values.get("region") ?? "").trim(),
+                bucket: String(values.get("bucket") ?? "").trim(),
+                pathStyle: values.get("pathStyle") === "on",
+                accessKeyId: String(values.get("accessKeyId") ?? "").trim(),
+                secretAccessKey: String(values.get("secretAccessKey") ?? ""),
+            };
+            createConnection = createS3Connection(form);
+        }
         setSaving(true);
         setError(null);
         try {
-            const connection = await createS3Connection(form);
+            const connection = await createConnection;
             setConnections((current) => [...current, connection]);
             setWizardOpen(false);
             event.currentTarget.reset();
@@ -269,7 +296,7 @@ export function App() {
                                     provider.status === "Available now",
                             ).length
                         }{" "}
-                        available
+                        connection flow ready
                     </span>
                 </section>
                 <div className="provider-grid">
@@ -298,7 +325,9 @@ export function App() {
                         <div className="wizard-header">
                             <div>
                                 <p className="eyebrow">New connection</p>
-                                <h2 id="wizard-title">Connect to S3</h2>
+                                <h2 id="wizard-title">
+                                    Connect to {providerChoice}
+                                </h2>
                             </div>
                             <button
                                 className="icon-button"
@@ -310,10 +339,30 @@ export function App() {
                             </button>
                         </div>
                         <p className="wizard-copy">
-                            Your secret key is stored in the native Windows
-                            credential store.
+                            Credentials are stored in Windows Credential Manager
+                            and never in the app database.
                         </p>
                         <form onSubmit={handleCreate}>
+                            <label>
+                                Storage type
+                                <select
+                                    value={providerChoice}
+                                    onChange={(event) =>
+                                        setProviderChoice(
+                                            event.target.value as
+                                                "S3" | "SFTP" | "WebDAV",
+                                        )
+                                    }
+                                >
+                                    <option value="S3">
+                                        S3-compatible storage
+                                    </option>
+                                    <option value="SFTP">SFTP server</option>
+                                    <option value="WebDAV">
+                                        WebDAV server
+                                    </option>
+                                </select>
+                            </label>
                             <label>
                                 Connection name
                                 <input
@@ -322,56 +371,118 @@ export function App() {
                                     placeholder="Production S3"
                                 />
                             </label>
-                            <label>
-                                Endpoint
-                                <input
-                                    name="endpoint"
-                                    type="url"
-                                    required
-                                    defaultValue="https://s3.amazonaws.com"
-                                />
-                            </label>
-                            <div className="form-grid">
+                            {providerChoice !== "SFTP" && (
                                 <label>
-                                    Bucket
+                                    Endpoint
                                     <input
-                                        name="bucket"
+                                        name="endpoint"
+                                        type="url"
                                         required
-                                        placeholder="company-data"
+                                        defaultValue="https://s3.amazonaws.com"
                                     />
                                 </label>
+                            )}
+                            {providerChoice === "SFTP" && (
                                 <label>
-                                    Region
+                                    Host
                                     <input
-                                        name="region"
+                                        name="host"
                                         required
-                                        defaultValue="us-east-1"
+                                        placeholder="files.example.com"
                                     />
                                 </label>
-                            </div>
-                            <div className="form-grid">
-                                <label>
-                                    Access key ID
-                                    <input
-                                        name="accessKeyId"
-                                        required
-                                        autoComplete="off"
-                                    />
+                            )}
+                            {providerChoice === "SFTP" && (
+                                <div className="form-grid">
+                                    <label>
+                                        Port
+                                        <input
+                                            name="port"
+                                            type="number"
+                                            min="1"
+                                            max="65535"
+                                            defaultValue="22"
+                                            required
+                                        />
+                                    </label>
+                                    <label>
+                                        Known hosts path
+                                        <input
+                                            name="knownHosts"
+                                            required
+                                            placeholder="C:\\Users\\you\\.ssh\\known_hosts"
+                                        />
+                                    </label>
+                                </div>
+                            )}
+                            {providerChoice !== "S3" && (
+                                <div className="form-grid">
+                                    <label>
+                                        Username
+                                        <input
+                                            name="username"
+                                            required
+                                            autoComplete="username"
+                                        />
+                                    </label>
+                                    <label>
+                                        Password
+                                        <input
+                                            name="password"
+                                            required
+                                            type="password"
+                                            autoComplete="current-password"
+                                        />
+                                    </label>
+                                </div>
+                            )}
+                            {providerChoice === "S3" && (
+                                <>
+                                    <div className="form-grid">
+                                        <label>
+                                            Bucket
+                                            <input
+                                                name="bucket"
+                                                required
+                                                placeholder="company-data"
+                                            />
+                                        </label>
+                                        <label>
+                                            Region
+                                            <input
+                                                name="region"
+                                                required
+                                                defaultValue="us-east-1"
+                                            />
+                                        </label>
+                                    </div>
+                                    <div className="form-grid">
+                                        <label>
+                                            Access key ID
+                                            <input
+                                                name="accessKeyId"
+                                                required
+                                                autoComplete="off"
+                                            />
+                                        </label>
+                                        <label>
+                                            Secret access key
+                                            <input
+                                                name="secretAccessKey"
+                                                required
+                                                type="password"
+                                                autoComplete="new-password"
+                                            />
+                                        </label>
+                                    </div>
+                                </>
+                            )}
+                            {providerChoice === "S3" && (
+                                <label className="checkbox-row">
+                                    <input name="pathStyle" type="checkbox" />{" "}
+                                    Use path-style addressing
                                 </label>
-                                <label>
-                                    Secret access key
-                                    <input
-                                        name="secretAccessKey"
-                                        required
-                                        type="password"
-                                        autoComplete="new-password"
-                                    />
-                                </label>
-                            </div>
-                            <label className="checkbox-row">
-                                <input name="pathStyle" type="checkbox" /> Use
-                                path-style addressing
-                            </label>
+                            )}
                             <div className="wizard-actions">
                                 <button
                                     className="secondary-button"
