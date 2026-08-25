@@ -66,7 +66,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: npm --prefix apps/desktop run tauri -- build --bundles dmg --config src-tauri/tauri.release.conf.json
+        run: npm --prefix apps/desktop run tauri -- build --bundles app,dmg --config src-tauri/tauri.release.conf.json
       - uses: actions/upload-artifact@v6
         with:
           name: bifrost-drive-macos-assets
@@ -217,12 +217,12 @@ jobs:
           $env:TAURI_SIGNING_PRIVATE_KEY = $null
           npm --prefix apps/desktop run tauri -- signer sign --private-key-path $keyPath --password "" $installer.FullName
           if ($LASTEXITCODE -ne 0) { throw "Tauri updater signing failed" }
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         if: steps.existing.outputs.exists != 'true'
         with:
           name: bifrost-drive-linux-assets
           path: release-assets/linux
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         if: steps.existing.outputs.exists != 'true'
         with:
           name: bifrost-drive-macos-assets
@@ -236,8 +236,10 @@ jobs:
           if ($null -eq $artifact) { throw "Signed updater artifact was not produced" }
           $signature = Get-Content "$($artifact.FullName).sig" -Raw
           $linuxArtifact = Get-ChildItem release-assets/linux -Recurse -Filter *.AppImage | Select-Object -First 1
+          if ($null -eq $linuxArtifact) { throw "Linux AppImage updater artifact was not downloaded" }
           $linuxSignature = Get-Content "$($linuxArtifact.FullName).sig" -Raw
           $macArtifact = Get-ChildItem release-assets/macos -Recurse -Filter *.app.tar.gz | Select-Object -First 1
+          if ($null -eq $macArtifact) { throw "macOS .app.tar.gz updater artifact was not downloaded" }
           $macSignature = Get-Content "$($macArtifact.FullName).sig" -Raw
           $manifest = @{
             version = $version

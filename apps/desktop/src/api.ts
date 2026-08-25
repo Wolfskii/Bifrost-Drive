@@ -1,4 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+    disable as disableAutostart,
+    enable as enableAutostart,
+    isEnabled as isAutostartEnabled,
+} from "@tauri-apps/plugin-autostart";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 
@@ -56,10 +61,11 @@ export interface SftpConnectionForm {
     name: string;
     host: string;
     port: number;
+    rootPath: string;
     username: string;
     password: string;
-    knownHosts: string;
     authentication: "password" | "private_key";
+    trustOnFirstUse: boolean;
     privateKeyPath: string;
     passphrase: string;
 }
@@ -99,6 +105,24 @@ export async function listConnections(): Promise<ConnectionSummary[]> {
         return [];
     }
     return invoke<ConnectionSummary[]>("connections_list");
+}
+
+export async function getAutostartEnabled(): Promise<boolean> {
+    if (!tauriAvailable()) {
+        return false;
+    }
+    return isAutostartEnabled();
+}
+
+export async function setAutostartEnabled(enabled: boolean): Promise<void> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    if (enabled) {
+        await enableAutostart();
+    } else {
+        await disableAutostart();
+    }
 }
 
 export async function checkForUpdate(): Promise<string | null> {
@@ -181,7 +205,8 @@ export async function createSftpConnection(
     return invoke<ConnectionSummary>("connections_create_sftp", {
         request: {
             ...form,
-            known_hosts: form.knownHosts,
+            root_path: form.rootPath,
+            trust_on_first_use: form.trustOnFirstUse,
         },
     });
 }

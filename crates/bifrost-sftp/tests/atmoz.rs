@@ -23,6 +23,8 @@ fn integration_provider() -> Option<SftpProvider> {
                     .unwrap_or(2222),
                 username: "bifrost-dev".to_owned(),
                 known_hosts: PathBuf::from(known_hosts),
+                root_path: String::new(),
+                trust_on_first_use: false,
             },
             "bifrost-dev-secret",
         )
@@ -54,6 +56,8 @@ fn key_integration_provider() -> Option<SftpProvider> {
                     .unwrap_or(2222),
                 username: "bifrost-dev".to_owned(),
                 known_hosts: PathBuf::from(known_hosts),
+                root_path: String::new(),
+                trust_on_first_use: false,
             },
             PathBuf::from(private_key),
             None,

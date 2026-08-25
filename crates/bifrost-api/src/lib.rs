@@ -63,9 +63,13 @@ pub struct CreateSftpConnectionRequest {
     pub name: String,
     pub host: String,
     pub port: u16,
+    pub root_path: String,
     pub username: String,
     pub password: String,
-    pub known_hosts: String,
+    #[serde(default)]
+    pub known_hosts: Option<String>,
+    #[serde(default)]
+    pub trust_on_first_use: bool,
     pub authentication: String,
     pub private_key_path: Option<String>,
     pub passphrase: Option<String>,

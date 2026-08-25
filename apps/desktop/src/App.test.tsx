@@ -44,6 +44,22 @@ describe("App", () => {
         expect(
             screen.getByRole("heading", { name: "Connect to SFTP" }),
         ).toBeTruthy();
-        expect(screen.getByLabelText("Known hosts path")).toBeTruthy();
+        expect(screen.queryByLabelText("Known hosts file")).toBeNull();
+        expect(screen.getByLabelText("Start path")).toBeTruthy();
+        expect(
+            screen.getByLabelText("Trust a new server key on first use"),
+        ).toBeTruthy();
+        expect(screen.getByLabelText("Password")).toBeTruthy();
+        expect(screen.queryByLabelText("Private key path")).toBeNull();
+
+        fireEvent.change(
+            screen.getByRole("combobox", { name: /authentication/i }),
+            {
+                target: { value: "private_key" },
+            },
+        );
+
+        expect(screen.getByLabelText("Private key path")).toBeTruthy();
+        expect(screen.queryByLabelText("Password")).toBeNull();
     });
 });

@@ -1,6 +1,9 @@
 use bifrost_common::{ConnectionId, ProviderKind};
 use chrono::Utc;
-use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    Row, SqlitePool,
+};
 use std::path::Path;
 use thiserror::Error;
 use uuid::Uuid;
@@ -80,8 +83,17 @@ impl Database {
     }
 
     pub async fn connect_file(path: &Path) -> Result<Self, DatabaseError> {
-        let database_url = format!("sqlite://{}", path.display());
-        Self::connect(&database_url).await
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect_with(options)
+            .await?;
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await?;
+        Ok(Self { pool })
     }
 
     pub async fn migrate(&self) -> Result<(), DatabaseError> {
@@ -347,6 +359,19 @@ mod tests {
         .unwrap();
 
         assert_eq!(durable_state_count, 2);
+    }
+
+    #[tokio::test]
+    async fn opens_a_file_database_from_a_native_path() {
+        let database_path =
+            std::env::temp_dir().join(format!("bifrost-drive-{}.db", Uuid::new_v4()));
+        let database = Database::connect_file(&database_path).await.unwrap();
+        database.migrate().await.unwrap();
+        database.pool().close().await;
+        drop(database);
+
+        assert!(database_path.is_file());
+        std::fs::remove_file(database_path).unwrap();
     }
 
     #[tokio::test]

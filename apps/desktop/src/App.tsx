@@ -25,6 +25,7 @@ import {
     createSmbConnection,
     createWebDavConnection,
     checkForUpdate,
+    getAutostartEnabled,
     FileSummary,
     hydrateFile,
     installUpdate,
@@ -34,6 +35,7 @@ import {
     listFiles,
     resolveConflict,
     runSync,
+    setAutostartEnabled,
     S3ConnectionForm,
 } from "./api";
 
@@ -61,6 +63,11 @@ export function App() {
     const [hydratingPath, setHydratingPath] = useState<string | null>(null);
     const [updateVersion, setUpdateVersion] = useState<string | null>(null);
     const [installingUpdate, setInstallingUpdate] = useState(false);
+    const [autostartEnabled, setAutostartEnabledState] = useState(false);
+    const [updatingAutostart, setUpdatingAutostart] = useState(false);
+    const [sftpAuthentication, setSftpAuthentication] = useState<
+        "password" | "private_key"
+    >("password");
     const [providerChoice, setProviderChoice] = useState<ProviderChoice>("S3");
 
     useEffect(() => {
@@ -93,6 +100,29 @@ export function App() {
             });
     }, []);
 
+    useEffect(() => {
+        getAutostartEnabled()
+            .then(setAutostartEnabledState)
+            .catch(() => undefined);
+    }, []);
+
+    async function handleAutostartChange(enabled: boolean) {
+        setUpdatingAutostart(true);
+        setError(null);
+        try {
+            await setAutostartEnabled(enabled);
+            setAutostartEnabledState(enabled);
+        } catch (cause) {
+            setError(
+                cause instanceof Error
+                    ? cause.message
+                    : "Unable to update startup settings.",
+            );
+        } finally {
+            setUpdatingAutostart(false);
+        }
+    }
+
     async function handleOpen(connection: ConnectionSummary) {
         setLoadingFiles(true);
         setError(null);
@@ -112,7 +142,8 @@ export function App() {
 
     async function handleCreate(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
-        const values = new FormData(event.currentTarget);
+        const form = event.currentTarget;
+        const values = new FormData(form);
         const name = String(values.get("name") ?? "").trim();
         const common = {
             name,
@@ -141,10 +172,11 @@ export function App() {
                 ...common,
                 host: String(values.get("host") ?? "").trim(),
                 port: Number(values.get("port") ?? 22),
-                knownHosts: String(values.get("knownHosts") ?? "").trim(),
+                rootPath: String(values.get("rootPath") ?? "").trim(),
                 authentication: String(
                     values.get("authentication") ?? "password",
                 ) as "password" | "private_key",
+                trustOnFirstUse: values.get("trustOnFirstUse") === "on",
                 privateKeyPath: String(
                     values.get("privateKeyPath") ?? "",
                 ).trim(),
@@ -168,13 +200,9 @@ export function App() {
             const connection = await createConnection;
             setConnections((current) => [...current, connection]);
             setWizardOpen(false);
-            event.currentTarget.reset();
+            form.reset();
         } catch (cause) {
-            setError(
-                cause instanceof Error
-                    ? cause.message
-                    : "Unable to create connection.",
-            );
+            setError(errorMessage(cause, "Unable to create connection."));
         } finally {
             setSaving(false);
         }
@@ -280,12 +308,15 @@ export function App() {
                     <button
                         className="primary-button"
                         type="button"
-                        onClick={() => setWizardOpen(true)}
+                        onClick={() => {
+                            setError(null);
+                            setWizardOpen(true);
+                        }}
                     >
                         <Plus size={17} /> Add connection
                     </button>
                 </header>
-                {error && (
+                {error && !wizardOpen && (
                     <p className="inline-error" role="alert">
                         {error}
                     </p>
@@ -586,6 +617,29 @@ export function App() {
                         </article>
                     ))}
                 </div>
+                <section
+                    className="file-browser"
+                    id="settings"
+                    aria-labelledby="settings-title"
+                >
+                    <div className="section-heading">
+                        <div>
+                            <p className="eyebrow">Application</p>
+                            <h2 id="settings-title">Settings</h2>
+                        </div>
+                    </div>
+                    <label className="checkbox-row">
+                        <input
+                            type="checkbox"
+                            checked={autostartEnabled}
+                            disabled={updatingAutostart}
+                            onChange={(event) =>
+                                handleAutostartChange(event.target.checked)
+                            }
+                        />
+                        Start Bifrost Drive when I sign in
+                    </label>
+                </section>
             </section>
             {wizardOpen && (
                 <div className="modal-backdrop" role="presentation">
@@ -615,6 +669,14 @@ export function App() {
                             Credentials are stored in Windows Credential Manager
                             and never in the app database.
                         </p>
+                        {error && (
+                            <p
+                                className="inline-error wizard-error"
+                                role="alert"
+                            >
+                                {error}
+                            </p>
+                        )}
                         <form onSubmit={handleCreate}>
                             <label>
                                 Storage type
@@ -692,11 +754,10 @@ export function App() {
                                         />
                                     </label>
                                     <label>
-                                        Known hosts path
+                                        Start path
                                         <input
-                                            name="knownHosts"
-                                            required
-                                            placeholder="C:\\Users\\you\\.ssh\\known_hosts"
+                                            name="rootPath"
+                                            placeholder="documents/projects"
                                         />
                                     </label>
                                 </div>
@@ -707,7 +768,14 @@ export function App() {
                                         Authentication
                                         <select
                                             name="authentication"
-                                            defaultValue="password"
+                                            value={sftpAuthentication}
+                                            onChange={(event) =>
+                                                setSftpAuthentication(
+                                                    event.target.value as
+                                                        | "password"
+                                                        | "private_key",
+                                                )
+                                            }
                                         >
                                             <option value="password">
                                                 Password
@@ -717,23 +785,33 @@ export function App() {
                                             </option>
                                         </select>
                                     </label>
-                                    <div className="form-grid">
-                                        <label>
-                                            Private key path
-                                            <input
-                                                name="privateKeyPath"
-                                                placeholder="C:\\Users\\you\\.ssh\\id_ed25519"
-                                            />
-                                        </label>
-                                        <label>
-                                            Key passphrase
-                                            <input
-                                                name="passphrase"
-                                                type="password"
-                                                autoComplete="new-password"
-                                            />
-                                        </label>
-                                    </div>
+                                    {sftpAuthentication === "private_key" && (
+                                        <div className="form-grid">
+                                            <label>
+                                                Private key path
+                                                <input
+                                                    name="privateKeyPath"
+                                                    required
+                                                    placeholder="C:\\Users\\you\\.ssh\\id_ed25519"
+                                                />
+                                            </label>
+                                            <label>
+                                                Key passphrase
+                                                <input
+                                                    name="passphrase"
+                                                    type="password"
+                                                    autoComplete="new-password"
+                                                />
+                                            </label>
+                                        </div>
+                                    )}
+                                    <label className="checkbox-row">
+                                        <input
+                                            name="trustOnFirstUse"
+                                            type="checkbox"
+                                        />
+                                        Trust a new server key on first use
+                                    </label>
                                 </>
                             )}
                             {providerChoice !== "S3" && (
@@ -746,15 +824,18 @@ export function App() {
                                             autoComplete="username"
                                         />
                                     </label>
-                                    <label>
-                                        Password
-                                        <input
-                                            name="password"
-                                            required
-                                            type="password"
-                                            autoComplete="current-password"
-                                        />
-                                    </label>
+                                    {(providerChoice !== "SFTP" ||
+                                        sftpAuthentication === "password") && (
+                                        <label>
+                                            Password
+                                            <input
+                                                name="password"
+                                                required
+                                                type="password"
+                                                autoComplete="current-password"
+                                            />
+                                        </label>
+                                    )}
                                 </div>
                             )}
                             {providerChoice === "S3" && (
@@ -847,4 +928,10 @@ function formatBytes(value: number | null): string {
     if (value < 1024 * 1024 * 1024)
         return `${(value / (1024 * 1024)).toFixed(1)} MB`;
     return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function errorMessage(cause: unknown, fallback: string): string {
+    if (cause instanceof Error) return cause.message;
+    if (typeof cause === "string") return cause;
+    return fallback;
 }

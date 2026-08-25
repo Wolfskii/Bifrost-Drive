@@ -9,7 +9,8 @@ use futures_util::{stream, StreamExt};
 use russh::{
     client,
     keys::{
-        check_known_hosts_path, load_secret_key, PrivateKeyWithHashAlg, PublicKeyOrCertificate,
+        check_known_hosts_path, known_hosts::learn_known_hosts_path, load_secret_key,
+        PrivateKeyWithHashAlg, PublicKeyOrCertificate,
     },
 };
 use russh_sftp::{client::SftpSession, protocol::OpenFlags};
@@ -22,6 +23,8 @@ pub struct SftpConfig {
     pub port: u16,
     pub username: String,
     pub known_hosts: PathBuf,
+    pub root_path: String,
+    pub trust_on_first_use: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +45,7 @@ struct ClientHandler {
     host: String,
     port: u16,
     known_hosts: PathBuf,
+    trust_on_first_use: bool,
 }
 
 impl client::Handler for ClientHandler {
@@ -51,24 +55,29 @@ impl client::Handler for ClientHandler {
         &mut self,
         server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        Ok(check_known_hosts_path(
-            &self.host,
-            self.port,
-            &server_public_key.public_key(),
-            &self.known_hosts,
-        )?)
+        let public_key = server_public_key.public_key();
+        if check_known_hosts_path(&self.host, self.port, &public_key, &self.known_hosts)? {
+            return Ok(true);
+        }
+        if self.trust_on_first_use {
+            learn_known_hosts_path(&self.host, self.port, &public_key, &self.known_hosts)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 }
 
 impl SftpProvider {
     pub fn connect(config: SftpConfig, password: impl Into<String>) -> Result<Self, StorageError> {
+        let mut config = config;
+        config.root_path = Self::normalize_root_path(&config.root_path)?;
         if config.host.trim().is_empty() || config.username.trim().is_empty() {
             return Err(StorageError::Provider {
                 provider: ProviderKind::Sftp,
                 message: "SFTP host and username are required".to_owned(),
             });
         }
-        if !config.known_hosts.is_file() {
+        if !config.trust_on_first_use && !config.known_hosts.is_file() {
             return Err(StorageError::Provider {
                 provider: ProviderKind::Sftp,
                 message: format!(
@@ -88,13 +97,15 @@ impl SftpProvider {
         key_path: PathBuf,
         passphrase: Option<String>,
     ) -> Result<Self, StorageError> {
+        let mut config = config;
+        config.root_path = Self::normalize_root_path(&config.root_path)?;
         if config.host.trim().is_empty() || config.username.trim().is_empty() {
             return Err(StorageError::Provider {
                 provider: ProviderKind::Sftp,
                 message: "SFTP host and username are required".to_owned(),
             });
         }
-        if !config.known_hosts.is_file() {
+        if !config.trust_on_first_use && !config.known_hosts.is_file() {
             return Err(StorageError::Provider {
                 provider: ProviderKind::Sftp,
                 message: format!(
@@ -123,6 +134,7 @@ impl SftpProvider {
             host: self.config.host.clone(),
             port: self.config.port,
             known_hosts: self.config.known_hosts.clone(),
+            trust_on_first_use: self.config.trust_on_first_use,
         };
         let mut session = client::connect(
             Arc::new(client::Config::default()),
@@ -199,8 +211,39 @@ impl SftpProvider {
             })
     }
 
-    fn path(path: &RemotePath) -> String {
-        path.as_str().to_owned()
+    fn normalize_root_path(value: &str) -> Result<String, StorageError> {
+        let normalized = value.trim().replace('\\', "/");
+        let absolute = normalized.starts_with('/');
+        let mut components = Vec::new();
+        for component in normalized.split('/') {
+            match component {
+                "" | "." => continue,
+                ".." => {
+                    return Err(Self::map_error("SFTP start path cannot contain '..'"));
+                }
+                component => components.push(component),
+            }
+        }
+        let path = components.join("/");
+        Ok(if absolute { format!("/{path}") } else { path })
+    }
+
+    fn path(&self, path: &RemotePath) -> String {
+        if self.config.root_path.is_empty() {
+            return if path.as_str().is_empty() {
+                ".".to_owned()
+            } else {
+                path.as_str().to_owned()
+            };
+        }
+        if path.as_str().is_empty() {
+            return self.config.root_path.clone();
+        }
+        if self.config.root_path == "/" {
+            format!("/{}", path.as_str())
+        } else {
+            format!("{}/{}", self.config.root_path, path.as_str())
+        }
     }
 
     fn map_error(error: impl std::fmt::Display) -> StorageError {
@@ -267,7 +310,7 @@ impl StorageProvider for SftpProvider {
     async fn test_connection(&self) -> Result<(), StorageError> {
         let session = self.session().await?;
         session
-            .canonicalize(".")
+            .canonicalize(self.path(&RemotePath::root()))
             .await
             .map(|_| ())
             .map_err(Self::map_error)
@@ -280,12 +323,14 @@ impl StorageProvider for SftpProvider {
     ) -> Result<Page<RemoteEntry>, StorageError> {
         let session = self.session().await?;
         let directory = session
-            .read_dir(Self::path(prefix))
+            .read_dir(self.path(prefix))
             .await
             .map_err(Self::map_error)?;
         let entries = directory
             .map(|entry| {
-                let path = RemotePath::parse(&entry.path()).unwrap_or_else(|_| RemotePath::root());
+                let path = prefix
+                    .join(&entry.file_name())
+                    .unwrap_or_else(|_| RemotePath::root());
                 RemoteEntry {
                     metadata: Self::map_metadata(path, entry.metadata()),
                 }
@@ -300,7 +345,7 @@ impl StorageProvider for SftpProvider {
     async fn stat(&self, path: &RemotePath) -> Result<RemoteMetadata, StorageError> {
         let session = self.session().await?;
         session
-            .metadata(Self::path(path))
+            .metadata(self.path(path))
             .await
             .map(|metadata| Self::map_metadata(path.clone(), metadata))
             .map_err(Self::map_error)
@@ -310,7 +355,7 @@ impl StorageProvider for SftpProvider {
         let session = self.session().await?;
         let (start, limit) = Self::range(request.range)?;
         let mut file = session
-            .open(Self::path(&request.path))
+            .open(self.path(&request.path))
             .await
             .map_err(Self::map_error)?;
         if start > 0 {
@@ -345,7 +390,7 @@ impl StorageProvider for SftpProvider {
         let path = request.path;
         let mut file = session
             .open_with_flags(
-                Self::path(&path),
+                self.path(&path),
                 OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
             )
             .await
@@ -369,13 +414,13 @@ impl StorageProvider for SftpProvider {
     async fn delete(&self, path: &RemotePath) -> Result<(), StorageError> {
         let session = self.session().await?;
         let metadata = session
-            .metadata(Self::path(path))
+            .metadata(self.path(path))
             .await
             .map_err(Self::map_error)?;
         if metadata.is_dir() {
-            session.remove_dir(Self::path(path)).await
+            session.remove_dir(self.path(path)).await
         } else {
-            session.remove_file(Self::path(path)).await
+            session.remove_file(self.path(path)).await
         }
         .map_err(Self::map_error)
     }
@@ -383,7 +428,7 @@ impl StorageProvider for SftpProvider {
     async fn create_directory(&self, path: &RemotePath) -> Result<(), StorageError> {
         self.session()
             .await?
-            .create_dir(Self::path(path))
+            .create_dir(self.path(path))
             .await
             .map_err(Self::map_error)
     }
@@ -391,7 +436,7 @@ impl StorageProvider for SftpProvider {
     async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), StorageError> {
         self.session()
             .await?
-            .rename(Self::path(from), Self::path(to))
+            .rename(self.path(from), self.path(to))
             .await
             .map_err(Self::map_error)
     }
@@ -410,6 +455,8 @@ mod tests {
                 port: 22,
                 username: "user".to_owned(),
                 known_hosts: PathBuf::from("missing-known-hosts"),
+                root_path: String::new(),
+                trust_on_first_use: false,
             },
             "secret",
         );
@@ -427,10 +474,34 @@ mod tests {
                 port: 22,
                 username: "user".to_owned(),
                 known_hosts,
+                root_path: String::new(),
+                trust_on_first_use: false,
             },
             directory.path().join("missing-key"),
             None,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn allows_missing_known_hosts_for_explicit_first_use_trust() {
+        let result = SftpProvider::connect(
+            SftpConfig {
+                host: "example.test".to_owned(),
+                port: 22,
+                username: "user".to_owned(),
+                known_hosts: PathBuf::from("missing-known-hosts"),
+                root_path: String::new(),
+                trust_on_first_use: true,
+            },
+            "secret",
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn accepts_absolute_start_paths_without_parent_traversal() {
+        assert_eq!(SftpProvider::normalize_root_path("/data").unwrap(), "/data");
+        assert!(SftpProvider::normalize_root_path("/data/../etc").is_err());
     }
 }

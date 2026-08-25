@@ -17,6 +17,7 @@
 - [x] Background synchronization scheduler and conflict resolution UI
 - [x] CFAPI local close, delete, and rename mutation routing
 - [x] Tray entry point and durable activity history
+- [x] Start-on-boot setting through the native OS startup mechanism
 - [ ] Windows Explorer VM acceptance and crash/reconnect validation
 - [x] Native notifications and durable transfer history
 - [x] Windows x64 signing and updater workflow configuration

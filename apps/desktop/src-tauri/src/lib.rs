@@ -459,7 +459,12 @@ struct WebDavCredentials {
 struct SftpConfiguration {
     host: String,
     port: u16,
+    #[serde(default)]
+    root_path: String,
+    #[serde(default = "default_sftp_known_hosts")]
     known_hosts: String,
+    #[serde(default)]
+    trust_on_first_use: bool,
     #[serde(default = "default_sftp_authentication")]
     authentication: String,
     private_key_path: Option<String>,
@@ -467,6 +472,14 @@ struct SftpConfiguration {
 
 fn default_sftp_authentication() -> String {
     "password".to_owned()
+}
+
+fn default_sftp_known_hosts() -> String {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .map(|path| path.join(".ssh").join("known_hosts").display().to_string())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Deserialize)]
@@ -550,6 +563,8 @@ async fn test_connection(
                 port: configuration.port,
                 username: stored.username,
                 known_hosts: configuration.known_hosts.into(),
+                root_path: configuration.root_path,
+                trust_on_first_use: configuration.trust_on_first_use,
             };
             let provider = (if configuration.authentication == "private_key" {
                 let key_path = configuration
@@ -723,6 +738,8 @@ async fn provider_for_connection(
                 port: configuration.port,
                 username: stored.username,
                 known_hosts: configuration.known_hosts.into(),
+                root_path: configuration.root_path,
+                trust_on_first_use: configuration.trust_on_first_use,
             };
             if configuration.authentication == "private_key" {
                 let key_path = configuration
@@ -866,11 +883,16 @@ async fn connections_create_sftp(
     credentials: State<'_, WindowsCredentialStore>,
     request: CreateSftpConnectionRequest,
 ) -> Result<ConnectionSummary, String> {
-    if request.host.trim().is_empty()
-        || request.username.trim().is_empty()
-        || request.known_hosts.trim().is_empty()
-    {
-        return Err("SFTP host, username, and known_hosts path are required".to_owned());
+    let root_path = request.root_path.trim().to_owned();
+    let known_hosts = request
+        .known_hosts
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or_else(default_sftp_known_hosts);
+    if request.host.trim().is_empty() || request.username.trim().is_empty() {
+        return Err("SFTP host and username are required".to_owned());
+    }
+    if known_hosts.trim().is_empty() {
+        return Err("Unable to determine the default SSH known_hosts path".to_owned());
     }
     if request.authentication == "private_key"
         && request
@@ -890,7 +912,7 @@ async fn connections_create_sftp(
         request.name,
         ProviderKind::Sftp,
         format!("sftp://{}:{}", request.host, request.port),
-        serde_json::json!({ "host": request.host, "port": request.port, "username": request.username, "known_hosts": request.known_hosts, "authentication": authentication, "private_key_path": request.private_key_path }),
+        serde_json::json!({ "host": request.host, "port": request.port, "root_path": root_path, "username": request.username, "known_hosts": known_hosts, "trust_on_first_use": request.trust_on_first_use, "authentication": authentication, "private_key_path": request.private_key_path }),
         serde_json::json!({ "username": request.username, "password": (request.authentication == "password").then_some(request.password), "private_key_path": request.private_key_path, "passphrase": request.passphrase }),
     )
     .await
@@ -916,8 +938,9 @@ async fn files_list(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Connection was not found".to_owned())?;
     let provider = provider_for_connection(&connection, &credentials).await?;
+    let path = request.path;
     let page = provider
-        .list(&request.path, request.cursor.as_deref())
+        .list(&path, request.cursor.as_deref())
         .await
         .map_err(|error| error.to_string())?;
     Ok(FilePage {
@@ -1451,6 +1474,10 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1473,19 +1500,21 @@ pub fn run() {
             let open = MenuItemBuilder::with_id("open", "Open Bifrost Drive").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
-            TrayIconBuilder::new()
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "open" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+            let mut tray = TrayIconBuilder::new().menu(&menu);
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray = tray.icon(icon);
+            }
+            tray.on_menu_event(|app, event| match event.id().as_ref() {
+                "open" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
                     }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .build(app)?;
+                }
+                "quit" => app.exit(0),
+                _ => {}
+            })
+            .build(app)?;
             Ok(())
         })
         .manage(Mutex::new(Application::new()))
