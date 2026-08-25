@@ -91,8 +91,14 @@ jobs:
         run: |
           $installer = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           if ($null -eq $installer) { throw "Windows installer was not produced" }
-          & signtool sign /sha1 $env:CERTIFICATE_THUMBPRINT /fd SHA256 $installer.FullName
-          if ($LASTEXITCODE -ne 0) { throw "signtool failed" }
+          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+          $signTool = Get-ChildItem $sdkRoot -Filter signtool.exe -Recurse -File |
+            Where-Object { $_.DirectoryName -like "*\x64" } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if ($null -eq $signTool) { throw "Windows SDK signtool.exe was not found under $sdkRoot" }
+          & $signTool.FullName sign /sha1 $env:CERTIFICATE_THUMBPRINT /fd SHA256 $installer.FullName
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed: $($signTool.FullName)" }
       - name: Sign updater artifact
         if: steps.existing.outputs.exists != 'true'
         shell: pwsh
