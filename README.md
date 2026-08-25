@@ -6,7 +6,7 @@ Bifrost Drive is a cross-platform desktop client for remote storage. It is desig
 
 ## Status
 
-Early foundation. The repository currently contains shared Rust contracts, SQLite migrations, Windows Credential Manager support, connection wizards for S3/SFTP/WebDAV, provider implementations for S3/SFTP/WebDAV, remote root browsing, durable cache-backed transfers, scheduled conflict-safe synchronization, CFAPI hydration and local mutation routing, tray support, durable activity history, and real Docker-backed provider tests. Native Explorer acceptance coverage, notifications, signing/updater setup, and platform expansion remain in progress.
+Early foundation. The repository currently contains shared Rust contracts, SQLite migrations, Windows Credential Manager support, connection wizards for S3/SFTP/WebDAV, provider implementations for S3/SFTP/WebDAV, remote root browsing, durable cache-backed transfers, scheduled conflict-safe synchronization, CFAPI hydration and local mutation routing, tray support, native notifications, signed updater configuration, durable activity history, and real Docker-backed provider tests. Native Explorer acceptance coverage and platform expansion remain in progress.
 
 ## Supported Targets
 

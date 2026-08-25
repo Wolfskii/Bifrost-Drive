@@ -9,6 +9,11 @@ import {
     Folder,
     RefreshCw,
 } from "lucide-react";
+import {
+    isPermissionGranted,
+    requestPermission,
+    sendNotification,
+} from "@tauri-apps/plugin-notification";
 import { FormEvent, useEffect, useState } from "react";
 import {
     ActivitySummary,
@@ -17,8 +22,10 @@ import {
     createS3Connection,
     createSftpConnection,
     createWebDavConnection,
+    checkForUpdate,
     FileSummary,
     hydrateFile,
+    installUpdate,
     listConnections,
     listActivity,
     listConflicts,
@@ -46,6 +53,8 @@ export function App() {
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [hydratingPath, setHydratingPath] = useState<string | null>(null);
+    const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+    const [installingUpdate, setInstallingUpdate] = useState(false);
     const [providerChoice, setProviderChoice] = useState<
         "S3" | "SFTP" | "WebDAV"
     >("S3");
@@ -56,6 +65,12 @@ export function App() {
             .catch(() => {
                 setError("Unable to load saved connections.");
             });
+    }, []);
+
+    useEffect(() => {
+        checkForUpdate()
+            .then(setUpdateVersion)
+            .catch(() => undefined);
     }, []);
 
     useEffect(() => {
@@ -156,6 +171,7 @@ export function App() {
         setError(null);
         try {
             await hydrateFile(openedConnection.id, path);
+            await notify("File ready", path);
         } catch (cause) {
             setError(
                 cause instanceof Error
@@ -175,6 +191,8 @@ export function App() {
             const result = await runSync(openedConnection.id, path);
             if (result.conflict) {
                 setConflicts(await listConflicts());
+            } else {
+                await notify("Sync complete", path);
             }
         } catch (cause) {
             setError(
@@ -197,6 +215,7 @@ export function App() {
             setConflicts((current) =>
                 current.filter((item) => item.id !== conflict.id),
             );
+            await notify("Conflict resolved", conflict.remote_path);
         } catch (cause) {
             setError(
                 cause instanceof Error
@@ -254,6 +273,34 @@ export function App() {
                 {error && (
                     <p className="inline-error" role="alert">
                         {error}
+                    </p>
+                )}
+                {updateVersion && (
+                    <p className="inline-error" role="status">
+                        Version {updateVersion} is available.{" "}
+                        <button
+                            className="link-button"
+                            type="button"
+                            disabled={installingUpdate}
+                            onClick={async () => {
+                                setInstallingUpdate(true);
+                                try {
+                                    await installUpdate();
+                                } catch (cause) {
+                                    setError(
+                                        cause instanceof Error
+                                            ? cause.message
+                                            : "Unable to install the update.",
+                                    );
+                                } finally {
+                                    setInstallingUpdate(false);
+                                }
+                            }}
+                        >
+                            {installingUpdate
+                                ? "Installing..."
+                                : "Install update"}
+                        </button>
                     </p>
                 )}
                 {conflicts.length > 0 && (
@@ -751,6 +798,18 @@ export function App() {
             )}
         </main>
     );
+}
+
+async function notify(title: string, body: string): Promise<void> {
+    try {
+        if (!(await isPermissionGranted())) {
+            const permission = await requestPermission();
+            if (permission !== "granted") return;
+        }
+        await sendNotification({ title, body });
+    } catch {
+        return;
+    }
 }
 
 function formatBytes(value: number | null): string {

@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Main Bifrost Drive window permissions",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "notification:default",
+    "process:default",
+    "updater:default"
+  ]
 }

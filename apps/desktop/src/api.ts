@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 
 export type ProviderKind = "S3" | "Sftp" | "WebDav" | "Nextcloud";
 
@@ -81,6 +83,24 @@ export async function listConnections(): Promise<ConnectionSummary[]> {
         return [];
     }
     return invoke<ConnectionSummary[]>("connections_list");
+}
+
+export async function checkForUpdate(): Promise<string | null> {
+    if (!tauriAvailable()) {
+        return null;
+    }
+    const update = await check();
+    return update?.version ?? null;
+}
+
+export async function installUpdate(): Promise<void> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    const update = await check();
+    if (!update) return;
+    await update.downloadAndInstall();
+    await relaunch();
 }
 
 export async function createS3Connection(

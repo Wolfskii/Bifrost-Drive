@@ -36,6 +36,9 @@ serde.workspace = true
 serde_json.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "migrate"] }
 tauri = { version = "2.0", features = ["tray-icon"] }
+tauri-plugin-notification = "2.0"
+tauri-plugin-process = "2.0"
+tauri-plugin-updater = "2.0"
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

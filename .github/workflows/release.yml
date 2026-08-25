@@ -42,6 +42,20 @@ jobs:
         run: npm --prefix apps/desktop run test
       - name: Validate release metadata
         run: cargo run -p xtask -- release-check
+      - name: Require release signing secrets
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw "Stable releases require WINDOWS_CERTIFICATE_BASE64 and WINDOWS_CERTIFICATE_PASSWORD repository secrets"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "Stable releases require TAURI_SIGNING_PRIVATE_KEY repository secret"
+          }
       - name: Read version
         id: version
         shell: pwsh
@@ -62,6 +76,43 @@ jobs:
       - name: Build Windows installer
         if: steps.existing.outputs.exists != 'true'
         run: npm --prefix apps/desktop run tauri -- build --target x86_64-pc-windows-msvc
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - name: Sign Windows installer
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP "bifrost-drive-signing.pfx"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+          $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force)
+          $installer = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if ($null -eq $installer) { throw "Windows installer was not produced" }
+          & signtool sign /sha1 $certificate.Thumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $installer.FullName
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed" }
+      - name: Generate updater manifest
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $artifact = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*.nsis.zip | Select-Object -First 1
+          if ($null -eq $artifact) { throw "Signed updater artifact was not produced" }
+          $signature = Get-Content "$($artifact.FullName).sig" -Raw
+          $manifest = @{
+            version = $version
+            notes = "Bifrost Drive $version"
+            pub_date = (Get-Date).ToUniversalTime().ToString("o")
+            platforms = @{
+              "windows-x86_64-nsis" = @{
+                signature = $signature.Trim()
+                url = "https://github.com/Wolfskii/Bifrost-Drive/releases/download/v$version/$($artifact.Name)"
+              }
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Out-File target/x86_64-pc-windows-msvc/release/bundle/nsis/latest.json -Encoding utf8
       - name: Generate checksum
         if: steps.existing.outputs.exists != 'true'
         shell: pwsh
@@ -81,4 +132,7 @@ jobs:
           gh release create "v$version" `
             target/x86_64-pc-windows-msvc/release/bundle/nsis/Bifrost-Drive-Setup-x64.exe `
             target/x86_64-pc-windows-msvc/release/bundle/nsis/SHA256SUMS.txt `
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.nsis.zip `
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.nsis.zip.sig `
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/latest.json `
             --title "Bifrost Drive $version" --generate-notes

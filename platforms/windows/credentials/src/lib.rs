@@ -3,6 +3,7 @@ use bifrost_crypto::{CredentialError, CredentialRef, CredentialStore, SecretStri
 #[cfg(target_os = "windows")]
 use uuid::Uuid;
 
+#[cfg(target_os = "windows")]
 const SERVICE_NAME: &str = "com.bifrost.drive";
 
 pub struct WindowsCredentialStore;

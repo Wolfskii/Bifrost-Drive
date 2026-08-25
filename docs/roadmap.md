@@ -18,8 +18,9 @@
 - [x] CFAPI local close, delete, and rename mutation routing
 - [x] Tray entry point and durable activity history
 - [ ] Windows Explorer VM acceptance and crash/reconnect validation
-- [ ] Native notifications and richer transfer history
-- [ ] Windows x64 signing, updater, and automated stable releases
+- [x] Native notifications and durable transfer history
+- [x] Windows x64 signing and updater workflow configuration
+- [ ] Provision protected release secrets and execute a signed stable release
 
 ## Phase 3: Expansion
 
