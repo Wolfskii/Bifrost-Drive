@@ -81,7 +81,7 @@ jobs:
           exit 0
       - name: Build Windows installer
         if: steps.existing.outputs.exists != 'true'
-        run: npm --prefix apps/desktop run tauri -- build --target x86_64-pc-windows-msvc --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        run: npm --prefix apps/desktop run tauri -- build --target x86_64-pc-windows-msvc --config src-tauri/tauri.release.conf.json
       - name: Sign Windows installer
         if: steps.existing.outputs.exists != 'true'
         shell: pwsh

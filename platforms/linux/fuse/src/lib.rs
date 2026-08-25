@@ -229,6 +229,8 @@ mod linux {
             _fh: u64,
             offset: i64,
             size: u32,
+            _flags: i32,
+            _lock_owner: Option<u64>,
             reply: ReplyData,
         ) {
             let Some(path) = self.path_for(inode) else {
