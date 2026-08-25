@@ -35,7 +35,7 @@ authors = ["Bifrost Drive contributors"]
 [workspace.dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
-aws-config = { version = "=1.8.8", default-features = false, features = ["rt-tokio", "rustls"] }
+aws-config = { version = "=1.8.16", default-features = false, features = ["rt-tokio", "rustls"] }
 aws-credential-types = "=1.2.14"
 aws-sdk-s3 = { version = "=1.130.0", default-features = false, features = ["behavior-version-latest", "http-1x", "rt-tokio", "rustls"] }
 aws-smithy-async = "=1.2.14"
