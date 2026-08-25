@@ -19,8 +19,10 @@ import {
     ActivitySummary,
     ConnectionSummary,
     ConflictSummary,
+    createFtpConnection,
     createS3Connection,
     createSftpConnection,
+    createSmbConnection,
     createWebDavConnection,
     checkForUpdate,
     FileSummary,
@@ -39,7 +41,11 @@ const providerTypes = [
     { name: "S3", status: "Available now" },
     { name: "SFTP", status: "Password sign-in available" },
     { name: "WebDAV", status: "Available now" },
+    { name: "FTP / FTPS", status: "Available now" },
+    { name: "SMB", status: "Available now" },
 ];
+
+type ProviderChoice = "S3" | "SFTP" | "WebDAV" | "FTP" | "SMB";
 
 export function App() {
     const [connections, setConnections] = useState<ConnectionSummary[]>([]);
@@ -55,9 +61,7 @@ export function App() {
     const [hydratingPath, setHydratingPath] = useState<string | null>(null);
     const [updateVersion, setUpdateVersion] = useState<string | null>(null);
     const [installingUpdate, setInstallingUpdate] = useState(false);
-    const [providerChoice, setProviderChoice] = useState<
-        "S3" | "SFTP" | "WebDAV"
-    >("S3");
+    const [providerChoice, setProviderChoice] = useState<ProviderChoice>("S3");
 
     useEffect(() => {
         listConnections()
@@ -116,7 +120,18 @@ export function App() {
             password: String(values.get("password") ?? ""),
         };
         let createConnection: Promise<ConnectionSummary>;
-        if (providerChoice === "WebDAV") {
+        if (providerChoice === "FTP") {
+            createConnection = createFtpConnection({
+                ...common,
+                endpoint: String(values.get("endpoint") ?? "").trim(),
+            });
+        } else if (providerChoice === "SMB") {
+            createConnection = createSmbConnection({
+                ...common,
+                endpoint: String(values.get("endpoint") ?? "").trim(),
+                domain: String(values.get("domain") ?? "").trim(),
+            });
+        } else if (providerChoice === "WebDAV") {
             createConnection = createWebDavConnection({
                 ...common,
                 endpoint: String(values.get("endpoint") ?? "").trim(),
@@ -607,8 +622,8 @@ export function App() {
                                     value={providerChoice}
                                     onChange={(event) =>
                                         setProviderChoice(
-                                            event.target.value as
-                                                "S3" | "SFTP" | "WebDAV",
+                                            event.target
+                                                .value as ProviderChoice,
                                         )
                                     }
                                 >
@@ -619,6 +634,10 @@ export function App() {
                                     <option value="WebDAV">
                                         WebDAV server
                                     </option>
+                                    <option value="FTP">
+                                        FTP / FTPS server
+                                    </option>
+                                    <option value="SMB">SMB share</option>
                                 </select>
                             </label>
                             <label>
@@ -647,6 +666,15 @@ export function App() {
                                         name="host"
                                         required
                                         placeholder="files.example.com"
+                                    />
+                                </label>
+                            )}
+                            {providerChoice === "SMB" && (
+                                <label>
+                                    Domain
+                                    <input
+                                        name="domain"
+                                        placeholder="WORKGROUP"
                                     />
                                 </label>
                             )}

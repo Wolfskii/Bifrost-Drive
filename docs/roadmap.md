@@ -24,9 +24,13 @@
 
 ## Phase 3: Expansion
 
-- Nextcloud, SMB, FTP/FTPS
-- macOS File Provider
-- Linux FUSE
+- [x] SMB and FTP/FTPS provider slices with opt-in contract tests
+- [x] macOS Keychain and Linux Secret Service credential adapters
+- [x] Read-only Linux FUSE provider mount and CI compile test
+- [ ] Nextcloud-specific discovery and authentication
+- [x] macOS File Provider Swift target boundary and CI package tests
+- [ ] macOS File Provider Rust transport wiring, signing, and Finder acceptance
+- [ ] Writable Linux FUSE mutation semantics and native acceptance
 - Additional cloud providers, sharing, versions, and locking
 
 ## Phase 4: Advanced

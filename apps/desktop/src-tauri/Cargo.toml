@@ -21,10 +21,14 @@ bifrost-cache = { path = "../../../crates/bifrost-cache" }
 bifrost-common = { path = "../../../crates/bifrost-common" }
 bifrost-core = { path = "../../../crates/bifrost-core" }
 bifrost-db = { path = "../../../crates/bifrost-db" }
+bifrost-ftp = { path = "../../../crates/bifrost-ftp" }
+bifrost-linux-credentials = { path = "../../../platforms/linux/credentials" }
+bifrost-macos-credentials = { path = "../../../platforms/macos/credentials" }
 bifrost-crypto = { path = "../../../crates/bifrost-crypto" }
 bifrost-windows-credentials = { path = "../../../platforms/windows/credentials" }
 bifrost-s3 = { path = "../../../crates/bifrost-s3" }
 bifrost-sftp = { path = "../../../crates/bifrost-sftp" }
+bifrost-smb = { path = "../../../crates/bifrost-smb" }
 bifrost-sync = { path = "../../../crates/bifrost-sync" }
 bifrost-storage = { path = "../../../crates/bifrost-storage" }
 bifrost-webdav = { path = "../../../crates/bifrost-webdav" }

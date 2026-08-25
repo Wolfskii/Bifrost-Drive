@@ -1,0 +1,20 @@
+[package]
+name = "bifrost-smb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bifrost-common = { path = "../bifrost-common" }
+bifrost-storage = { path = "../bifrost-storage" }
+bytes.workspace = true
+chrono.workspace = true
+futures-util = "0.3"
+smb2 = "=0.18.1"
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

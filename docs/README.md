@@ -12,6 +12,8 @@ Start with [architecture.md](architecture.md), then [development.md](development
 - [Protocols](protocols.md)
 - [S3](s3.md)
 - [SFTP](sftp.md)
+- [FTP](ftp.md)
+- [SMB](smb.md)
 - [WebDAV](webdav.md)
 - [Nextcloud](nextcloud.md)
 - [Synchronization](synchronization.md)

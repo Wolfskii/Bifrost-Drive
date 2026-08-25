@@ -2,7 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 
-export type ProviderKind = "S3" | "Sftp" | "WebDav" | "Nextcloud";
+export type ProviderKind =
+    "S3" | "Sftp" | "WebDav" | "Nextcloud" | "Ftp" | "Smb";
 
 export interface ConnectionSummary {
     id: string;
@@ -34,6 +35,21 @@ export interface WebDavConnectionForm {
     endpoint: string;
     username: string;
     password: string;
+}
+
+export interface FtpConnectionForm {
+    name: string;
+    endpoint: string;
+    username: string;
+    password: string;
+}
+
+export interface SmbConnectionForm {
+    name: string;
+    endpoint: string;
+    username: string;
+    password: string;
+    domain: string;
 }
 
 export interface SftpConnectionForm {
@@ -130,6 +146,28 @@ export async function createWebDavConnection(
         throw new Error("The desktop service is not available in this window");
     }
     return invoke<ConnectionSummary>("connections_create_webdav", {
+        request: form,
+    });
+}
+
+export async function createFtpConnection(
+    form: FtpConnectionForm,
+): Promise<ConnectionSummary> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<ConnectionSummary>("connections_create_ftp", {
+        request: form,
+    });
+}
+
+export async function createSmbConnection(
+    form: SmbConnectionForm,
+): Promise<ConnectionSummary> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<ConnectionSummary>("connections_create_smb", {
         request: form,
     });
 }

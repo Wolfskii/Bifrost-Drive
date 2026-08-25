@@ -103,6 +103,8 @@ tasks:
       - cargo test -p bifrost-s3 --test minio -- --ignored --nocapture
       - cargo test -p bifrost-webdav --test apache -- --ignored --nocapture
       - cargo test -p bifrost-sftp --test atmoz -- --ignored --nocapture
+      - cargo test -p bifrost-ftp --test fixture -- --ignored --nocapture
+      - cargo test -p bifrost-smb --test fixture -- --ignored --nocapture
       - task: docker:down
 
   lint:

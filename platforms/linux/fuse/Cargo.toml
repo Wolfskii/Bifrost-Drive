@@ -1,0 +1,16 @@
+[package]
+name = "bifrost-linux-fuse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bifrost-common = { path = "../../../crates/bifrost-common" }
+bifrost-storage = { path = "../../../crates/bifrost-storage" }
+futures-util = "0.3"
+thiserror.workspace = true
+tokio.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { version = "=0.15.1", default-features = false, features = ["abi-7-31"] }
+libc = "0.2"

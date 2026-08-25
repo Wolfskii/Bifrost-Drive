@@ -42,6 +42,23 @@ pub struct CreateWebDavConnectionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateFtpConnectionRequest {
+    pub name: String,
+    pub endpoint: String,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateSmbConnectionRequest {
+    pub name: String,
+    pub endpoint: String,
+    pub username: String,
+    pub password: String,
+    pub domain: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSftpConnectionRequest {
     pub name: String,
     pub host: String,

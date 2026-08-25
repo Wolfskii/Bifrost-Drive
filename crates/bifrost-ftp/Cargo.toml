@@ -1,0 +1,26 @@
+[package]
+name = "bifrost-ftp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-std = "1.13"
+async-channel = "2.5"
+async-trait.workspace = true
+bifrost-common = { path = "../bifrost-common" }
+bifrost-storage = { path = "../bifrost-storage" }
+bytes.workspace = true
+chrono.workspace = true
+futures-lite = "2.6"
+futures-rustls = "0.26"
+futures-util = "0.3"
+rustls = "0.23"
+rustls-pki-types = "1.12"
+suppaftp = { version = "=6.3.0", default-features = false, features = ["async-rustls"] }
+thiserror.workspace = true
+url.workspace = true
+webpki-roots = "0.26"
+
+[dev-dependencies]
+tokio.workspace = true

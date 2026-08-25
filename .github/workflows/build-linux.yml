@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Tauri dependencies
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf libgtk-3-dev libglib2.0-dev libayatana-appindicator3-dev
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf libgtk-3-dev libglib2.0-dev libayatana-appindicator3-dev libfuse3-dev
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -29,3 +29,4 @@ jobs:
       - run: npm ci
       - run: npm --prefix apps/desktop run build
       - run: cargo check --workspace
+      - run: cargo test -p bifrost-linux-fuse

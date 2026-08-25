@@ -6,6 +6,7 @@ on:
     paths:
       - "apps/desktop/**"
       - "crates/**"
+      - "platforms/macos/**"
       - ".github/workflows/build-macos.yml"
 
 permissions:
@@ -25,3 +26,5 @@ jobs:
       - run: npm ci
       - run: npm --prefix apps/desktop run build
       - run: cargo check --workspace
+      - name: Build File Provider package
+        run: swift test --package-path platforms/macos/file-provider

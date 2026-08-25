@@ -1,27 +1,37 @@
 use bifrost_api::{
     ActivitySummary, AppStatus, ConnectionIdRequest, ConnectionSummary, CreateConnectionRequest,
-    CreateS3ConnectionRequest, CreateSftpConnectionRequest, CreateWebDavConnectionRequest,
-    CredentialSummary, FilePage, FileSummary, HydrateFileRequest, HydrateFileResponse,
-    ListFilesRequest, StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse,
-    SyncRunRequest, SyncRunResponse, TestConnectionRequest,
+    CreateFtpConnectionRequest, CreateS3ConnectionRequest, CreateSftpConnectionRequest,
+    CreateSmbConnectionRequest, CreateWebDavConnectionRequest, CredentialSummary, FilePage,
+    FileSummary, HydrateFileRequest, HydrateFileResponse, ListFilesRequest,
+    StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse, SyncRunRequest,
+    SyncRunResponse, TestConnectionRequest,
 };
 use bifrost_cache::{CacheManager, CacheRecord};
 use bifrost_common::{ConnectionState, ProviderKind};
 use bifrost_core::Application;
 use bifrost_crypto::{CredentialError, CredentialRef, CredentialStore, SecretString};
 use bifrost_db::{ConflictRecord, ConnectionRecord, Database, SyncEntryRecord};
+use bifrost_ftp::{FtpConfig, FtpProvider};
+#[cfg(target_os = "linux")]
+use bifrost_linux_credentials::LinuxCredentialStore as WindowsCredentialStore;
+#[cfg(target_os = "macos")]
+use bifrost_macos_credentials::MacosCredentialStore as WindowsCredentialStore;
 use bifrost_s3::{S3Config, S3Provider};
 use bifrost_sftp::{SftpConfig, SftpProvider};
+use bifrost_smb::{SmbConfig, SmbProvider};
 use bifrost_storage::StorageProvider;
 use bifrost_sync::{resolve, ConflictResolution, ReconciliationInput, Revision, SyncDecision};
 use bifrost_transfer::TransferService;
 use bifrost_transfer::{TransferDirection, TransferSnapshot, TransferStatus, TransferStore};
 use bifrost_webdav::{WebDavConfig, WebDavProvider};
+#[cfg(target_os = "windows")]
 use bifrost_windows_cfapi::{CfapiEvent, PlaceholderMetadata, SyncRoot, SyncRootConfig};
+#[cfg(target_os = "windows")]
 use bifrost_windows_credentials::WindowsCredentialStore;
 use serde::Deserialize;
+#[cfg(target_os = "windows")]
+use std::collections::HashMap;
 use std::{
-    collections::HashMap,
     fs,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -33,7 +43,25 @@ use tauri::{
     Manager, State,
 };
 
+#[cfg(target_os = "windows")]
 struct SyncRootRegistry(Mutex<HashMap<String, SyncRoot>>);
+
+#[cfg(not(target_os = "windows"))]
+struct SyncRootRegistry;
+
+#[cfg(target_os = "windows")]
+impl SyncRootRegistry {
+    fn new() -> Self {
+        Self(Mutex::new(HashMap::new()))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl SyncRootRegistry {
+    fn new() -> Self {
+        Self
+    }
+}
 
 struct SqliteTransferStore {
     database: Database,
@@ -449,6 +477,11 @@ struct SftpCredentials {
     passphrase: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SmbConfiguration {
+    domain: String,
+}
+
 async fn test_connection(
     credentials: &WindowsCredentialStore,
     request: TestConnectionRequest,
@@ -537,6 +570,40 @@ async fn test_connection(
                 .test_connection()
                 .await
                 .map_err(|error| error.to_string())
+        }
+        ProviderKind::Ftp => {
+            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored FTP credential payload is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&request.endpoint)
+                .map_err(|_| "FTP endpoint must be a valid URL".to_owned())?;
+            FtpProvider::connect(FtpConfig {
+                endpoint,
+                username: stored.username,
+                password: stored.password,
+            })
+            .map_err(|error| error.to_string())?
+            .test_connection()
+            .await
+            .map_err(|error| error.to_string())
+        }
+        ProviderKind::Smb => {
+            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored SMB credential payload is invalid".to_owned())?;
+            let configuration: SmbConfiguration = serde_json::from_value(request.configuration)
+                .map_err(|_| "SMB configuration is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&request.endpoint)
+                .map_err(|_| "SMB endpoint must be a valid URL".to_owned())?;
+            SmbProvider::connect(SmbConfig {
+                endpoint,
+                username: stored.username,
+                password: stored.password,
+                domain: configuration.domain,
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .test_connection()
+            .await
+            .map_err(|error| error.to_string())
         }
     }
 }
@@ -682,6 +749,39 @@ async fn provider_for_connection(
                 ))
             }
         }
+        ProviderKind::Ftp => {
+            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored FTP credential payload is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&connection.endpoint)
+                .map_err(|_| "FTP endpoint must be a valid URL".to_owned())?;
+            Ok(Box::new(
+                FtpProvider::connect(FtpConfig {
+                    endpoint,
+                    username: stored.username,
+                    password: stored.password,
+                })
+                .map_err(|error| error.to_string())?,
+            ))
+        }
+        ProviderKind::Smb => {
+            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored SMB credential payload is invalid".to_owned())?;
+            let configuration: SmbConfiguration =
+                serde_json::from_str(&connection.configuration_json)
+                    .map_err(|_| "SMB configuration is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&connection.endpoint)
+                .map_err(|_| "SMB endpoint must be a valid URL".to_owned())?;
+            Ok(Box::new(
+                SmbProvider::connect(SmbConfig {
+                    endpoint,
+                    username: stored.username,
+                    password: stored.password,
+                    domain: configuration.domain,
+                })
+                .await
+                .map_err(|error| error.to_string())?,
+            ))
+        }
     }
 }
 
@@ -700,6 +800,61 @@ async fn connections_create_webdav(
         ProviderKind::WebDav,
         endpoint.to_string(),
         serde_json::json!({}),
+        serde_json::json!({ "username": request.username, "password": request.password }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn connections_create_ftp(
+    database: State<'_, Database>,
+    credentials: State<'_, WindowsCredentialStore>,
+    request: CreateFtpConnectionRequest,
+) -> Result<ConnectionSummary, String> {
+    if request.name.trim().is_empty()
+        || request.username.trim().is_empty()
+        || request.password.is_empty()
+    {
+        return Err("FTP connection name, username, and password are required".to_owned());
+    }
+    let endpoint = url::Url::parse(&request.endpoint)
+        .map_err(|_| "FTP endpoint must be a valid URL".to_owned())?;
+    if !matches!(endpoint.scheme(), "ftp" | "ftps") {
+        return Err("FTP endpoint must use ftp:// or ftps://".to_owned());
+    }
+    create_tested_connection(
+        &database,
+        &credentials,
+        request.name,
+        ProviderKind::Ftp,
+        endpoint.to_string(),
+        serde_json::json!({}),
+        serde_json::json!({ "username": request.username, "password": request.password }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn connections_create_smb(
+    database: State<'_, Database>,
+    credentials: State<'_, WindowsCredentialStore>,
+    request: CreateSmbConnectionRequest,
+) -> Result<ConnectionSummary, String> {
+    if request.name.trim().is_empty() || request.username.trim().is_empty() {
+        return Err("SMB connection name and username are required".to_owned());
+    }
+    let endpoint = url::Url::parse(&request.endpoint)
+        .map_err(|_| "SMB endpoint must be a valid URL".to_owned())?;
+    if endpoint.scheme() != "smb" {
+        return Err("SMB endpoint must use smb://".to_owned());
+    }
+    create_tested_connection(
+        &database,
+        &credentials,
+        request.name,
+        ProviderKind::Smb,
+        endpoint.to_string(),
+        serde_json::json!({ "domain": request.domain }),
         serde_json::json!({ "username": request.username, "password": request.password }),
     )
     .await
@@ -1246,7 +1401,7 @@ async fn sync_root_register(
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (registry, database, credentials, transfers, request);
-        return Err("Windows CFAPI is available only on Windows".to_owned());
+        Err("Windows CFAPI is available only on Windows".to_owned())
     }
     #[cfg(target_os = "windows")]
     {
@@ -1335,13 +1490,15 @@ pub fn run() {
         })
         .manage(Mutex::new(Application::new()))
         .manage(WindowsCredentialStore::new())
-        .manage(SyncRootRegistry(Mutex::new(HashMap::new())))
+        .manage(SyncRootRegistry::new())
         .invoke_handler(tauri::generate_handler![
             app_status,
             connections_list,
             activity_list,
             connections_create,
             connections_create_s3,
+            connections_create_ftp,
+            connections_create_smb,
             connections_create_webdav,
             connections_create_sftp,
             connections_remove,

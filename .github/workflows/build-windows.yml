@@ -11,9 +11,6 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    env:
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,12 +24,10 @@ jobs:
         with:
           workspaces: . -> target
       - run: npm ci
-      - run: npm --prefix apps/desktop run tauri -- build --target x86_64-pc-windows-msvc
+      - run: npm --prefix apps/desktop run tauri -- build --target x86_64-pc-windows-msvc --config '{"bundle":{"createUpdaterArtifacts":false}}'
         env:
           WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       - name: Sign Windows installer
         if: ${{ env.WINDOWS_CERTIFICATE_BASE64 != '' }}
         shell: pwsh
@@ -51,12 +46,4 @@ jobs:
         with:
           name: bifrost-drive-windows-x64
           path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        if: ${{ env.TAURI_SIGNING_PRIVATE_KEY != '' }}
-        with:
-          name: bifrost-drive-windows-x64-updater
-          path: |
-            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.nsis.zip
-            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.nsis.zip.sig
           if-no-files-found: error

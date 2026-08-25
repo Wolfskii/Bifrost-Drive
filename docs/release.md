@@ -16,7 +16,7 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.bifrost-drive/tauri-updater.key
 gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --body ""
 ```
 
-The release workflow imports the certificate into the ephemeral runner certificate store, signs the NSIS installer with SHA-256 and a DigiCert RFC 3161 timestamp, then publishes the installer and checksum. The signing certificate and password never belong in the repository.
+The release workflow builds without automatic updater signing, imports the certificate into the ephemeral runner certificate store, signs the NSIS installer with SHA-256 and a DigiCert RFC 3161 timestamp, then signs that final installer with the Tauri updater key and publishes the installer, signature, manifest, and checksum. The signing certificates, updater key, and passwords never belong in the repository.
 
 ## Local verification
 

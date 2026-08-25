@@ -9,6 +9,8 @@ members = [
     "crates/bifrost-crypto",
     "crates/bifrost-db",
     "crates/bifrost-s3",
+    "crates/bifrost-ftp",
+    "crates/bifrost-smb",
     "crates/bifrost-storage",
     "crates/bifrost-transfer",
     "crates/bifrost-sftp",
@@ -16,6 +18,9 @@ members = [
     "crates/bifrost-webdav",
     "platforms/windows/credentials",
     "platforms/windows/cfapi",
+    "platforms/macos/credentials",
+    "platforms/linux/credentials",
+    "platforms/linux/fuse",
     "xtask",
 ]
 default-members = [
@@ -27,6 +32,8 @@ default-members = [
     "crates/bifrost-crypto",
     "crates/bifrost-db",
     "crates/bifrost-s3",
+    "crates/bifrost-ftp",
+    "crates/bifrost-smb",
     "crates/bifrost-storage",
     "crates/bifrost-transfer",
     "crates/bifrost-sftp",
@@ -34,6 +41,9 @@ default-members = [
     "crates/bifrost-webdav",
     "platforms/windows/credentials",
     "platforms/windows/cfapi",
+    "platforms/macos/credentials",
+    "platforms/linux/credentials",
+    "platforms/linux/fuse",
 ]
 
 [workspace.package]
