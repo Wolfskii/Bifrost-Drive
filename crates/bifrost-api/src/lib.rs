@@ -18,6 +18,12 @@ pub struct ConnectionDetails {
     pub summary: ConnectionSummary,
     pub configuration: serde_json::Value,
     pub username: Option<String>,
+    pub drive_icon_preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveIconPreviewRequest {
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +55,10 @@ pub struct CreateS3ConnectionRequest {
     pub secret_access_key: String,
     pub drive_letter: Option<String>,
     pub mount_on_startup: bool,
+    #[serde(default)]
+    pub drive_type: String,
+    #[serde(default)]
+    pub drive_icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +69,10 @@ pub struct CreateWebDavConnectionRequest {
     pub password: String,
     pub drive_letter: Option<String>,
     pub mount_on_startup: bool,
+    #[serde(default)]
+    pub drive_type: String,
+    #[serde(default)]
+    pub drive_icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +83,10 @@ pub struct CreateFtpConnectionRequest {
     pub password: String,
     pub drive_letter: Option<String>,
     pub mount_on_startup: bool,
+    #[serde(default)]
+    pub drive_type: String,
+    #[serde(default)]
+    pub drive_icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +98,10 @@ pub struct CreateSmbConnectionRequest {
     pub domain: String,
     pub drive_letter: Option<String>,
     pub mount_on_startup: bool,
+    #[serde(default)]
+    pub drive_type: String,
+    #[serde(default)]
+    pub drive_icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +121,10 @@ pub struct CreateSftpConnectionRequest {
     pub passphrase: Option<String>,
     pub drive_letter: Option<String>,
     pub mount_on_startup: bool,
+    #[serde(default)]
+    pub drive_type: String,
+    #[serde(default)]
+    pub drive_icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

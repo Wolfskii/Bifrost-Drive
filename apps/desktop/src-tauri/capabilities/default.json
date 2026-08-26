@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "autostart:default",
+    "dialog:allow-open",
     "notification:default",
     "process:default",
     "updater:default"

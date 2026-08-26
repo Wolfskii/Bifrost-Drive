@@ -43,6 +43,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 tauri = { version = "2.0", features = ["tray-icon"] }
 tauri-plugin-notification = "2.0"
 tauri-plugin-autostart = "2.0"
+tauri-plugin-dialog = "2.0"
 tauri-plugin-process = "2.0"
 tauri-plugin-updater = "2.0"
 tokio.workspace = true
@@ -50,7 +51,11 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url.workspace = true
 uuid.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+ico = "0.4"
+base64 = "0.22"
+tauri-plugin-single-instance = "2.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 bifrost-windows-winfsp = { path = "../../../platforms/windows/winfsp", features = ["native"] }
-windows = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+windows = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

@@ -91,6 +91,11 @@ impl SyncRoot {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+pub fn unregister(_path: &std::path::Path) -> Result<(), CfapiError> {
+    Err(CfapiError::UnsupportedPlatform)
+}
+
 #[cfg(target_os = "windows")]
 mod windows_impl {
     use super::*;
@@ -577,6 +582,12 @@ mod windows_impl {
         }
     }
 
+    pub fn unregister(path: &std::path::Path) -> Result<(), CfapiError> {
+        let path = wide_path(path);
+        unsafe { CfUnregisterSyncRoot(PCWSTR(path.as_ptr())) }
+            .map_err(|error| CfapiError::Platform(error.to_string()))
+    }
+
     impl Drop for SyncRoot {
         fn drop(&mut self) {
             if let Some(connection) = self.connection_key.take() {
@@ -600,4 +611,4 @@ mod windows_impl {
 }
 
 #[cfg(target_os = "windows")]
-pub use windows_impl::SyncRoot;
+pub use windows_impl::{unregister, SyncRoot};

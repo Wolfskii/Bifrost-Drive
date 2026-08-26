@@ -22,6 +22,7 @@ export interface ConnectionDetails {
     summary: ConnectionSummary;
     configuration: Record<string, unknown>;
     username: string | null;
+    drive_icon_preview: string | null;
 }
 
 export interface FileSummary {
@@ -41,6 +42,8 @@ export interface S3ConnectionForm {
     secretAccessKey: string;
     driveLetter: string;
     mountOnStartup: boolean;
+    driveType: "network" | "local";
+    driveIcon: string;
 }
 
 export interface WebDavConnectionForm {
@@ -50,6 +53,8 @@ export interface WebDavConnectionForm {
     password: string;
     driveLetter: string;
     mountOnStartup: boolean;
+    driveType: "network" | "local";
+    driveIcon: string;
 }
 
 export interface FtpConnectionForm {
@@ -59,6 +64,8 @@ export interface FtpConnectionForm {
     password: string;
     driveLetter: string;
     mountOnStartup: boolean;
+    driveType: "network" | "local";
+    driveIcon: string;
 }
 
 export interface SmbConnectionForm {
@@ -69,6 +76,8 @@ export interface SmbConnectionForm {
     domain: string;
     driveLetter: string;
     mountOnStartup: boolean;
+    driveType: "network" | "local";
+    driveIcon: string;
 }
 
 export interface SftpConnectionForm {
@@ -84,6 +93,8 @@ export interface SftpConnectionForm {
     passphrase: string;
     driveLetter: string;
     mountOnStartup: boolean;
+    driveType: "network" | "local";
+    driveIcon: string;
 }
 
 export interface HydrateFileResponse {
@@ -119,6 +130,19 @@ export interface SyncRootRegisterResponse {
 
 export interface DriveMountRegisterResponse {
     drive_letter: string;
+}
+
+export interface StockDriveIcon {
+    value: string;
+    label: string;
+    preview: string;
+}
+
+export async function getDriveIconPreview(path: string): Promise<string> {
+    if (!tauriAvailable()) {
+        return "";
+    }
+    return invoke<string>("drive_icon_preview", { request: { path } });
 }
 
 function tauriAvailable(): boolean {
@@ -219,6 +243,8 @@ export async function createS3Connection(
             secret_access_key: form.secretAccessKey,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
+            drive_type: form.driveType,
+            drive_icon: form.driveIcon || null,
         },
     });
 }
@@ -234,6 +260,8 @@ export async function createWebDavConnection(
             ...form,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
+            drive_type: form.driveType,
+            drive_icon: form.driveIcon || null,
         },
     });
 }
@@ -249,6 +277,8 @@ export async function createFtpConnection(
             ...form,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
+            drive_type: form.driveType,
+            drive_icon: form.driveIcon || null,
         },
     });
 }
@@ -264,6 +294,8 @@ export async function createSmbConnection(
             ...form,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
+            drive_type: form.driveType,
+            drive_icon: form.driveIcon || null,
         },
     });
 }
@@ -281,6 +313,8 @@ export async function createSftpConnection(
             trust_on_first_use: form.trustOnFirstUse,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
+            drive_type: form.driveType,
+            drive_icon: form.driveIcon || null,
         },
     });
 }
@@ -290,6 +324,13 @@ export async function getAvailableDriveLetters(): Promise<string[]> {
         return [];
     }
     return invoke<string[]>("drive_letters_available");
+}
+
+export async function getStockDriveIcons(): Promise<StockDriveIcon[]> {
+    if (!tauriAvailable()) {
+        return [];
+    }
+    return invoke<StockDriveIcon[]>("drive_stock_icons");
 }
 
 export async function registerDriveMount(

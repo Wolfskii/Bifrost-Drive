@@ -9,6 +9,17 @@ use std::{
 use bifrost_common::{RemoteMetadata, RemotePath};
 use bifrost_storage::StorageError;
 use tokio::runtime::Runtime;
+use windows::{
+    core::{PCWSTR, PWSTR},
+    Win32::{
+        Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS},
+        System::Registry::{
+            RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+            KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
+        },
+        UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_FLUSHNOWAIT, SHCNF_IDLIST},
+    },
+};
 use winfsp_wrs::{
     filetime_from_utc, filetime_now, u16cstr, CleanupFlags, CreateFileInfo, CreateOptions, DirInfo,
     FileAccessRights, FileAttributes, FileInfo, FileSystem, FileSystemInterface,
@@ -29,12 +40,20 @@ static NEXT_MOUNT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct MountHandle {
     filesystem: Option<FileSystem>,
+    drive_letter: char,
+    mount_points_key: Option<String>,
 }
 
 impl MountHandle {
     pub fn unmount(mut self) {
         if let Some(filesystem) = self.filesystem.take() {
             stop_filesystem(filesystem);
+        }
+        clear_explorer_drive_label(self.drive_letter);
+        clear_explorer_drive_icon(self.drive_letter);
+        if let Some(key) = &self.mount_points_key {
+            let _ = clear_explorer_registry_tree(key);
+            refresh_explorer_drive_labels();
         }
     }
 }
@@ -44,6 +63,12 @@ impl Drop for MountHandle {
         if let Some(filesystem) = self.filesystem.take() {
             stop_filesystem(filesystem);
         }
+        clear_explorer_drive_label(self.drive_letter);
+        clear_explorer_drive_icon(self.drive_letter);
+        if let Some(key) = &self.mount_points_key {
+            let _ = clear_explorer_registry_tree(key);
+            refresh_explorer_drive_labels();
+        }
     }
 }
 
@@ -51,6 +76,135 @@ fn stop_filesystem(filesystem: FileSystem) {
     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filesystem.stop())).is_err() {
         tracing::error!("WinFsp filesystem teardown panicked");
     }
+}
+
+fn drive_label_key(drive_letter: char) -> String {
+    format!(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons\{drive_letter}\DefaultLabel"
+    )
+}
+
+fn drive_icon_key(drive_letter: char) -> String {
+    format!(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons\{drive_letter}\DefaultIcon"
+    )
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn refresh_explorer_drive_labels() {
+    unsafe {
+        SHChangeNotify(
+            SHCNE_ASSOCCHANGED,
+            SHCNF_IDLIST | SHCNF_FLUSHNOWAIT,
+            None,
+            None,
+        );
+    }
+}
+
+fn set_explorer_drive_label(drive_letter: char, label: &str) -> Result<(), String> {
+    set_explorer_registry_value(&drive_label_key(drive_letter), None, label)
+}
+
+fn set_explorer_drive_icon(drive_letter: char, source: &str) -> Result<(), String> {
+    set_explorer_registry_value(&drive_icon_key(drive_letter), None, source)
+}
+
+fn set_explorer_registry_value(
+    key_path: &str,
+    value_name: Option<&str>,
+    value: &str,
+) -> Result<(), String> {
+    let key_path = wide_null(key_path);
+    let mut key = HKEY::default();
+    let status = unsafe {
+        RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(key_path.as_ptr()),
+            None,
+            PWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            None,
+            &mut key,
+            None,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "could not create Explorer drive label key: {}",
+            status.0
+        ));
+    }
+
+    let value = wide_null(value);
+    let data = unsafe {
+        std::slice::from_raw_parts(
+            value.as_ptr().cast::<u8>(),
+            value.len() * std::mem::size_of::<u16>(),
+        )
+    };
+    let value_name = value_name.map(wide_null);
+    let value_name = value_name
+        .as_ref()
+        .map_or(PCWSTR::null(), |value| PCWSTR(value.as_ptr()));
+    let status = unsafe { RegSetValueExW(key, value_name, None, REG_SZ, Some(data)) };
+    unsafe {
+        let _ = RegCloseKey(key);
+    }
+    if status != ERROR_SUCCESS {
+        return Err(format!("could not set Explorer drive label: {}", status.0));
+    }
+    refresh_explorer_drive_labels();
+    Ok(())
+}
+
+fn clear_explorer_drive_label(drive_letter: char) {
+    clear_explorer_drive_value(&drive_label_key(drive_letter), drive_letter, "label");
+}
+
+fn clear_explorer_drive_icon(drive_letter: char) {
+    clear_explorer_drive_value(&drive_icon_key(drive_letter), drive_letter, "icon");
+}
+
+fn clear_explorer_drive_value(key_path: &str, drive_letter: char, value_kind: &str) {
+    let status = clear_explorer_registry_tree(key_path);
+    if status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND {
+        tracing::warn!(
+            error_code = status.0,
+            %drive_letter,
+            %value_kind,
+            "could not remove Explorer drive override"
+        );
+    }
+    refresh_explorer_drive_labels();
+}
+
+fn clear_explorer_registry_tree(key_path: &str) -> windows::Win32::Foundation::WIN32_ERROR {
+    let key_path = wide_null(key_path);
+    unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, PCWSTR(key_path.as_ptr())) }
+}
+
+fn mount_points_key(prefix: &str) -> String {
+    let identity = prefix.trim_start_matches('\\').replace('\\', "#");
+    format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2\##{identity}")
+}
+
+fn set_network_mount_metadata(
+    prefix: &str,
+    label: &str,
+    icon_source: Option<&str>,
+) -> Result<String, String> {
+    let key = mount_points_key(prefix);
+    set_explorer_registry_value(&key, Some("_LabelFromReg"), label)?;
+    if let Some(icon_source) = icon_source {
+        set_explorer_registry_value(&key, Some("_IconFromReg"), icon_source)?;
+    }
+    refresh_explorer_drive_labels();
+    Ok(key)
 }
 
 struct BifrostFileSystem {
@@ -400,7 +554,13 @@ pub fn mount(config: MountConfig) -> Result<MountHandle, WinFspError> {
     let drive_letter = config.normalized_drive_letter()?;
     let mountpoint = U16CString::from_str(format!("{drive_letter}:"))
         .map_err(|error| WinFspError::Initialization(error.to_string()))?;
-    let prefix = U16CString::from_str(network_prefix(&config.volume_label))
+    let prefix_text = config
+        .network_drive
+        .then(|| network_prefix(&config.volume_label));
+    let prefix = prefix_text
+        .as_ref()
+        .map(U16CString::from_str)
+        .transpose()
         .map_err(|error| WinFspError::Initialization(error.to_string()))?;
     let volume_label = U16CString::from_vec(
         config
@@ -441,9 +601,12 @@ pub fn mount(config: MountConfig) -> Result<MountHandle, WinFspError> {
         .set_persistent_acls(true)
         .set_post_cleanup_when_modified_only(true)
         .set_file_system_name(u16cstr!("Bifrost"))
-        .map_err(|_| WinFspError::Initialization("filesystem name is too long".to_owned()))?
-        .set_prefix(&prefix)
-        .map_err(|_| WinFspError::Initialization("network prefix is too long".to_owned()))?;
+        .map_err(|_| WinFspError::Initialization("filesystem name is too long".to_owned()))?;
+    if let Some(prefix) = &prefix {
+        volume_params
+            .set_prefix(prefix)
+            .map_err(|_| WinFspError::Initialization("network prefix is too long".to_owned()))?;
+    }
 
     let context = BifrostFileSystem {
         engine: RemoteFilesystem::new(config.provider),
@@ -462,8 +625,51 @@ pub fn mount(config: MountConfig) -> Result<MountHandle, WinFspError> {
         context,
     )
     .map_err(WinFspError::Mount)?;
+    if let Err(error) = set_explorer_drive_label(drive_letter, &config.volume_label) {
+        tracing::warn!(%error, %drive_letter, "could not apply Explorer drive label");
+    }
+    let mount_points_key = if let Some(prefix) = &prefix_text {
+        match set_network_mount_metadata(
+            prefix,
+            &config.volume_label,
+            config.icon_source.as_deref(),
+        ) {
+            Ok(key) => Some(key),
+            Err(error) => {
+                tracing::warn!(%error, %drive_letter, "could not apply network mount label");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(icon_source) = &config.icon_source {
+        if let Err(error) = set_explorer_drive_icon(drive_letter, icon_source) {
+            tracing::warn!(%error, %drive_letter, "could not apply Explorer drive icon");
+        }
+    } else {
+        clear_explorer_drive_icon(drive_letter);
+    }
+    let delayed_label = config.volume_label.clone();
+    let delayed_icon = config.icon_source.clone();
+    let delayed_prefix = prefix_text.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(500));
+        if !std::path::Path::new(&format!(r"{drive_letter}:\")).exists() {
+            return;
+        }
+        let _ = set_explorer_drive_label(drive_letter, &delayed_label);
+        if let Some(icon) = delayed_icon.as_deref() {
+            let _ = set_explorer_drive_icon(drive_letter, icon);
+        }
+        if let Some(prefix) = delayed_prefix.as_deref() {
+            let _ = set_network_mount_metadata(prefix, &delayed_label, delayed_icon.as_deref());
+        }
+    });
     Ok(MountHandle {
         filesystem: Some(filesystem),
+        drive_letter,
+        mount_points_key,
     })
 }
 
@@ -491,7 +697,7 @@ fn status_from_error(error: WinFspFilesystemError) -> NTSTATUS {
 
 #[cfg(test)]
 mod tests {
-    use super::{network_prefix, BifrostFileSystem};
+    use super::{drive_label_key, mount_points_key, network_prefix, BifrostFileSystem};
     use bifrost_common::{RemoteMetadata, RemotePath};
     use winfsp_wrs::FileAttributes;
 
@@ -517,5 +723,16 @@ mod tests {
 
         assert!(first.ends_with(r"\Yggdrasil_data"));
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn explorer_label_key_is_scoped_to_the_drive_letter() {
+        assert!(drive_label_key('Y').ends_with(r"DriveIcons\Y\DefaultLabel"));
+    }
+
+    #[test]
+    fn mount_points_key_matches_explorer_network_identity() {
+        assert!(mount_points_key(r"\bifrost-1\Yggdrasil")
+            .ends_with(r"MountPoints2\##bifrost-1#Yggdrasil"));
     }
 }

@@ -20,6 +20,19 @@
   ${EndIf}
 
   Delete "$INSTDIR\resources\winfsp-2.1.25156.msi"
+  SetAutoClose true
+!macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  ${If} $UpdateMode <> 1
+    DetailPrint "Stopping Bifrost Drive before integration cleanup..."
+    nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM "${MAINBINARYNAME}.exe" /T /F'
+    DetailPrint "Removing Bifrost Drive mounts and Explorer integrations..."
+    ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --cleanup-windows-integrations' $0
+    ${If} $0 <> 0
+      DetailPrint "Some integrations were already absent or could not be removed (error $0)."
+    ${EndIf}
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
@@ -27,6 +40,7 @@
   ${AndIf} $UpdateMode <> 1
     SetShellVarContext current
     DetailPrint "Removing Bifrost Drive local data..."
+    RmDir /r "$PROFILE\Bifrost Drive"
     RmDir /r /REBOOTOK "$PROFILE\Bifrost Drive"
   ${EndIf}
 !macroend

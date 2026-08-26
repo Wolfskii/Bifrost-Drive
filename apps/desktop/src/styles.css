@@ -132,14 +132,21 @@ nav {
     background: #9aa6aa;
 }
 .content {
-    width: min(1120px, calc(100% - 210px));
+    width: auto;
+    min-width: 0;
     flex: 1;
     padding: 60px clamp(26px, 6vw, 86px);
 }
 .add-view {
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
+    padding: 0;
+}
+.wizard.connection-form-view {
+    min-height: 100vh;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    padding: 42px clamp(30px, 4vw, 62px);
 }
 .topbar,
 .section-heading {
@@ -235,6 +242,11 @@ h1 {
     color: #427b7a;
     border-radius: 7px;
     background: #e8f1ef;
+}
+.provider-icon img {
+    width: 28px;
+    height: 28px;
+    object-fit: contain;
 }
 .provider-card h3 {
     margin-bottom: 4px;
@@ -441,10 +453,10 @@ h1 {
         sans-serif;
 }
 .wizard {
-    width: min(570px, 100%);
-    max-height: calc(100vh - 120px);
-    overflow: auto;
-    padding: 30px;
+    width: 100%;
+    max-width: none;
+    min-height: calc(100vh - 120px);
+    padding: 30px 34px;
     border: 1px solid var(--line);
     border-radius: 8px;
     background: var(--surface);
@@ -473,7 +485,8 @@ h1 {
 }
 .wizard form {
     display: grid;
-    gap: 16px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px 18px;
 }
 .wizard label {
     display: grid;
@@ -500,15 +513,117 @@ h1 {
     outline-color: #4b8b84;
 }
 .form-grid {
+    display: contents;
+}
+.icon-source-field {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 10px;
+    grid-column: 1 / -1;
+}
+.icon-source-field .secondary-button {
+    min-height: 40px;
+}
+.drive-icon-field {
+    position: relative;
+    display: grid;
+    gap: 6px;
+    color: var(--ink-soft);
+    font:
+        12px ui-sans-serif,
+        system-ui,
+        sans-serif;
+}
+.icon-picker-trigger {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    min-height: 40px;
+    gap: 9px;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    color: var(--ink);
+    background: #fff;
+    text-align: left;
+}
+.icon-picker-trigger img,
+.icon-choice img {
+    width: 32px;
+    height: 32px;
+    object-fit: contain;
+}
+.icon-picker-trigger img {
+    width: 26px;
+    height: 26px;
+}
+.icon-picker-popover {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 20;
+    width: min(560px, 80vw);
+    max-height: 360px;
+    padding: 10px;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--surface);
+    box-shadow: 0 16px 35px rgba(21, 53, 59, 0.2);
+}
+.icon-picker-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 9px;
+    border-bottom: 1px solid var(--line-soft);
+}
+.icon-picker-tabs button {
+    border: 0;
+    padding: 8px 12px;
+    color: var(--muted);
+    background: transparent;
+    font-size: 12px;
+}
+.icon-picker-tabs button.active {
+    color: var(--accent-strong);
+    border-bottom: 2px solid var(--accent);
+}
+.icon-picker-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(92px, 1fr));
+    gap: 7px;
+}
+.icon-choice {
+    display: grid;
+    justify-items: center;
+    min-height: 82px;
+    gap: 6px;
+    padding: 9px 6px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--ink-soft);
+    background: var(--surface-soft);
+    font-size: 11px;
+    text-align: center;
+}
+.icon-choice:hover,
+.icon-choice.selected {
+    border-color: var(--accent);
+    color: var(--accent-strong);
+    background: var(--accent-soft);
 }
 .checkbox-row {
     display: flex !important;
     grid-template-columns: none !important;
     align-items: center;
     gap: 8px !important;
+}
+.wizard-copy,
+.wizard-error,
+.wizard-actions,
+.wizard form > .checkbox-row {
+    grid-column: 1 / -1;
 }
 .checkbox-row input {
     accent-color: #1f5960;
@@ -559,11 +674,27 @@ h1 {
     cursor: wait;
     opacity: 0.6;
 }
-@media (max-width: 520px) {
+@media (max-width: 980px) {
+    .wizard form {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+@media (max-width: 620px) {
     .wizard {
         padding: 23px 19px;
     }
-    .form-grid {
+    .wizard form {
         grid-template-columns: 1fr;
+    }
+    .icon-source-field {
+        grid-template-columns: 1fr;
+    }
+    .icon-picker-popover {
+        left: 0;
+        right: auto;
+        width: min(100%, 360px);
+    }
+    .icon-picker-grid {
+        grid-template-columns: repeat(2, minmax(100px, 1fr));
     }
 }

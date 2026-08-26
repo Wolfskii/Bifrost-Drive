@@ -1,11 +1,13 @@
+#[cfg(target_os = "windows")]
+use base64::Engine;
 use bifrost_api::{
     ActivitySummary, AppStatus, ConnectionIdRequest, ConnectionSummary, CreateConnectionRequest,
     CreateFtpConnectionRequest, CreateS3ConnectionRequest, CreateSftpConnectionRequest,
     CreateSmbConnectionRequest, CreateWebDavConnectionRequest, CredentialSummary,
-    DriveMountRegisterRequest, DriveMountRegisterResponse, DriveMountStartupRequest, FilePage,
-    FileSummary, HydrateFileRequest, HydrateFileResponse, ListFilesRequest,
-    StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse, SyncRunRequest,
-    SyncRunResponse, TestConnectionRequest,
+    DriveIconPreviewRequest, DriveMountRegisterRequest, DriveMountRegisterResponse,
+    DriveMountStartupRequest, FilePage, FileSummary, HydrateFileRequest, HydrateFileResponse,
+    ListFilesRequest, StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse,
+    SyncRunRequest, SyncRunResponse, TestConnectionRequest,
 };
 use bifrost_cache::{CacheManager, CacheRecord};
 use bifrost_common::{ConnectionState, ProviderKind};
@@ -31,6 +33,8 @@ use bifrost_windows_cfapi::{CfapiEvent, PlaceholderMetadata, SyncRoot, SyncRootC
 use bifrost_windows_credentials::WindowsCredentialStore;
 #[cfg(target_os = "windows")]
 use bifrost_windows_winfsp::{MountConfig, MountHandle};
+#[cfg(target_os = "windows")]
+use image::ImageEncoder;
 use serde::Deserialize;
 #[cfg(target_os = "windows")]
 use std::collections::HashMap;
@@ -359,6 +363,447 @@ fn set_mount_on_startup(
     Ok(())
 }
 
+fn set_drive_presentation(
+    configuration: &mut serde_json::Value,
+    drive_type: &str,
+    drive_icon: Option<&str>,
+) -> Result<(), String> {
+    let drive_type = if drive_type.trim().is_empty() {
+        "network"
+    } else {
+        drive_type.trim()
+    };
+    if !matches!(drive_type, "network" | "local") {
+        return Err("Drive type must be network or local".to_owned());
+    }
+    let drive_icon = drive_icon
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("system");
+    if !matches!(
+        drive_icon,
+        "system" | "bifrost" | "windows_local" | "windows_network"
+    ) && drive_icon
+        .strip_prefix("stock:")
+        .is_none_or(|id| id.parse::<i32>().is_err())
+        && drive_icon
+            .strip_prefix("shell32:")
+            .is_none_or(|index| index.parse::<i32>().is_err())
+    {
+        let path = std::path::Path::new(drive_icon);
+        let supported = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "ico" | "exe" | "dll" | "png" | "jpg" | "jpeg" | "webp"
+                )
+            });
+        if !path.is_absolute() || !path.is_file() || !supported {
+            return Err(
+                "Custom drive icon must be an existing .ico, .exe, .dll, .png, .jpg, or .webp file"
+                    .to_owned(),
+            );
+        }
+    }
+    let object = configuration
+        .as_object_mut()
+        .ok_or_else(|| "Connection configuration must be an object".to_owned())?;
+    object.insert("drive_type".to_owned(), serde_json::json!(drive_type));
+    object.insert("drive_icon".to_owned(), serde_json::json!(drive_icon));
+    Ok(())
+}
+
+fn configured_drive_type(configuration_json: &str) -> Result<bool, String> {
+    let configuration: serde_json::Value = serde_json::from_str(configuration_json)
+        .map_err(|_| "Connection configuration is invalid".to_owned())?;
+    Ok(configuration
+        .get("drive_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("network")
+        != "local")
+}
+
+fn convert_drive_image_to_ico(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    let image = image::open(source)
+        .map_err(|error| error.to_string())?
+        .resize_to_fill(256, 256, image::imageops::FilterType::Lanczos3)
+        .to_rgba8();
+    let icon = ico::IconImage::from_rgba_data(256, 256, image.into_raw());
+    let entry = ico::IconDirEntry::encode(&icon).map_err(|error| error.to_string())?;
+    let mut directory = ico::IconDir::new(ico::ResourceType::Icon);
+    directory.add_entry(entry);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let file = std::fs::File::create(destination).map_err(|error| error.to_string())?;
+    directory.write(file).map_err(|error| error.to_string())
+}
+
+fn configured_drive_icon(
+    configuration_json: &str,
+    data_dir: &std::path::Path,
+    connection_id: bifrost_common::ConnectionId,
+) -> Result<Option<String>, String> {
+    let configuration: serde_json::Value = serde_json::from_str(configuration_json)
+        .map_err(|_| "Connection configuration is invalid".to_owned())?;
+    let icon = configuration
+        .get("drive_icon")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("system");
+    let windows_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+    let source = match icon {
+        "system" => None,
+        "bifrost" => Some(format!(
+            "\"{}\",0",
+            std::env::current_exe()
+                .map_err(|error| error.to_string())?
+                .display()
+        )),
+        "windows_local" => Some(format!(r"{windows_root}\System32\shell32.dll,8")),
+        "windows_network" => Some(format!(r"{windows_root}\System32\shell32.dll,9")),
+        stock if stock.starts_with("stock:") => {
+            let id = stock
+                .trim_start_matches("stock:")
+                .parse::<i32>()
+                .map_err(|_| "Invalid Windows stock icon".to_owned())?;
+            Some(stock_icon_source(id)?)
+        }
+        shell if shell.starts_with("shell32:") => {
+            let index = shell
+                .trim_start_matches("shell32:")
+                .parse::<i32>()
+                .map_err(|_| "Invalid shell32 icon index".to_owned())?;
+            let path = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+            Some(format!(r#""{path}\System32\SHELL32.dll",{index}"#))
+        }
+        path => {
+            let path = std::path::Path::new(path);
+            let extension = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+                let destination = data_dir
+                    .join("drive-icons")
+                    .join(format!("{connection_id}.ico"));
+                convert_drive_image_to_ico(path, &destination)?;
+                Some(format!("\"{}\",0", destination.display()))
+            } else {
+                Some(format!("\"{}\",0", path.display()))
+            }
+        }
+    };
+    Ok(source)
+}
+
+#[cfg(target_os = "windows")]
+const STOCK_DRIVE_ICONS: &[(i32, &str)] = &[
+    (8, "Fixed drive"),
+    (9, "Network drive"),
+    (10, "Disconnected network"),
+    (7, "Removable drive"),
+    (11, "CD drive"),
+    (59, "DVD drive"),
+    (12, "RAM drive"),
+    (15, "Server"),
+    (51, "Shared server"),
+    (3, "Folder"),
+    (4, "Open folder"),
+    (17, "Network"),
+    (94, "Computer"),
+    (13, "World"),
+];
+
+#[cfg(target_os = "windows")]
+fn windows_wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[derive(Clone, serde::Serialize)]
+struct StockDriveIcon {
+    value: String,
+    label: String,
+    preview: String,
+}
+
+#[cfg(target_os = "windows")]
+fn stock_icon_info(
+    id: i32,
+    flags: windows::Win32::UI::Shell::SHGSI_FLAGS,
+) -> Result<windows::Win32::UI::Shell::SHSTOCKICONINFO, String> {
+    use windows::Win32::UI::Shell::{SHGetStockIconInfo, SHSTOCKICONID, SHSTOCKICONINFO};
+    let mut info = SHSTOCKICONINFO {
+        cbSize: std::mem::size_of::<SHSTOCKICONINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe { SHGetStockIconInfo(SHSTOCKICONID(id), flags, &mut info) }
+        .map_err(|error| error.to_string())?;
+    Ok(info)
+}
+
+#[cfg(target_os = "windows")]
+fn stock_icon_source(id: i32) -> Result<String, String> {
+    use windows::Win32::UI::Shell::SHGSI_ICONLOCATION;
+    let info = stock_icon_info(id, SHGSI_ICONLOCATION)?;
+    let length = info
+        .szPath
+        .iter()
+        .position(|character| *character == 0)
+        .unwrap_or(info.szPath.len());
+    let path = String::from_utf16(&info.szPath[..length]).map_err(|error| error.to_string())?;
+    Ok(format!("\"{path}\",{}", info.iIcon))
+}
+
+#[cfg(target_os = "windows")]
+fn stock_icon_preview(id: i32) -> Result<String, String> {
+    use windows::Win32::UI::Shell::{SHGSI_ICON, SHGSI_LARGEICON};
+    let info = stock_icon_info(id, SHGSI_ICON | SHGSI_LARGEICON)?;
+    icon_handle_preview(info.hIcon)
+}
+
+#[cfg(target_os = "windows")]
+fn icon_handle_preview(
+    icon_handle: windows::Win32::UI::WindowsAndMessaging::HICON,
+) -> Result<String, String> {
+    use windows::Win32::{
+        Graphics::Gdi::{
+            DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
+            BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        },
+        UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO},
+    };
+    let mut icon_info = ICONINFO::default();
+    unsafe { GetIconInfo(icon_handle, &mut icon_info) }.map_err(|error| error.to_string())?;
+    let mut bitmap = BITMAP::default();
+    let result = unsafe {
+        GetObjectW(
+            icon_info.hbmColor.into(),
+            std::mem::size_of::<BITMAP>() as i32,
+            Some((&mut bitmap as *mut BITMAP).cast()),
+        )
+    };
+    if result == 0 {
+        unsafe {
+            let _ = DeleteObject(icon_info.hbmColor.into());
+            let _ = DeleteObject(icon_info.hbmMask.into());
+            let _ = DestroyIcon(icon_handle);
+        }
+        return Err("Could not inspect Windows stock icon".to_owned());
+    }
+    let width = bitmap.bmWidth as u32;
+    let height = bitmap.bmHeight as u32;
+    let mut bitmap_info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width as i32,
+            biHeight: -(height as i32),
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    let device = unsafe { GetDC(None) };
+    let lines = unsafe {
+        GetDIBits(
+            device,
+            icon_info.hbmColor,
+            0,
+            height,
+            Some(pixels.as_mut_ptr().cast()),
+            &mut bitmap_info,
+            DIB_RGB_COLORS,
+        )
+    };
+    unsafe {
+        let _ = ReleaseDC(None, device);
+        let _ = DeleteObject(icon_info.hbmColor.into());
+        let _ = DeleteObject(icon_info.hbmMask.into());
+        let _ = DestroyIcon(icon_handle);
+    }
+    if lines == 0 {
+        return Err("Could not render Windows stock icon".to_owned());
+    }
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    rgba_preview(width, height, &pixels)
+}
+
+#[cfg(target_os = "windows")]
+fn rgba_preview(width: u32, height: u32, pixels: &[u8]) -> Result<String, String> {
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(pixels, width, height, image::ExtendedColorType::Rgba8)
+        .map_err(|error| error.to_string())?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn shell_icon_preview(path: &std::path::Path, index: i32) -> Result<String, String> {
+    use windows::{
+        core::PCWSTR,
+        Win32::UI::{Shell::ExtractIconExW, WindowsAndMessaging::HICON},
+    };
+    let path = windows_wide_null(&path.to_string_lossy());
+    let mut icon = HICON::default();
+    let extracted =
+        unsafe { ExtractIconExW(PCWSTR(path.as_ptr()), index, Some(&mut icon), None, 1) };
+    if extracted == 0 || icon.is_invalid() {
+        return Err("The selected file does not contain a usable icon".to_owned());
+    }
+    icon_handle_preview(icon)
+}
+
+#[cfg(target_os = "windows")]
+fn drive_icon_file_preview(path: &std::path::Path) -> Result<String, String> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "png" | "jpg" | "jpeg" | "webp" => {
+            let image = image::open(path)
+                .map_err(|error| error.to_string())?
+                .resize_to_fill(64, 64, image::imageops::FilterType::Lanczos3)
+                .to_rgba8();
+            rgba_preview(64, 64, &image)
+        }
+        "ico" => {
+            let directory =
+                ico::IconDir::read(std::fs::File::open(path).map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
+            let entry = directory
+                .entries()
+                .iter()
+                .max_by_key(|entry| entry.width().saturating_mul(entry.height()))
+                .ok_or_else(|| "The selected ICO file is empty".to_owned())?;
+            let image = entry.decode().map_err(|error| error.to_string())?;
+            rgba_preview(image.width(), image.height(), image.rgba_data())
+        }
+        "exe" | "dll" => shell_icon_preview(path, 0),
+        _ => Err("Unsupported drive icon file".to_owned()),
+    }
+}
+
+#[tauri::command]
+fn drive_icon_preview(request: DriveIconPreviewRequest) -> Result<String, String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = request;
+        Err("Drive icon previews are available only on Windows".to_owned())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        drive_icon_file_preview(std::path::Path::new(&request.path))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn configured_drive_icon_preview(configuration_json: &str) -> Option<String> {
+    let configuration: serde_json::Value = serde_json::from_str(configuration_json).ok()?;
+    let icon = configuration.get("drive_icon")?.as_str()?;
+    match icon {
+        "system" => None,
+        "bifrost" => shell_icon_preview(&std::env::current_exe().ok()?, 0).ok(),
+        "windows_local" => stock_icon_preview(8).ok(),
+        "windows_network" => stock_icon_preview(9).ok(),
+        stock if stock.starts_with("stock:") => stock
+            .trim_start_matches("stock:")
+            .parse::<i32>()
+            .ok()
+            .and_then(|id| stock_icon_preview(id).ok()),
+        shell if shell.starts_with("shell32:") => {
+            let index = shell.trim_start_matches("shell32:").parse::<i32>().ok()?;
+            let root = std::env::var("SystemRoot").ok()?;
+            shell_icon_preview(
+                &std::path::Path::new(&root)
+                    .join("System32")
+                    .join("SHELL32.dll"),
+                index,
+            )
+            .ok()
+        }
+        path => drive_icon_file_preview(std::path::Path::new(path)).ok(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn shell32_icons() -> Result<Vec<StockDriveIcon>, String> {
+    use windows::{
+        core::PCWSTR,
+        Win32::UI::{Shell::ExtractIconExW, WindowsAndMessaging::HICON},
+    };
+    let windows_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+    let shell32 = format!(r"{windows_root}\System32\SHELL32.dll");
+    let shell32_wide = windows_wide_null(&shell32);
+    let count = unsafe { ExtractIconExW(PCWSTR(shell32_wide.as_ptr()), -1, None, None, 0) };
+    let mut icons = Vec::with_capacity(count as usize);
+    for index in 0..count as i32 {
+        let mut icon = HICON::default();
+        let extracted = unsafe {
+            ExtractIconExW(
+                PCWSTR(shell32_wide.as_ptr()),
+                index,
+                Some(&mut icon),
+                None,
+                1,
+            )
+        };
+        if extracted == 0 || icon.is_invalid() {
+            continue;
+        }
+        if let Ok(preview) = icon_handle_preview(icon) {
+            icons.push(StockDriveIcon {
+                value: format!("shell32:{index}"),
+                label: format!("Icon {index}"),
+                preview,
+            });
+        }
+    }
+    Ok(icons)
+}
+
+#[tauri::command]
+fn drive_stock_icons() -> Result<Vec<StockDriveIcon>, String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(Vec::new())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        static ICONS: std::sync::OnceLock<Vec<StockDriveIcon>> = std::sync::OnceLock::new();
+        if let Some(icons) = ICONS.get() {
+            return Ok(icons.clone());
+        }
+        let mut icons = STOCK_DRIVE_ICONS
+            .iter()
+            .map(|(id, label)| {
+                Ok(StockDriveIcon {
+                    value: format!("stock:{id}"),
+                    label: (*label).to_owned(),
+                    preview: stock_icon_preview(*id)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        icons.extend(shell32_icons()?);
+        let _ = ICONS.set(icons.clone());
+        Ok(icons)
+    }
+}
+
 fn connection_activity_details(connection: &ConnectionRecord) -> String {
     let drive = configured_drive_letter(&connection.configuration_json)
         .ok()
@@ -475,6 +920,10 @@ async fn connections_details(
         }
         ProviderKind::S3 => String::new(),
     };
+    #[cfg(target_os = "windows")]
+    let drive_icon_preview = configured_drive_icon_preview(&connection.configuration_json);
+    #[cfg(not(target_os = "windows"))]
+    let drive_icon_preview = None;
     Ok(bifrost_api::ConnectionDetails {
         summary: ConnectionSummary {
             id: connection.id,
@@ -486,6 +935,7 @@ async fn connections_details(
         configuration: serde_json::from_str(&connection.configuration_json)
             .map_err(|_| "Connection configuration is invalid".to_owned())?,
         username: (!username.is_empty()).then_some(username),
+        drive_icon_preview,
     })
 }
 
@@ -530,6 +980,22 @@ async fn connections_update(
     ensure_drive_letter_unassigned(&database, requested_drive.as_deref(), Some(existing.id))
         .await?;
     set_drive_letter(&mut request.configuration, requested_drive.as_deref())?;
+    let drive_type = request
+        .configuration
+        .get("drive_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("network")
+        .to_owned();
+    let drive_icon = request
+        .configuration
+        .get("drive_icon")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    set_drive_presentation(
+        &mut request.configuration,
+        &drive_type,
+        drive_icon.as_deref(),
+    )?;
     let old_credential: CredentialRef = serde_json::from_str(&existing.credential_ref)
         .map_err(|_| "Connection credential reference is invalid".to_owned())?;
     let old_secret = credentials
@@ -577,6 +1043,13 @@ async fn connections_update(
     let _ = credentials.delete(&old_credential).await;
     #[cfg(target_os = "windows")]
     drop(mounts.take(&updated.id.to_string()));
+    #[cfg(target_os = "windows")]
+    if !configured_drive_type(&updated.configuration_json)? {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if let Err(error) = cleanup_bifrost_mount_points_for_share(&existing.name) {
+            tracing::warn!(%error, "could not remove stale network metadata after local conversion");
+        }
+    }
     #[cfg(not(target_os = "windows"))]
     let _ = mounts;
     Ok(ConnectionSummary {
@@ -624,6 +1097,22 @@ async fn connections_create(
         .map(str::to_owned);
     ensure_drive_letter_unassigned(&database, requested_drive.as_deref(), None).await?;
     set_drive_letter(&mut request.configuration, requested_drive.as_deref())?;
+    let drive_type = request
+        .configuration
+        .get("drive_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("network")
+        .to_owned();
+    let drive_icon = request
+        .configuration
+        .get("drive_icon")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    set_drive_presentation(
+        &mut request.configuration,
+        &drive_type,
+        drive_icon.as_deref(),
+    )?;
     let credential: CredentialRef = serde_json::from_str(&request.credential_ref)
         .map_err(|_| "Connection credential reference is invalid".to_owned())?;
     let test_request = TestConnectionRequest {
@@ -762,6 +1251,11 @@ async fn connections_create_s3(
     });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_drive_presentation(
+        &mut configuration,
+        &request.drive_type,
+        request.drive_icon.as_deref(),
+    )?;
     let test_request = TestConnectionRequest {
         kind: ProviderKind::S3,
         endpoint: request.endpoint.clone(),
@@ -1190,6 +1684,11 @@ async fn connections_create_webdav(
     let mut configuration = serde_json::json!({});
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_drive_presentation(
+        &mut configuration,
+        &request.drive_type,
+        request.drive_icon.as_deref(),
+    )?;
     create_tested_connection(
         &database,
         &credentials,
@@ -1223,6 +1722,11 @@ async fn connections_create_ftp(
     let mut configuration = serde_json::json!({});
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_drive_presentation(
+        &mut configuration,
+        &request.drive_type,
+        request.drive_icon.as_deref(),
+    )?;
     create_tested_connection(
         &database,
         &credentials,
@@ -1253,6 +1757,11 @@ async fn connections_create_smb(
     let mut configuration = serde_json::json!({ "domain": request.domain });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_drive_presentation(
+        &mut configuration,
+        &request.drive_type,
+        request.drive_icon.as_deref(),
+    )?;
     create_tested_connection(
         &database,
         &credentials,
@@ -1298,6 +1807,11 @@ async fn connections_create_sftp(
     let mut configuration = serde_json::json!({ "host": request.host, "port": request.port, "root_path": root_path, "username": request.username, "known_hosts": known_hosts, "trust_on_first_use": request.trust_on_first_use, "authentication": authentication, "private_key_path": request.private_key_path });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_drive_presentation(
+        &mut configuration,
+        &request.drive_type,
+        request.drive_icon.as_deref(),
+    )?;
     create_tested_connection(
         &database,
         &credentials,
@@ -1917,6 +2431,7 @@ fn drive_letters_available() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 async fn drive_mount_register(
+    app: tauri::AppHandle,
     registry: State<'_, DriveMountRegistry>,
     database: State<'_, Database>,
     credentials: State<'_, WindowsCredentialStore>,
@@ -1924,7 +2439,7 @@ async fn drive_mount_register(
 ) -> Result<DriveMountRegisterResponse, String> {
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (registry, database, credentials, request);
+        let _ = (app, registry, database, credentials, request);
         Err("Windows drive mounting is available only on Windows".to_owned())
     }
     #[cfg(target_os = "windows")]
@@ -1944,9 +2459,19 @@ async fn drive_mount_register(
             });
         }
         let provider = provider_for_connection(&connection, &credentials).await?;
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?;
         let handle = bifrost_windows_winfsp::mount(MountConfig {
             drive_letter,
             volume_label: connection.name.clone(),
+            network_drive: configured_drive_type(&connection.configuration_json)?,
+            icon_source: configured_drive_icon(
+                &connection.configuration_json,
+                &data_dir,
+                connection.id,
+            )?,
             provider: Arc::from(provider),
         })
         .map_err(|error| error.to_string())?;
@@ -2063,14 +2588,25 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            if let Err(error) = cleanup_bifrost_mount_points() {
+                tracing::warn!(%error, "could not clear stale Explorer mount metadata");
+            }
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
             let database_path = data_dir.join("bifrost-drive.db");
@@ -2106,6 +2642,12 @@ pub fn run() {
             .build(app)?;
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .manage(Mutex::new(Application::new()))
         .manage(WindowsCredentialStore::new())
         .manage(SyncRootRegistry::new())
@@ -2134,6 +2676,8 @@ pub fn run() {
             sync_root_register,
             sync_root_unregister,
             drive_letters_available,
+            drive_stock_icons,
+            drive_icon_preview,
             drive_mount_register,
             drive_mount_unregister,
             drive_mount_startup_set,
@@ -2143,9 +2687,187 @@ pub fn run() {
         .expect("error while running Bifrost Drive");
 }
 
+#[cfg(target_os = "windows")]
+pub fn cleanup_windows_integrations() -> Result<(), String> {
+    let root = std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .ok_or_else(|| "USERPROFILE is unavailable".to_owned())?
+        .join("Bifrost Drive");
+    let mut failures = Vec::new();
+    if root.is_dir() {
+        for entry in fs::read_dir(&root).map_err(|error| error.to_string())? {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            if path.is_dir() {
+                if let Err(error) = bifrost_windows_cfapi::unregister(&path) {
+                    failures.push(format!("{}: {error}", path.display()));
+                }
+            }
+        }
+    }
+    if let Err(error) = cleanup_bifrost_mount_points() {
+        failures.push(error);
+    }
+    if let Err(error) = cleanup_configured_drive_icons() {
+        failures.push(error);
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn cleanup_configured_drive_icons() -> Result<(), String> {
+    use windows::{
+        core::PCWSTR,
+        Win32::{
+            Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS},
+            System::Registry::{RegDeleteTreeW, HKEY_CURRENT_USER},
+        },
+    };
+    let Some(app_data) = std::env::var_os("APPDATA") else {
+        return Ok(());
+    };
+    let database_path = PathBuf::from(app_data)
+        .join("com.bifrost.drive")
+        .join("bifrost-drive.db");
+    if !database_path.is_file() {
+        return Ok(());
+    }
+    let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
+    let connections = runtime.block_on(async {
+        let database = Database::connect_file(&database_path).await?;
+        database.list_connections().await
+    });
+    for connection in connections.map_err(|error| error.to_string())? {
+        let Some(letter) = configured_drive_letter(&connection.configuration_json)? else {
+            continue;
+        };
+        let key = windows_wide_null(&format!(
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons\{letter}"
+        ));
+        let status = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, PCWSTR(key.as_ptr())) };
+        if status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND {
+            return Err(format!(
+                "could not remove Explorer drive override for {letter}: {}",
+                status.0
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn cleanup_bifrost_mount_points() -> Result<(), String> {
+    cleanup_bifrost_mount_points_matching(is_bifrost_mount_point)
+}
+
+#[cfg(target_os = "windows")]
+fn cleanup_bifrost_mount_points_for_share(share: &str) -> Result<(), String> {
+    let share = share
+        .chars()
+        .map(|character| match character {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            character if character.is_control() => '_',
+            character => character,
+        })
+        .collect::<String>();
+    let share = share.trim().trim_matches('.').to_ascii_lowercase();
+    cleanup_bifrost_mount_points_matching(|entry| {
+        is_bifrost_mount_point(entry) && entry.to_ascii_lowercase().ends_with(&format!("#{share}"))
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn cleanup_bifrost_mount_points_matching(
+    should_remove: impl Fn(&str) -> bool,
+) -> Result<(), String> {
+    use windows::{
+        core::{PCWSTR, PWSTR},
+        Win32::{
+            Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS},
+            System::Registry::{
+                RegCloseKey, RegDeleteTreeW, RegEnumKeyExW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER,
+                KEY_ENUMERATE_SUB_KEYS, KEY_WRITE,
+            },
+            UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_FLUSH, SHCNF_IDLIST},
+        },
+    };
+    let key_path =
+        windows_wide_null(r"Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2");
+    let mut key = HKEY::default();
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(key_path.as_ptr()),
+            None,
+            KEY_ENUMERATE_SUB_KEYS | KEY_WRITE,
+            &mut key,
+        )
+    };
+    if status == ERROR_FILE_NOT_FOUND {
+        return Ok(());
+    }
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "could not open Explorer mount metadata: {}",
+            status.0
+        ));
+    }
+    let mut index = 0;
+    loop {
+        let mut name = [0u16; 512];
+        let mut length = name.len() as u32;
+        let status = unsafe {
+            RegEnumKeyExW(
+                key,
+                index,
+                Some(PWSTR(name.as_mut_ptr())),
+                &mut length,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+        if status == ERROR_NO_MORE_ITEMS {
+            break;
+        }
+        if status != ERROR_SUCCESS {
+            unsafe {
+                let _ = RegCloseKey(key);
+            }
+            return Err(format!(
+                "could not enumerate Explorer mount metadata: {}",
+                status.0
+            ));
+        }
+        let entry = String::from_utf16_lossy(&name[..length as usize]);
+        if should_remove(&entry) {
+            let entry = windows_wide_null(&entry);
+            let _ = unsafe { RegDeleteTreeW(key, PCWSTR(entry.as_ptr())) };
+        } else {
+            index += 1;
+        }
+    }
+    unsafe {
+        let _ = RegCloseKey(key);
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSH, None, None);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn is_bifrost_mount_point(entry: &str) -> bool {
+    entry.to_ascii_lowercase().starts_with("##bifrost")
+}
+
 #[cfg(all(test, target_os = "windows"))]
 mod registry_tests {
-    use super::DriveMountRegistry;
+    use super::{
+        is_bifrost_mount_point, set_drive_presentation, shell32_icons, DriveMountRegistry,
+    };
 
     #[test]
     fn drive_registry_recovers_from_poisoning() {
@@ -2158,5 +2880,29 @@ mod registry_tests {
         assert!(registry.0.is_poisoned());
         assert!(!registry.contains("missing"));
         assert!(!registry.0.is_poisoned());
+    }
+
+    #[test]
+    fn validates_drive_presentation_settings() {
+        let mut configuration = serde_json::json!({});
+        set_drive_presentation(&mut configuration, "local", Some("bifrost")).unwrap();
+        assert_eq!(configuration["drive_type"], "local");
+        assert_eq!(configuration["drive_icon"], "bifrost");
+        assert!(set_drive_presentation(&mut configuration, "portable", None).is_err());
+    }
+
+    #[test]
+    fn matches_only_bifrost_mount_metadata() {
+        assert!(is_bifrost_mount_point("##bifrost-123#Yggdrasil"));
+        assert!(!is_bifrost_mount_point("##server#share"));
+    }
+
+    #[test]
+    fn extracts_the_full_shell32_icon_catalog() {
+        let icons = shell32_icons().unwrap();
+        assert!(icons.len() > 200);
+        assert!(icons
+            .iter()
+            .all(|icon| icon.preview.starts_with("data:image/png;base64,")));
     }
 }

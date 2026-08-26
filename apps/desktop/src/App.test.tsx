@@ -16,7 +16,7 @@ describe("App", () => {
         ).toBeTruthy();
     });
 
-    it("opens the S3 connection wizard", () => {
+    it("opens the S3 connection as a full view", () => {
         render(<App />);
 
         fireEvent.click(
@@ -26,6 +26,27 @@ describe("App", () => {
         expect(
             screen.getByRole("heading", { name: "Connect to S3" }),
         ).toBeTruthy();
+        expect(screen.queryByRole("dialog")).toBeNull();
+        expect(
+            screen.getByRole("combobox", { name: "Drive type" }),
+        ).toBeTruthy();
+        expect(
+            screen.getByRole("button", { name: "System default" }),
+        ).toBeTruthy();
+        fireEvent.click(screen.getByRole("button", { name: "System default" }));
+        expect(
+            screen.getByRole("dialog", { name: "Choose drive icon" }),
+        ).toBeTruthy();
+        fireEvent.click(screen.getByRole("button", { name: "Custom" }));
+        expect(
+            screen.getByRole("button", { name: "Browse custom" }),
+        ).toBeTruthy();
+        fireEvent.pointerDown(
+            screen.getByRole("heading", { name: "Connect to S3" }),
+        );
+        expect(
+            screen.queryByRole("dialog", { name: "Choose drive icon" }),
+        ).toBeNull();
         expect(
             screen.getByLabelText("Mount this drive when Bifrost starts"),
         ).toBeTruthy();
@@ -52,6 +73,13 @@ describe("App", () => {
         expect(
             screen.getByLabelText("Trust a new server key on first use"),
         ).toBeTruthy();
+        expect(
+            (
+                screen.getByLabelText(
+                    "Trust a new server key on first use",
+                ) as HTMLInputElement
+            ).checked,
+        ).toBe(true);
         expect(screen.getByLabelText("Password")).toBeTruthy();
         expect(screen.queryByLabelText("Private key path")).toBeNull();
 

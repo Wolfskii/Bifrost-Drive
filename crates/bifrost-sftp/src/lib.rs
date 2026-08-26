@@ -8,7 +8,7 @@ use bytes::Bytes;
 use chrono::{DateTime, TimeZone, Utc};
 use futures_util::{stream, StreamExt};
 use russh::{
-    client,
+    cipher, client,
     keys::{
         check_known_hosts_path, known_hosts::learn_known_hosts_path, load_secret_key,
         PrivateKeyWithHashAlg, PublicKeyOrCertificate,
@@ -18,12 +18,13 @@ use russh_sftp::{
     client::{error::Error as SftpError, SftpSession},
     protocol::{OpenFlags, StatusCode},
 };
+use std::borrow::Cow;
 use std::{ops::Range, path::PathBuf, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-const READ_PIPELINE_CHUNK_SIZE: u64 = 512 * 1024;
-const READ_PIPELINE_CONCURRENCY: usize = 8;
+const READ_PIPELINE_CHUNK_SIZE: u64 = 1024 * 1024;
+const READ_PIPELINE_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SftpConfig {
@@ -142,12 +143,26 @@ impl SftpProvider {
 
     async fn connect_session(&self) -> Result<SftpSession, StorageError> {
         let ssh_config = client::Config {
-            window_size: 32 * 1024 * 1024,
+            window_size: 64 * 1024 * 1024,
             maximum_packet_size: 256 * 1024,
             channel_buffer_size: 1024,
             nodelay: true,
             ..Default::default()
         };
+        let mut ssh_config = ssh_config;
+        let mut ciphers = ssh_config.preferred.cipher.to_vec();
+        ciphers.sort_by_key(|name| {
+            if *name == cipher::AES_128_GCM {
+                0
+            } else if *name == cipher::AES_256_GCM {
+                1
+            } else if *name == cipher::CHACHA20_POLY1305 {
+                2
+            } else {
+                3
+            }
+        });
+        ssh_config.preferred.cipher = Cow::Owned(ciphers);
         let handler = ClientHandler {
             host: self.config.host.clone(),
             port: self.config.port,

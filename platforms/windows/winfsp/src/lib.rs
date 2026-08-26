@@ -31,6 +31,8 @@ pub enum WinFspError {
 pub struct MountConfig {
     pub drive_letter: char,
     pub volume_label: String,
+    pub network_drive: bool,
+    pub icon_source: Option<String>,
     pub provider: Arc<dyn StorageProvider>,
 }
 
