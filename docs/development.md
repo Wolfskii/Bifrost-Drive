@@ -8,25 +8,28 @@ Install Rust stable with Cargo, Node.js LTS with npm, Task, and the Tauri 2 prer
 
 Run commands from the repository root:
 
-| Command                | Purpose                                              |
-| ---------------------- | ---------------------------------------------------- |
-| `task setup`           | Check tools, install dependencies, fetch Rust crates |
-| `task dev`             | Start the Tauri desktop app                          |
-| `task build`           | Build Rust and frontend                              |
-| `task check`           | Compile Rust and build frontend                      |
-| `task test`            | Run unit and integration test suites                 |
-| `task lint`            | Run Clippy and ESLint                                |
-| `task format`          | Format Rust and frontend                             |
-| `task format:check`    | Verify formatting                                    |
-| `task docker:up`       | Start MinIO, WebDAV, and SFTP services               |
-| `task docker:down`     | Stop provider integration services                   |
-| `task db:migrate`      | Apply SQLite migrations                              |
-| `task package:windows` | Build Windows x64 bundle on Windows                  |
-| `task release:dry-run` | Validate release metadata without publishing         |
+| Command                       | Purpose                                              |
+| ----------------------------- | ---------------------------------------------------- |
+| `task setup`                  | Check tools, install dependencies, fetch Rust crates |
+| `task dev`                    | Start the Tauri desktop app                          |
+| `task build`                  | Build Rust and frontend                              |
+| `task check`                  | Compile Rust and build frontend                      |
+| `task test`                   | Run unit and integration test suites                 |
+| `task lint`                   | Run Clippy and ESLint                                |
+| `task format`                 | Format Rust and frontend                             |
+| `task format:check`           | Verify formatting                                    |
+| `task docker:up`              | Start MinIO, WebDAV, and SFTP services               |
+| `task docker:down`            | Stop provider integration services                   |
+| `task db:migrate`             | Apply SQLite migrations                              |
+| `task package:windows`        | Build Windows x64 bundle on Windows                  |
+| `task cleanup:windows-drives` | Select stale Bifrost Explorer drive entries          |
+| `task release:dry-run`        | Validate release metadata without publishing         |
 
 The real S3, WebDAV, and SFTP integration tests use `task test:integration`. If the default ports are already in use, set `MINIO_API_PORT`, `MINIO_CONSOLE_PORT`, `WEBDAV_PORT`, `SFTP_PORT`, `BIFROST_S3_ENDPOINT`, and `BIFROST_WEBDAV_ENDPOINT`, for example `MINIO_API_PORT=19000 MINIO_CONSOLE_PORT=19001 WEBDAV_PORT=18080 SFTP_PORT=2222 BIFROST_S3_ENDPOINT=http://127.0.0.1:19000 BIFROST_WEBDAV_ENDPOINT=http://127.0.0.1:18080/ task test:integration`.
 
 The root `package.json` declares npm as the package manager. `npm ci` is used in CI from the committed `package-lock.json`; use `npm install` when dependency manifests change.
+
+On Windows, `task cleanup:windows-drives` opens a terminal menu containing only WinFsp identities created by Bifrost whose recorded owner process is no longer active. Cleanup removes the selected Bifrost network mapping, its letter-only and Bifrost MountPoints2 metadata, and its drive icon override, then restarts Explorer. Generic Explorer drive history is never listed. The Windows system drive is hard-blocked at discovery and deletion time, and every current non-Bifrost logical drive or unrelated network mapping is rejected.
 
 ## Workflow
 

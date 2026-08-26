@@ -173,6 +173,11 @@ tasks:
     cmds:
       - task: build:windows
 
+  cleanup:windows-drives:
+    desc: Safely remove lingering Bifrost drives and Explorer entries on Windows
+    cmds:
+      - powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/cleanup-windows-drives.ps1
+
   version:
     desc: Check synchronized workspace versions
     cmds:

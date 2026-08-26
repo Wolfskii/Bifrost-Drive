@@ -2143,6 +2143,12 @@ fn parse_resolution(value: Option<&str>) -> Result<Option<ConflictResolution>, S
     }
 }
 
+fn is_uninstall_quit_request(arguments: &[String]) -> bool {
+    arguments
+        .iter()
+        .any(|argument| argument == "--quit-for-uninstall")
+}
+
 #[tauri::command]
 async fn sync_conflict_resolve(
     database: State<'_, Database>,
@@ -2642,7 +2648,11 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+        .plugin(tauri_plugin_single_instance::init(|app, arguments, _| {
+            if is_uninstall_quit_request(&arguments) {
+                app.exit(0);
+                return;
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -2657,6 +2667,10 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            if is_uninstall_quit_request(&std::env::args().collect::<Vec<_>>()) {
+                app.handle().exit(0);
+                return Ok(());
+            }
             #[cfg(target_os = "windows")]
             if let Err(error) = cleanup_bifrost_mount_points() {
                 tracing::warn!(%error, "could not clear stale Explorer mount metadata");
@@ -2973,7 +2987,7 @@ mod registry_tests {
 
 #[cfg(test)]
 mod preferences_tests {
-    use super::{load_preferences, save_preferences, AppPreferences};
+    use super::{is_uninstall_quit_request, load_preferences, save_preferences, AppPreferences};
 
     #[test]
     fn start_minimized_preference_round_trips() {
@@ -2991,5 +3005,17 @@ mod preferences_tests {
         assert!(load_preferences(&path).unwrap().start_minimized);
         save_preferences(&path, &AppPreferences::default()).unwrap();
         assert!(!load_preferences(&path).unwrap().start_minimized);
+    }
+
+    #[test]
+    fn recognizes_only_the_uninstall_quit_switch() {
+        assert!(is_uninstall_quit_request(&[
+            "bifrost-drive.exe".to_owned(),
+            "--quit-for-uninstall".to_owned(),
+        ]));
+        assert!(!is_uninstall_quit_request(&[
+            "bifrost-drive.exe".to_owned(),
+            "--cleanup-windows-integrations".to_owned(),
+        ]));
     }
 }

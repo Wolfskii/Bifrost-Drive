@@ -412,7 +412,8 @@ impl StorageProvider for SftpProvider {
         if let Some(limit) = limit {
             let path = self.path(&request.path);
             let remote_path = request.path;
-            let chunks = (0..limit.div_ceil(READ_PIPELINE_CHUNK_SIZE)).map(move |index| {
+            let chunk_count = limit.div_ceil(READ_PIPELINE_CHUNK_SIZE);
+            let chunks = (0..chunk_count).map(move |index| {
                 let session = Arc::clone(&session);
                 let path = path.clone();
                 let remote_path = remote_path.clone();
@@ -438,6 +439,14 @@ impl StorageProvider for SftpProvider {
                             break;
                         }
                         read += size;
+                    }
+                    if read < length && index + 1 < chunk_count {
+                        return Err(StorageError::Io(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            format!(
+                                "SFTP range chunk at offset {offset} ended after {read} of {length} bytes"
+                            ),
+                        )));
                     }
                     buffer.truncate(read);
                     Ok(Bytes::from(buffer))

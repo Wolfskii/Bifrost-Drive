@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -15,7 +15,7 @@ use thiserror::Error;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::{Mutex, RwLock},
+    sync::{watch, Mutex, RwLock},
 };
 use tokio_util::io::ReaderStream;
 
@@ -53,7 +53,11 @@ struct StagedFile {
 
 struct ReadCache {
     offset: u64,
+    end: u64,
     data: Vec<u8>,
+    generation: u64,
+    complete: bool,
+    error: Option<String>,
 }
 
 const INITIAL_READ_AHEAD_SIZE: usize = 1024 * 1024;
@@ -62,8 +66,12 @@ const SEQUENTIAL_READ_AHEAD_SIZE: usize = 32 * 1024 * 1024;
 pub struct OpenFile {
     path: RwLock<RemotePath>,
     is_directory: bool,
+    size: AtomicU64,
     stage: Option<StagedFile>,
+    read_request: Mutex<()>,
     read_cache: Mutex<Option<ReadCache>>,
+    read_generation: AtomicU64,
+    read_progress: watch::Sender<u64>,
     dirty: AtomicBool,
     delete_pending: AtomicBool,
 }
@@ -225,8 +233,12 @@ impl RemoteFilesystem {
         Ok(Arc::new(OpenFile {
             path: RwLock::new(path),
             is_directory: metadata.is_directory,
+            size: AtomicU64::new(metadata.size_bytes.unwrap_or(0)),
             stage,
+            read_request: Mutex::new(()),
             read_cache: Mutex::new(None),
+            read_generation: AtomicU64::new(0),
+            read_progress: watch::channel(0).0,
             dirty: AtomicBool::new(false),
             delete_pending: AtomicBool::new(false),
         }))
@@ -240,8 +252,12 @@ impl RemoteFilesystem {
         Ok(Arc::new(OpenFile {
             path: RwLock::new(path),
             is_directory: false,
+            size: AtomicU64::new(0),
             stage: Some(Self::empty_stage().await?),
+            read_request: Mutex::new(()),
             read_cache: Mutex::new(None),
+            read_generation: AtomicU64::new(0),
+            read_progress: watch::channel(0).0,
             dirty: AtomicBool::new(true),
             delete_pending: AtomicBool::new(false),
         }))
@@ -257,8 +273,12 @@ impl RemoteFilesystem {
         Ok(Arc::new(OpenFile {
             path: RwLock::new(path),
             is_directory: true,
+            size: AtomicU64::new(0),
             stage: None,
+            read_request: Mutex::new(()),
             read_cache: Mutex::new(None),
+            read_generation: AtomicU64::new(0),
+            read_progress: watch::channel(0).0,
             dirty: AtomicBool::new(false),
             delete_pending: AtomicBool::new(false),
         }))
@@ -266,7 +286,7 @@ impl RemoteFilesystem {
 
     pub async fn read(
         &self,
-        handle: &OpenFile,
+        handle: &Arc<OpenFile>,
         offset: u64,
         length: usize,
     ) -> Result<Vec<u8>, WinFspFilesystemError> {
@@ -282,43 +302,153 @@ impl RemoteFilesystem {
             return Ok(data);
         }
 
-        let path = handle.path().await;
-        let mut cache = handle.read_cache.lock().await;
-        if let Some(cached) = cache.as_ref() {
-            let relative = offset.saturating_sub(cached.offset) as usize;
-            if offset >= cached.offset && relative < cached.data.len() {
-                let available = (cached.data.len() - relative).min(length);
-                return Ok(cached.data[relative..relative + available].to_vec());
-            }
+        let _request = handle.read_request.lock().await;
+        let file_size = handle.size.load(Ordering::Acquire);
+        if offset >= file_size {
+            return Ok(Vec::new());
         }
-        let sequential = cache
-            .as_ref()
-            .is_some_and(|cached| offset == cached.offset.saturating_add(cached.data.len() as u64));
-        let read_length = length.max(if sequential {
-            SEQUENTIAL_READ_AHEAD_SIZE
-        } else {
-            INITIAL_READ_AHEAD_SIZE
-        });
-        let end = offset.saturating_add(read_length as u64);
-        let mut stream = self
-            .provider
-            .read(ReadRequest {
-                path,
-                range: Some(offset..end),
-            })
-            .await?;
-        let mut data = Vec::with_capacity(read_length);
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            let remaining = read_length.saturating_sub(data.len());
-            data.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-            if data.len() == read_length {
-                break;
+        let mut progress = handle.read_progress.subscribe();
+        loop {
+            let mut cache = handle.read_cache.lock().await;
+            if let Some(cached) = cache.as_ref() {
+                if let Some(error) = &cached.error {
+                    return Err(WinFspFilesystemError::Staging(error.clone()));
+                }
+                let relative = offset.saturating_sub(cached.offset) as usize;
+                if offset >= cached.offset && relative < cached.data.len() {
+                    let available = (cached.data.len() - relative).min(length);
+                    let expected = cached.end.saturating_sub(cached.offset) as usize;
+                    let remote_eof =
+                        cached.complete && cached.data.len() == expected && cached.end == file_size;
+                    if available == length || remote_eof {
+                        return Ok(cached.data[relative..relative + available].to_vec());
+                    }
+                }
+                let data_end = cached.offset.saturating_add(cached.data.len() as u64);
+                if cached.complete && cached.end == file_size && offset >= data_end {
+                    return Ok(Vec::new());
+                }
+                if offset >= cached.offset && offset < cached.end && !cached.complete {
+                    drop(cache);
+                    progress
+                        .changed()
+                        .await
+                        .map_err(|error| WinFspFilesystemError::Staging(error.to_string()))?;
+                    continue;
+                }
+                if offset == cached.offset.saturating_add(cached.data.len() as u64) {
+                    if let Some(error) = &cached.error {
+                        return Err(WinFspFilesystemError::Staging(error.clone()));
+                    }
+                    if cached.complete && offset < cached.end {
+                        return Ok(Vec::new());
+                    }
+                }
             }
+            let sequential = cache.as_ref().is_some_and(|cached| {
+                cached.complete && offset == cached.offset.saturating_add(cached.data.len() as u64)
+            });
+            let read_length = length.max(if sequential {
+                SEQUENTIAL_READ_AHEAD_SIZE
+            } else {
+                INITIAL_READ_AHEAD_SIZE
+            });
+            let end = offset.saturating_add(read_length as u64).min(file_size);
+            let read_length = end.saturating_sub(offset) as usize;
+            let generation = handle.read_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            *cache = Some(ReadCache {
+                offset,
+                end,
+                data: Vec::with_capacity(read_length),
+                generation,
+                complete: false,
+                error: None,
+            });
+            drop(cache);
+
+            let provider = Arc::clone(&self.provider);
+            let handle = Arc::clone(handle);
+            let path = handle.path().await;
+            tokio::spawn(async move {
+                let result = provider
+                    .read(ReadRequest {
+                        path,
+                        range: Some(offset..end),
+                    })
+                    .await;
+                match result {
+                    Ok(mut stream) => {
+                        while let Some(chunk) = stream.next().await {
+                            let chunk = match chunk {
+                                Ok(chunk) => chunk,
+                                Err(error) => {
+                                    let mut cache = handle.read_cache.lock().await;
+                                    if let Some(cache) = cache
+                                        .as_mut()
+                                        .filter(|cache| cache.generation == generation)
+                                    {
+                                        cache.error = Some(error.to_string());
+                                        cache.complete = true;
+                                    }
+                                    handle.read_progress.send_modify(|value| *value += 1);
+                                    return;
+                                }
+                            };
+                            let full = {
+                                let mut cache = handle.read_cache.lock().await;
+                                let Some(cache) = cache
+                                    .as_mut()
+                                    .filter(|cache| cache.generation == generation)
+                                else {
+                                    return;
+                                };
+                                let remaining = read_length.saturating_sub(cache.data.len());
+                                cache
+                                    .data
+                                    .extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                                let full = cache.data.len() == read_length;
+                                cache.complete = full;
+                                full
+                            };
+                            handle.read_progress.send_modify(|value| *value += 1);
+                            if full {
+                                return;
+                            }
+                        }
+                        let mut cache = handle.read_cache.lock().await;
+                        if let Some(cache) = cache
+                            .as_mut()
+                            .filter(|cache| cache.generation == generation)
+                        {
+                            if cache.data.len() == read_length {
+                                cache.complete = true;
+                            } else {
+                                cache.error = Some(format!(
+                                    "remote read ended after {} of {read_length} bytes",
+                                    cache.data.len()
+                                ));
+                                cache.complete = true;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let mut cache = handle.read_cache.lock().await;
+                        if let Some(cache) = cache
+                            .as_mut()
+                            .filter(|cache| cache.generation == generation)
+                        {
+                            cache.error = Some(error.to_string());
+                            cache.complete = true;
+                        }
+                    }
+                }
+                handle.read_progress.send_modify(|value| *value += 1);
+            });
+            progress
+                .changed()
+                .await
+                .map_err(|error| WinFspFilesystemError::Staging(error.to_string()))?;
         }
-        let requested = data[..data.len().min(length)].to_vec();
-        *cache = Some(ReadCache { offset, data });
-        Ok(requested)
     }
 
     pub async fn write(
@@ -361,6 +491,7 @@ impl RemoteFilesystem {
             return Err(WinFspFilesystemError::NotWritable(handle.path().await));
         };
         stage.file.lock().await.set_len(size).await?;
+        handle.size.store(size, Ordering::Release);
         handle.dirty.store(true, Ordering::Release);
         Ok(())
     }
@@ -369,12 +500,7 @@ impl RemoteFilesystem {
         if let Some(stage) = &handle.stage {
             return Ok(stage.file.lock().await.metadata().await?.len());
         }
-        Ok(self
-            .provider
-            .stat(&handle.path().await)
-            .await?
-            .size_bytes
-            .unwrap_or(0))
+        Ok(handle.size.load(Ordering::Acquire))
     }
 
     pub async fn flush(&self, handle: &OpenFile) -> Result<RemoteMetadata, WinFspFilesystemError> {
@@ -516,6 +642,9 @@ mod tests {
         list_calls: AtomicUsize,
         stat_calls: AtomicUsize,
         read_calls: AtomicUsize,
+        advertised_size: Option<usize>,
+        read_chunk_size: usize,
+        read_chunk_delay: Duration,
     }
 
     impl MemoryProvider {
@@ -606,7 +735,10 @@ mod tests {
                         .iter()
                         .filter(|(path, _)| Self::is_direct_child(path, prefix))
                         .map(|(path, data)| RemoteEntry {
-                            metadata: Self::metadata(path.clone(), data.len()),
+                            metadata: Self::metadata(
+                                path.clone(),
+                                self.advertised_size.unwrap_or(data.len()),
+                            ),
                         }),
                 )
                 .collect::<Vec<_>>();
@@ -629,7 +761,9 @@ mod tests {
                 .lock()
                 .await
                 .get(path)
-                .map(|data| Self::metadata(path.clone(), data.len()))
+                .map(|data| {
+                    Self::metadata(path.clone(), self.advertised_size.unwrap_or(data.len()))
+                })
                 .ok_or_else(|| StorageError::NotFound { path: path.clone() })
         }
 
@@ -649,8 +783,20 @@ mod tests {
                 }
                 None => data.clone(),
             };
-            Ok(Box::pin(stream::once(
-                async move { Ok(Bytes::from(bytes)) },
+            let chunks = if self.read_chunk_size == 0 {
+                vec![Bytes::from(bytes)]
+            } else {
+                bytes
+                    .chunks(self.read_chunk_size)
+                    .map(Bytes::copy_from_slice)
+                    .collect()
+            };
+            let delay = self.read_chunk_delay;
+            Ok(Box::pin(stream::iter(chunks).then(
+                move |chunk| async move {
+                    tokio::time::sleep(delay).await;
+                    Ok(chunk)
+                },
             )))
         }
 
@@ -747,6 +893,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_returns_when_the_requested_bytes_arrive() {
+        let provider = Arc::new(MemoryProvider {
+            read_chunk_size: 4,
+            read_chunk_delay: Duration::from_millis(200),
+            ..Default::default()
+        });
+        provider.insert("video.mp4", b"abcdefgh").await;
+        let filesystem = RemoteFilesystem::new(provider);
+        let handle = filesystem
+            .open(RemotePath::parse("video.mp4").unwrap(), false)
+            .await
+            .unwrap();
+
+        let first =
+            tokio::time::timeout(Duration::from_millis(300), filesystem.read(&handle, 0, 4))
+                .await
+                .expect("read waited for the complete prefetch range")
+                .unwrap();
+
+        assert_eq!(first, b"abcd");
+    }
+
+    #[tokio::test]
+    async fn read_does_not_report_an_intermediate_chunk_as_eof() {
+        let provider = Arc::new(MemoryProvider {
+            read_chunk_size: 4,
+            read_chunk_delay: Duration::from_millis(100),
+            ..Default::default()
+        });
+        provider.insert("video.mp4", b"abcdefgh").await;
+        let filesystem = RemoteFilesystem::new(provider);
+        let handle = filesystem
+            .open(RemotePath::parse("video.mp4").unwrap(), false)
+            .await
+            .unwrap();
+
+        let data = filesystem.read(&handle, 0, 8).await.unwrap();
+
+        assert_eq!(data, b"abcdefgh");
+    }
+
+    #[tokio::test]
+    async fn concurrent_reads_share_the_active_prefetch() {
+        let provider = Arc::new(MemoryProvider {
+            read_chunk_size: 4,
+            read_chunk_delay: Duration::from_millis(50),
+            ..Default::default()
+        });
+        provider.insert("video.mp4", b"abcdefghijkl").await;
+        let filesystem = RemoteFilesystem::new(provider.clone());
+        let handle = filesystem
+            .open(RemotePath::parse("video.mp4").unwrap(), false)
+            .await
+            .unwrap();
+
+        let (first, second) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                filesystem.read(&handle, 0, 4),
+                filesystem.read(&handle, 4, 4),
+            )
+        })
+        .await
+        .expect("concurrent reads starved each other's prefetch");
+
+        assert_eq!(first.unwrap(), b"abcd");
+        assert_eq!(second.unwrap(), b"efgh");
+        assert_eq!(provider.read_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn read_returns_a_short_buffer_only_at_remote_eof() {
+        let provider = Arc::new(MemoryProvider::default());
+        provider.insert("video.mp4", b"abcdef").await;
+        let filesystem = RemoteFilesystem::new(provider);
+        let handle = filesystem
+            .open(RemotePath::parse("video.mp4").unwrap(), false)
+            .await
+            .unwrap();
+
+        assert_eq!(filesystem.read(&handle, 0, 8).await.unwrap(), b"abcdef");
+        assert!(filesystem.read(&handle, 6, 8).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_rejects_a_stream_that_ends_before_advertised_eof() {
+        let provider = Arc::new(MemoryProvider {
+            advertised_size: Some(8),
+            ..Default::default()
+        });
+        provider.insert("video.mp4", b"abcd").await;
+        let filesystem = RemoteFilesystem::new(provider);
+        let handle = filesystem
+            .open(RemotePath::parse("video.mp4").unwrap(), false)
+            .await
+            .unwrap();
+
+        let error = filesystem.read(&handle, 0, 8).await.unwrap_err();
+
+        assert!(matches!(error, WinFspFilesystemError::Staging(_)));
+        assert!(error.to_string().contains("4 of 8 bytes"));
+    }
+
+    #[tokio::test]
     async fn partial_write_is_staged_and_preserves_other_bytes_on_flush() {
         let provider = Arc::new(MemoryProvider::default());
         provider.insert("notes.txt", b"hello world").await;
@@ -828,6 +1077,38 @@ mod tests {
         .unwrap();
 
         assert!(started.elapsed() < Duration::from_secs(1));
+        mount.unmount();
+    }
+
+    #[cfg(all(target_os = "windows", feature = "native"))]
+    #[test]
+    fn native_mount_reads_a_multi_chunk_file_without_short_reads() {
+        let _guard = NATIVE_MOUNT_TEST_LOCK.lock().unwrap();
+        let drive_letter = ('M'..='Z')
+            .rev()
+            .find(|letter| !std::path::Path::new(&format!(r"{letter}:\")).exists())
+            .expect("no free drive letter available for WinFsp acceptance test");
+        let expected = (0..4 * 1024 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let provider = Arc::new(MemoryProvider {
+            read_chunk_size: 64 * 1024,
+            ..Default::default()
+        });
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(provider.insert("stream.bin", &expected));
+
+        let mount = crate::mount(crate::MountConfig {
+            drive_letter,
+            volume_label: "Bifrost Stream Test".to_owned(),
+            network_drive: false,
+            icon_source: None,
+            provider,
+        })
+        .unwrap();
+        let actual = std::fs::read(format!(r"{drive_letter}:\stream.bin")).unwrap();
+
+        assert_eq!(actual, expected);
         mount.unmount();
     }
 

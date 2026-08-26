@@ -26,6 +26,8 @@
 !macro NSIS_HOOK_PREUNINSTALL
   ${If} $UpdateMode <> 1
     DetailPrint "Stopping Bifrost Drive before integration cleanup..."
+    ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --quit-for-uninstall' $0
+    Sleep 1500
     nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM "${MAINBINARYNAME}.exe" /T /F'
     DetailPrint "Removing Bifrost Drive mounts and Explorer integrations..."
     ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --cleanup-windows-integrations' $0
