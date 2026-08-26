@@ -27,7 +27,7 @@ jobs:
     name: Frontend checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -44,7 +44,7 @@ jobs:
     name: Rust checks
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Linux build dependencies
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf libgtk-3-dev libglib2.0-dev libayatana-appindicator3-dev libfuse3-dev
       - uses: dtolnay/rust-toolchain@stable
@@ -70,7 +70,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Calculate release version
         id: version
         shell: bash
@@ -118,7 +118,7 @@ jobs:
     needs: version
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Tauri dependencies
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libgdk-pixbuf-2.0-dev libglib2.0-dev librsvg2-dev libayatana-appindicator3-dev patchelf libfuse3-dev
       - uses: actions/setup-node@v5
@@ -152,7 +152,7 @@ jobs:
     outputs:
       updater_platform: ${{ steps.platform.outputs.updater_platform }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -194,7 +194,7 @@ jobs:
     needs: version
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with:
           node-version: 22
