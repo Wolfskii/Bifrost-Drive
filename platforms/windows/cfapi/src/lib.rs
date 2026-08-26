@@ -51,7 +51,6 @@ pub enum CfapiEvent {
 #[derive(Debug, Clone)]
 pub struct SyncRootConfig {
     pub path: PathBuf,
-    pub drive_letter: Option<String>,
     pub provider_name: String,
     pub provider_version: String,
     pub provider_id: [u8; 16],
@@ -585,12 +584,6 @@ mod windows_impl {
             }
             let path = wide_path(&self.config.path);
             let _ = unsafe { CfUnregisterSyncRoot(PCWSTR(path.as_ptr())) };
-            if let Some(letter) = &self.config.drive_letter {
-                let _ = std::process::Command::new("subst")
-                    .arg(format!("{letter}:"))
-                    .arg("/D")
-                    .status();
-            }
         }
     }
 

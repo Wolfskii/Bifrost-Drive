@@ -497,7 +497,8 @@ h1 {
         system-ui,
         sans-serif;
 }
-.wizard input:not([type="checkbox"]) {
+.wizard input:not([type="checkbox"]),
+.wizard select {
     width: 100%;
     min-height: 40px;
     padding: 9px 11px;
@@ -524,6 +525,18 @@ h1 {
 }
 .checkbox-row input {
     accent-color: #1f5960;
+}
+.legal-notice {
+    max-width: 680px;
+    margin: 20px 0 0;
+    color: #839194;
+    font:
+        11px/1.55 ui-sans-serif,
+        system-ui,
+        sans-serif;
+}
+.legal-notice a {
+    color: #397471;
 }
 .wizard-actions {
     justify-content: end;

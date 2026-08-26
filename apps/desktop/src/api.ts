@@ -109,7 +109,10 @@ export interface ActivitySummary {
 
 export interface SyncRootRegisterResponse {
     path: string;
-    drive_letter: string | null;
+}
+
+export interface DriveMountRegisterResponse {
+    drive_letter: string;
 }
 
 function tauriAvailable(): boolean {
@@ -262,6 +265,24 @@ export async function createSftpConnection(
     });
 }
 
+export async function getAvailableDriveLetters(): Promise<string[]> {
+    if (!tauriAvailable()) {
+        return [];
+    }
+    return invoke<string[]>("drive_letters_available");
+}
+
+export async function registerDriveMount(
+    connectionId: string,
+): Promise<DriveMountRegisterResponse> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<DriveMountRegisterResponse>("drive_mount_register", {
+        request: { connection_id: connectionId },
+    });
+}
+
 export async function listFiles(connectionId: string): Promise<FileSummary[]> {
     if (!tauriAvailable()) {
         return [];
@@ -345,22 +366,20 @@ export async function resolveConflict(
 
 export async function registerSyncRoot(
     connectionId: string,
-    driveLetter = "",
 ): Promise<SyncRootRegisterResponse> {
     if (!tauriAvailable()) {
         throw new Error("The desktop service is not available in this window");
     }
     return invoke<SyncRootRegisterResponse>("sync_root_register", {
-        request: {
-            connection_id: connectionId,
-            drive_letter: driveLetter || null,
-        },
+        request: { connection_id: connectionId },
     });
 }
 
-export async function getAvailableDriveLetters(): Promise<string[]> {
+export async function unregisterSyncRoot(connectionId: string): Promise<void> {
     if (!tauriAvailable()) {
-        return [];
+        throw new Error("The desktop service is not available in this window");
     }
-    return invoke<string[]>("available_drive_letters");
+    await invoke("sync_root_unregister", {
+        request: { id: connectionId },
+    });
 }

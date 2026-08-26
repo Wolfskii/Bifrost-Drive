@@ -76,6 +76,12 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StorageCapacity {
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+}
+
 #[async_trait]
 pub trait StorageProvider: Send + Sync {
     fn kind(&self) -> ProviderKind;
@@ -91,6 +97,10 @@ pub trait StorageProvider: Send + Sync {
     async fn read(&self, request: ReadRequest) -> Result<ByteStream, StorageError>;
     async fn write(&self, request: WriteRequest) -> Result<RemoteMetadata, StorageError>;
     async fn delete(&self, path: &RemotePath) -> Result<(), StorageError>;
+
+    async fn capacity(&self) -> Result<Option<StorageCapacity>, StorageError> {
+        Ok(None)
+    }
 
     async fn create_directory(&self, _path: &RemotePath) -> Result<(), StorageError> {
         Err(StorageError::Unsupported {

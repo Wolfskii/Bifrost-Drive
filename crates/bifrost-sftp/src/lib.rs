@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use bifrost_common::{Capability, CapabilitySet, ProviderKind, RemoteMetadata, RemotePath};
 use bifrost_storage::{
-    ByteStream, Page, ReadRequest, RemoteEntry, StorageError, StorageProvider, WriteRequest,
+    ByteStream, Page, ReadRequest, RemoteEntry, StorageCapacity, StorageError, StorageProvider,
+    WriteRequest,
 };
 use bytes::Bytes;
 use chrono::{DateTime, TimeZone, Utc};
@@ -13,9 +14,13 @@ use russh::{
         PrivateKeyWithHashAlg, PublicKeyOrCertificate,
     },
 };
-use russh_sftp::{client::SftpSession, protocol::OpenFlags};
+use russh_sftp::{
+    client::{error::Error as SftpError, SftpSession},
+    protocol::{OpenFlags, StatusCode},
+};
 use std::{ops::Range, path::PathBuf, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SftpConfig {
@@ -39,6 +44,7 @@ pub enum SftpAuthentication {
 pub struct SftpProvider {
     config: SftpConfig,
     authentication: SftpAuthentication,
+    session: Mutex<Option<Arc<SftpSession>>>,
 }
 
 struct ClientHandler {
@@ -89,6 +95,7 @@ impl SftpProvider {
         Ok(Self {
             config,
             authentication: SftpAuthentication::Password(password.into()),
+            session: Mutex::new(None),
         })
     }
 
@@ -126,10 +133,11 @@ impl SftpProvider {
                 path: key_path,
                 passphrase,
             },
+            session: Mutex::new(None),
         })
     }
 
-    async fn session(&self) -> Result<SftpSession, StorageError> {
+    async fn connect_session(&self) -> Result<SftpSession, StorageError> {
         let handler = ClientHandler {
             host: self.config.host.clone(),
             port: self.config.port,
@@ -211,6 +219,16 @@ impl SftpProvider {
             })
     }
 
+    async fn session(&self) -> Result<Arc<SftpSession>, StorageError> {
+        let mut cached = self.session.lock().await;
+        if let Some(session) = cached.as_ref() {
+            return Ok(Arc::clone(session));
+        }
+        let session = Arc::new(self.connect_session().await?);
+        *cached = Some(Arc::clone(&session));
+        Ok(session)
+    }
+
     fn normalize_root_path(value: &str) -> Result<String, StorageError> {
         let normalized = value.trim().replace('\\', "/");
         let absolute = normalized.starts_with('/');
@@ -250,6 +268,18 @@ impl SftpProvider {
         StorageError::Provider {
             provider: ProviderKind::Sftp,
             message: error.to_string(),
+        }
+    }
+
+    fn map_path_error(error: SftpError, path: &RemotePath) -> StorageError {
+        match error {
+            SftpError::Status(status) if status.status_code == StatusCode::NoSuchFile => {
+                StorageError::NotFound { path: path.clone() }
+            }
+            SftpError::Status(status) if status.status_code == StatusCode::PermissionDenied => {
+                StorageError::PermissionDenied { path: path.clone() }
+            }
+            error => Self::map_error(error),
         }
     }
 
@@ -325,7 +355,7 @@ impl StorageProvider for SftpProvider {
         let directory = session
             .read_dir(self.path(prefix))
             .await
-            .map_err(Self::map_error)?;
+            .map_err(|error| Self::map_path_error(error, prefix))?;
         let entries = directory
             .map(|entry| {
                 let path = prefix
@@ -348,7 +378,7 @@ impl StorageProvider for SftpProvider {
             .metadata(self.path(path))
             .await
             .map(|metadata| Self::map_metadata(path.clone(), metadata))
-            .map_err(Self::map_error)
+            .map_err(|error| Self::map_path_error(error, path))
     }
 
     async fn read(&self, request: ReadRequest) -> Result<ByteStream, StorageError> {
@@ -357,7 +387,7 @@ impl StorageProvider for SftpProvider {
         let mut file = session
             .open(self.path(&request.path))
             .await
-            .map_err(Self::map_error)?;
+            .map_err(|error| Self::map_path_error(error, &request.path))?;
         if start > 0 {
             file.seek(std::io::SeekFrom::Start(start))
                 .await
@@ -394,7 +424,7 @@ impl StorageProvider for SftpProvider {
                 OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
             )
             .await
-            .map_err(Self::map_error)?;
+            .map_err(|error| Self::map_path_error(error, &path))?;
         let mut content = request.content;
         while let Some(chunk) = content.next().await {
             file.write_all(&chunk.map_err(Self::map_error)?)
@@ -416,13 +446,28 @@ impl StorageProvider for SftpProvider {
         let metadata = session
             .metadata(self.path(path))
             .await
-            .map_err(Self::map_error)?;
+            .map_err(|error| Self::map_path_error(error, path))?;
         if metadata.is_dir() {
             session.remove_dir(self.path(path)).await
         } else {
             session.remove_file(self.path(path)).await
         }
-        .map_err(Self::map_error)
+        .map_err(|error| Self::map_path_error(error, path))
+    }
+
+    async fn capacity(&self) -> Result<Option<StorageCapacity>, StorageError> {
+        let session = self.session().await?;
+        let Some(info) = session
+            .fs_info(self.path(&RemotePath::root()))
+            .await
+            .map_err(Self::map_error)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(StorageCapacity {
+            total_bytes: info.blocks.saturating_mul(info.fragment_size),
+            available_bytes: info.blocks_avail.saturating_mul(info.fragment_size),
+        }))
     }
 
     async fn create_directory(&self, path: &RemotePath) -> Result<(), StorageError> {
@@ -430,7 +475,7 @@ impl StorageProvider for SftpProvider {
             .await?
             .create_dir(self.path(path))
             .await
-            .map_err(Self::map_error)
+            .map_err(|error| Self::map_path_error(error, path))
     }
 
     async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), StorageError> {
@@ -438,14 +483,42 @@ impl StorageProvider for SftpProvider {
             .await?
             .rename(self.path(from), self.path(to))
             .await
-            .map_err(Self::map_error)
+            .map_err(|error| Self::map_path_error(error, from))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{SftpConfig, SftpProvider};
+    use bifrost_common::RemotePath;
+    use bifrost_storage::StorageError;
+    use russh_sftp::{
+        client::error::Error as SftpError,
+        protocol::{Status, StatusCode},
+    };
     use std::path::PathBuf;
+
+    #[test]
+    fn maps_path_statuses_for_filesystem_decisions() {
+        let path = RemotePath::parse("missing.txt").unwrap();
+        let status = |status_code| {
+            SftpError::Status(Status {
+                id: 1,
+                status_code,
+                error_message: String::new(),
+                language_tag: String::new(),
+            })
+        };
+
+        assert!(matches!(
+            SftpProvider::map_path_error(status(StatusCode::NoSuchFile), &path),
+            StorageError::NotFound { .. }
+        ));
+        assert!(matches!(
+            SftpProvider::map_path_error(status(StatusCode::PermissionDenied), &path),
+            StorageError::PermissionDenied { .. }
+        ));
+    }
 
     #[test]
     fn refuses_missing_known_hosts_instead_of_trusting_unknown_servers() {

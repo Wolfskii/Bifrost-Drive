@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Install Rust stable with Cargo, Node.js LTS with npm, Task, and the Tauri 2 prerequisites for your host. Windows development additionally needs Visual Studio Build Tools with the Desktop C++ workload, Windows SDK, and WebView2. Docker Desktop is needed for integration services. Do not install these globally through the repository. Release Windows installers use per-machine installation under `Program Files` and require administrator approval.
+Install Rust stable with Cargo, Node.js LTS with npm, Task, and the Tauri 2 prerequisites for your host. Windows development additionally needs Visual Studio Build Tools with the Desktop C++ workload, Windows SDK, WebView2, and WinFsp 2.1 or later. Install WinFsp from an elevated terminal with `choco install winfsp -y`; end-user packages bundle this prerequisite automatically. Docker Desktop is needed for integration services. Release Windows installers use per-machine installation under `Program Files` and require administrator approval.
 
 ## Commands
 

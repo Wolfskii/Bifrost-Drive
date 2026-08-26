@@ -19,7 +19,7 @@ Before changing code, read `README.md`, `docs/architecture.md`, `docs/developmen
 - `crates/bifrost-cache`: filesystem cache identity, atomic commits, pinning, and eviction primitives.
 - `crates/bifrost-transfer`: bounded transfer queue and retry state machine.
 - `crates/bifrost-s3`, `bifrost-sftp`, and `bifrost-webdav`: isolated provider implementations.
-- `platforms/windows`, `platforms/macos`, and `platforms/linux`: native filesystem, credential, shell, notification, and installer adapters.
+- `platforms/windows`, `platforms/macos`, and `platforms/linux`: native filesystem, credential, shell, notification, and installer adapters. Windows drive letters use WinFsp; CFAPI remains a separate sync-root integration.
 - `apps/desktop`: thin React presentation and Tauri composition layer.
 - `apps/cli`: thin local-service client when introduced; it must not duplicate business logic.
 
@@ -65,4 +65,4 @@ Feature work flows through `develop`; protected `main` is the stable release sou
 
 ## Unfinished Work
 
-macOS File Provider extension packaging, writable Linux FUSE semantics, Windows Explorer acceptance, protected release-secret provisioning, and future provider expansion remain Planned until implemented and tested. The Windows/macOS/Linux credential adapters and CFAPI adapter, durable cache/transfer integration, scheduled conflict-safe sync orchestration, activity history, native notifications, updater configuration, S3/SFTP/WebDAV/FTP/SMB providers, SFTP public-key flow, and verified WebDAV advanced operations are implemented and tested. Capabilities may be exposed only where the provider implementation and tests verify them. Do not expose unavailable capabilities in the UI.
+macOS File Provider extension packaging, writable Linux FUSE semantics, live-provider Windows Explorer acceptance, protected release-secret provisioning, and future provider expansion remain Planned until implemented and tested. The Windows/macOS/Linux credential adapters, CFAPI adapter, writable WinFsp drive adapter, durable cache/transfer integration, scheduled conflict-safe sync orchestration, activity history, native notifications, updater configuration, S3/SFTP/WebDAV/FTP/SMB providers, SFTP public-key flow, and verified WebDAV advanced operations are implemented and tested. Capabilities may be exposed only where the provider implementation and tests verify them. Do not expose unavailable capabilities in the UI.

@@ -1,0 +1,28 @@
+[package]
+name = "bifrost-windows-winfsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[features]
+native = ["dep:winfsp_wrs"]
+
+[dependencies]
+bifrost-common = { path = "../../../crates/bifrost-common" }
+bifrost-storage = { path = "../../../crates/bifrost-storage" }
+bytes.workspace = true
+futures-util = "0.3"
+tempfile = "3.27"
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winfsp_wrs = { version = "0.4.1", optional = true }
+
+[build-dependencies]
+winfsp_wrs_build = "0.4.1"
+
+[dev-dependencies]
+async-trait.workspace = true

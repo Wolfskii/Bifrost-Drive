@@ -6,11 +6,11 @@ Bifrost Drive is a cross-platform desktop client for remote storage. It is desig
 
 ## Status
 
-Early foundation. The repository currently contains shared Rust contracts, SQLite migrations, native Windows/macOS/Linux credential adapters, connection wizards for S3/SFTP/WebDAV/FTP/SMB, provider implementations for S3/SFTP/WebDAV/FTP/SMB, remote root browsing, durable cache-backed transfers, scheduled conflict-safe synchronization, CFAPI hydration and local mutation routing, tray support, native notifications, start-on-boot settings, signed updater configuration, durable activity history, and real provider tests. Native Explorer/File Provider acceptance coverage and writable Linux FUSE semantics remain in progress.
+Early foundation. The repository currently contains shared Rust contracts, SQLite migrations, native Windows/macOS/Linux credential adapters, connection wizards for S3/SFTP/WebDAV/FTP/SMB, provider implementations for S3/SFTP/WebDAV/FTP/SMB, remote root browsing, durable cache-backed transfers, scheduled conflict-safe synchronization, CFAPI hydration and local mutation routing, writable WinFsp drive-letter mounts, tray support, native notifications, start-on-boot settings, signed updater configuration, durable activity history, and real provider tests. Native Explorer/File Provider acceptance coverage and writable Linux FUSE semantics remain in progress.
 
 ## Supported Targets
 
-- Windows 11 22H2+ is the first-release target. The CFAPI adapter registers roots, creates placeholders, resolves provider data, and completes Explorer fetch callbacks; Windows VM acceptance coverage is still required.
+- Windows 11 22H2+ is the first-release target. The CFAPI adapter provides sync roots and hydration, while the WinFsp adapter provides writable drive-letter mounts. Windows VM acceptance against live providers is still required.
 - macOS Keychain and File Provider package support are available; signed extension transport wiring remains platform-specific.
 - Linux Secret Service and read-only FUSE integration are available; writable FUSE mutation semantics remain in progress.
 
@@ -43,3 +43,5 @@ See [docs/roadmap.md](docs/roadmap.md). Current work prioritizes S3, then SFTP a
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+Windows drive mounting uses WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos. Source and license: <https://github.com/winfsp/winfsp>.

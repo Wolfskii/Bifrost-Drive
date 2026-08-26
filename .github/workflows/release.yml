@@ -32,6 +32,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
+      - name: Install verified WinFsp SDK
+        shell: pwsh
+        run: |
+          & apps/desktop/src-tauri/windows/fetch-winfsp.ps1
+          $msi = (Resolve-Path .cache/winfsp/winfsp-2.1.25156.msi).Path
+          $process = Start-Process msiexec.exe -ArgumentList @('/i', $msi, '/qn', '/norestart') -Wait -PassThru
+          if ($process.ExitCode -notin 0, 3010) { throw "WinFsp installation failed with exit code $($process.ExitCode)" }
       - run: npm ci
       - name: Build Linux updater assets
         env:

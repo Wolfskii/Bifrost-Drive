@@ -1,10 +1,11 @@
 use bifrost_api::{
     ActivitySummary, AppStatus, ConnectionIdRequest, ConnectionSummary, CreateConnectionRequest,
     CreateFtpConnectionRequest, CreateS3ConnectionRequest, CreateSftpConnectionRequest,
-    CreateSmbConnectionRequest, CreateWebDavConnectionRequest, CredentialSummary, FilePage,
-    FileSummary, HydrateFileRequest, HydrateFileResponse, ListFilesRequest,
-    StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse, SyncRunRequest,
-    SyncRunResponse, TestConnectionRequest,
+    CreateSmbConnectionRequest, CreateWebDavConnectionRequest, CredentialSummary,
+    DriveMountRegisterRequest, DriveMountRegisterResponse, FilePage, FileSummary,
+    HydrateFileRequest, HydrateFileResponse, ListFilesRequest, StoreS3CredentialRequest,
+    SyncReconcileRequest, SyncReconcileResponse, SyncRunRequest, SyncRunResponse,
+    TestConnectionRequest,
 };
 use bifrost_cache::{CacheManager, CacheRecord};
 use bifrost_common::{ConnectionState, ProviderKind};
@@ -28,6 +29,8 @@ use bifrost_webdav::{WebDavConfig, WebDavProvider};
 use bifrost_windows_cfapi::{CfapiEvent, PlaceholderMetadata, SyncRoot, SyncRootConfig};
 #[cfg(target_os = "windows")]
 use bifrost_windows_credentials::WindowsCredentialStore;
+#[cfg(target_os = "windows")]
+use bifrost_windows_winfsp::{MountConfig, MountHandle};
 use serde::Deserialize;
 #[cfg(target_os = "windows")]
 use std::collections::HashMap;
@@ -46,6 +49,12 @@ use tauri::{
 #[cfg(target_os = "windows")]
 struct SyncRootRegistry(Mutex<HashMap<String, SyncRoot>>);
 
+#[cfg(target_os = "windows")]
+struct DriveMountRegistry(Mutex<HashMap<String, MountHandle>>);
+
+#[cfg(not(target_os = "windows"))]
+struct DriveMountRegistry;
+
 #[cfg(not(target_os = "windows"))]
 struct SyncRootRegistry;
 
@@ -53,6 +62,20 @@ struct SyncRootRegistry;
 impl SyncRootRegistry {
     fn new() -> Self {
         Self(Mutex::new(HashMap::new()))
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl DriveMountRegistry {
+    fn new() -> Self {
+        Self(Mutex::new(HashMap::new()))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl DriveMountRegistry {
+    fn new() -> Self {
+        Self
     }
 }
 
@@ -238,71 +261,78 @@ fn default_sync_root_path(connection: &ConnectionRecord) -> PathBuf {
         .join(format!("{}-{}", name, connection.id))
 }
 
-fn normalize_drive_letter(value: Option<&str>) -> Result<Option<String>, String> {
+fn normalize_drive_letter(value: Option<&str>) -> Result<Option<char>, String> {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
+    let value = value.strip_suffix(':').unwrap_or(value);
     let mut characters = value.chars();
-    let Some(letter) = characters.next() else {
-        return Ok(None);
-    };
-    if characters.next().is_some() || !letter.is_ascii_alphabetic() {
-        return Err("Drive letter must be a single letter from A to Z".to_owned());
+    let letter = characters
+        .next()
+        .filter(char::is_ascii_alphabetic)
+        .ok_or_else(|| "Drive letter must be a single letter from D to Z".to_owned())?
+        .to_ascii_uppercase();
+    if characters.next().is_some() || !('D'..='Z').contains(&letter) {
+        return Err("Drive letter must be a single letter from D to Z".to_owned());
     }
-    Ok(Some(letter.to_ascii_uppercase().to_string()))
+    Ok(Some(letter))
 }
 
-#[cfg(target_os = "windows")]
-fn map_drive_letter(letter: &str, path: &PathBuf) -> Result<(), String> {
-    let drive = format!("{letter}:");
-    let target = path.to_string_lossy().to_ascii_lowercase();
-    let query = std::process::Command::new("subst")
-        .arg(&drive)
-        .output()
-        .map_err(|error| format!("Unable to inspect drive {drive}: {error}"))?;
-    if query.status.success() {
-        let current = String::from_utf8_lossy(&query.stdout).to_ascii_lowercase();
-        if current.contains(&target) {
-            return Ok(());
+fn set_drive_letter(
+    configuration: &mut serde_json::Value,
+    value: Option<&str>,
+) -> Result<(), String> {
+    let object = configuration
+        .as_object_mut()
+        .ok_or_else(|| "Connection configuration must be an object".to_owned())?;
+    match normalize_drive_letter(value)? {
+        Some(letter) => {
+            object.insert(
+                "drive_letter".to_owned(),
+                serde_json::Value::String(letter.to_string()),
+            );
         }
-        return Err(format!("Drive {drive} is already in use"));
+        None => {
+            object.remove("drive_letter");
+        }
     }
-    let result = std::process::Command::new("subst")
-        .arg(&drive)
-        .arg(path)
-        .output()
-        .map_err(|error| format!("Unable to assign drive {drive}: {error}"))?;
-    if result.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Unable to assign drive {drive}: {}",
-            String::from_utf8_lossy(&result.stderr).trim()
-        ))
-    }
+    Ok(())
 }
 
-#[cfg(target_os = "windows")]
-fn unmap_drive_letter(letter: &str) {
-    let _ = std::process::Command::new("subst")
-        .arg(format!("{letter}:"))
-        .arg("/D")
-        .status();
+fn configured_drive_letter(configuration_json: &str) -> Result<Option<char>, String> {
+    let configuration: serde_json::Value = serde_json::from_str(configuration_json)
+        .map_err(|_| "Connection configuration is invalid".to_owned())?;
+    normalize_drive_letter(
+        configuration
+            .get("drive_letter")
+            .and_then(serde_json::Value::as_str),
+    )
 }
 
-#[tauri::command]
-fn available_drive_letters() -> Vec<String> {
-    #[cfg(target_os = "windows")]
+async fn ensure_drive_letter_unassigned(
+    database: &Database,
+    requested: Option<&str>,
+    excluding: Option<bifrost_common::ConnectionId>,
+) -> Result<(), String> {
+    let Some(requested) = normalize_drive_letter(requested)? else {
+        return Ok(());
+    };
+    for connection in database
+        .list_connections()
+        .await
+        .map_err(|error| error.to_string())?
     {
-        ('A'..='Z')
-            .filter(|letter| !PathBuf::from(format!("{letter}:\\")).exists())
-            .map(|letter| letter.to_string())
-            .collect()
+        if excluding == Some(connection.id) {
+            continue;
+        }
+        if configured_drive_letter(&connection.configuration_json)? == Some(requested) {
+            return Err(format!(
+                "Drive {requested}: is already assigned to {}",
+                connection.name
+            ));
+        }
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Vec::new()
-    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -346,17 +376,6 @@ async fn connections_details(
         .ok_or_else(|| "Connection was not found".to_owned())?;
     let credential: CredentialRef = serde_json::from_str(&connection.credential_ref)
         .map_err(|_| "Connection credential reference is invalid".to_owned())?;
-    #[cfg(target_os = "windows")]
-    if let Ok(configuration) =
-        serde_json::from_str::<serde_json::Value>(&connection.configuration_json)
-    {
-        if let Some(letter) = configuration
-            .get("drive_letter")
-            .and_then(|value| value.as_str())
-        {
-            unmap_drive_letter(letter);
-        }
-    }
     let secret = credentials
         .get(&credential)
         .await
@@ -408,10 +427,10 @@ fn merge_connection_credentials(
 
 #[tauri::command]
 async fn connections_update(
-    registry: State<'_, SyncRootRegistry>,
     database: State<'_, Database>,
     credentials: State<'_, WindowsCredentialStore>,
-    request: bifrost_api::UpdateConnectionRequest,
+    mounts: State<'_, DriveMountRegistry>,
+    mut request: bifrost_api::UpdateConnectionRequest,
 ) -> Result<ConnectionSummary, String> {
     if request.name.trim().is_empty() {
         return Err("Connection name is required".to_owned());
@@ -421,6 +440,14 @@ async fn connections_update(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Connection was not found".to_owned())?;
+    let requested_drive = request
+        .configuration
+        .get("drive_letter")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    ensure_drive_letter_unassigned(&database, requested_drive.as_deref(), Some(existing.id))
+        .await?;
+    set_drive_letter(&mut request.configuration, requested_drive.as_deref())?;
     let old_credential: CredentialRef = serde_json::from_str(&existing.credential_ref)
         .map_err(|_| "Connection credential reference is invalid".to_owned())?;
     let old_secret = credentials
@@ -452,35 +479,6 @@ async fn connections_update(
         let _ = credentials.delete(&new_credential).await;
         return Err(error);
     }
-    #[cfg(target_os = "windows")]
-    {
-        let old_configuration =
-            serde_json::from_str::<serde_json::Value>(&existing.configuration_json)
-                .unwrap_or_default();
-        let old_drive = old_configuration
-            .get("drive_letter")
-            .and_then(|value| value.as_str());
-        let new_drive = request
-            .configuration
-            .get("drive_letter")
-            .and_then(|value| value.as_str());
-        if old_drive != new_drive {
-            if let Some(letter) = old_drive {
-                unmap_drive_letter(letter);
-            }
-            registry
-                .0
-                .lock()
-                .expect("sync root registry poisoned")
-                .remove(
-                    &default_sync_root_path(&existing)
-                        .to_string_lossy()
-                        .to_string(),
-                );
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    let _ = registry;
     let updated = ConnectionRecord {
         id: existing.id,
         name: request.name,
@@ -494,6 +492,14 @@ async fn connections_update(
         return Err(error.to_string());
     }
     let _ = credentials.delete(&old_credential).await;
+    #[cfg(target_os = "windows")]
+    mounts
+        .0
+        .lock()
+        .expect("drive mount registry poisoned")
+        .remove(&updated.id.to_string());
+    #[cfg(not(target_os = "windows"))]
+    let _ = mounts;
     Ok(ConnectionSummary {
         id: updated.id,
         name: updated.name,
@@ -526,11 +532,18 @@ async fn activity_list(database: State<'_, Database>) -> Result<Vec<ActivitySumm
 async fn connections_create(
     database: State<'_, Database>,
     credentials: State<'_, WindowsCredentialStore>,
-    request: CreateConnectionRequest,
+    mut request: CreateConnectionRequest,
 ) -> Result<ConnectionSummary, String> {
     if request.name.trim().is_empty() || request.credential_ref.trim().is_empty() {
         return Err("Connection name and credential reference are required".to_owned());
     }
+    let requested_drive = request
+        .configuration
+        .get("drive_letter")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    ensure_drive_letter_unassigned(&database, requested_drive.as_deref(), None).await?;
+    set_drive_letter(&mut request.configuration, requested_drive.as_deref())?;
     let credential: CredentialRef = serde_json::from_str(&request.credential_ref)
         .map_err(|_| "Connection credential reference is invalid".to_owned())?;
     let test_request = TestConnectionRequest {
@@ -574,6 +587,7 @@ async fn connections_create(
 #[tauri::command]
 async fn connections_remove(
     registry: State<'_, SyncRootRegistry>,
+    mounts: State<'_, DriveMountRegistry>,
     database: State<'_, Database>,
     credentials: State<'_, WindowsCredentialStore>,
     request: ConnectionIdRequest,
@@ -585,26 +599,30 @@ async fn connections_remove(
         .ok_or_else(|| "Connection was not found".to_owned())?;
     let credential: CredentialRef = serde_json::from_str(&connection.credential_ref)
         .map_err(|_| "Connection credential reference is invalid".to_owned())?;
+    database
+        .delete_connection(request.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    #[cfg(target_os = "windows")]
+    mounts
+        .0
+        .lock()
+        .expect("drive mount registry poisoned")
+        .remove(&connection.id.to_string());
     #[cfg(target_os = "windows")]
     registry
         .0
         .lock()
         .expect("sync root registry poisoned")
-        .remove(
-            &default_sync_root_path(&connection)
-                .to_string_lossy()
-                .to_string(),
-        );
+        .remove(&connection.id.to_string());
     #[cfg(not(target_os = "windows"))]
-    let _ = registry;
-    match credentials.delete(&credential).await {
-        Ok(()) | Err(CredentialError::NotFound) => {}
-        Err(error) => return Err(error.to_string()),
+    let _ = (registry, mounts);
+    if let Err(error) = credentials.delete(&credential).await {
+        if !matches!(error, CredentialError::NotFound) {
+            tracing::warn!(%error, "connection removed but credential cleanup failed");
+        }
     }
-    database
-        .delete_connection(request.id)
-        .await
-        .map_err(|error| error.to_string())
+    Ok(())
 }
 
 #[tauri::command]
@@ -639,6 +657,7 @@ async fn connections_create_s3(
     credentials: State<'_, WindowsCredentialStore>,
     request: CreateS3ConnectionRequest,
 ) -> Result<ConnectionSummary, String> {
+    ensure_drive_letter_unassigned(&database, request.drive_letter.as_deref(), None).await?;
     if request.name.trim().is_empty()
         || request.region.trim().is_empty()
         || request.bucket.trim().is_empty()
@@ -659,12 +678,12 @@ async fn connections_create_s3(
     .await?;
     let credential_ref = serde_json::to_string(&credential)
         .map_err(|_| "Connection credential reference is invalid".to_owned())?;
-    let configuration = serde_json::json!({
+    let mut configuration = serde_json::json!({
         "region": request.region,
         "bucket": request.bucket,
         "path_style": request.path_style,
-        "drive_letter": normalize_drive_letter(request.drive_letter.as_deref())?,
     });
+    set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     let test_request = TestConnectionRequest {
         kind: ProviderKind::S3,
         endpoint: request.endpoint.clone(),
@@ -1085,16 +1104,18 @@ async fn connections_create_webdav(
     credentials: State<'_, WindowsCredentialStore>,
     request: CreateWebDavConnectionRequest,
 ) -> Result<ConnectionSummary, String> {
-    let drive_letter = normalize_drive_letter(request.drive_letter.as_deref())?;
+    ensure_drive_letter_unassigned(&database, request.drive_letter.as_deref(), None).await?;
     let endpoint = url::Url::parse(&request.endpoint)
         .map_err(|_| "WebDAV endpoint must be a valid URL".to_owned())?;
+    let mut configuration = serde_json::json!({});
+    set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     create_tested_connection(
         &database,
         &credentials,
         request.name,
         ProviderKind::WebDav,
         endpoint.to_string(),
-        serde_json::json!({ "drive_letter": drive_letter }),
+        configuration,
         serde_json::json!({ "username": request.username, "password": request.password }),
     )
     .await
@@ -1106,7 +1127,7 @@ async fn connections_create_ftp(
     credentials: State<'_, WindowsCredentialStore>,
     request: CreateFtpConnectionRequest,
 ) -> Result<ConnectionSummary, String> {
-    let drive_letter = normalize_drive_letter(request.drive_letter.as_deref())?;
+    ensure_drive_letter_unassigned(&database, request.drive_letter.as_deref(), None).await?;
     if request.name.trim().is_empty()
         || request.username.trim().is_empty()
         || request.password.is_empty()
@@ -1118,13 +1139,15 @@ async fn connections_create_ftp(
     if !matches!(endpoint.scheme(), "ftp" | "ftps") {
         return Err("FTP endpoint must use ftp:// or ftps://".to_owned());
     }
+    let mut configuration = serde_json::json!({});
+    set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     create_tested_connection(
         &database,
         &credentials,
         request.name,
         ProviderKind::Ftp,
         endpoint.to_string(),
-        serde_json::json!({ "drive_letter": drive_letter }),
+        configuration,
         serde_json::json!({ "username": request.username, "password": request.password }),
     )
     .await
@@ -1136,7 +1159,7 @@ async fn connections_create_smb(
     credentials: State<'_, WindowsCredentialStore>,
     request: CreateSmbConnectionRequest,
 ) -> Result<ConnectionSummary, String> {
-    let drive_letter = normalize_drive_letter(request.drive_letter.as_deref())?;
+    ensure_drive_letter_unassigned(&database, request.drive_letter.as_deref(), None).await?;
     if request.name.trim().is_empty() || request.username.trim().is_empty() {
         return Err("SMB connection name and username are required".to_owned());
     }
@@ -1145,13 +1168,15 @@ async fn connections_create_smb(
     if endpoint.scheme() != "smb" {
         return Err("SMB endpoint must use smb://".to_owned());
     }
+    let mut configuration = serde_json::json!({ "domain": request.domain });
+    set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     create_tested_connection(
         &database,
         &credentials,
         request.name,
         ProviderKind::Smb,
         endpoint.to_string(),
-        serde_json::json!({ "domain": request.domain, "drive_letter": drive_letter }),
+        configuration,
         serde_json::json!({ "username": request.username, "password": request.password }),
     )
     .await
@@ -1163,7 +1188,7 @@ async fn connections_create_sftp(
     credentials: State<'_, WindowsCredentialStore>,
     request: CreateSftpConnectionRequest,
 ) -> Result<ConnectionSummary, String> {
-    let drive_letter = normalize_drive_letter(request.drive_letter.as_deref())?;
+    ensure_drive_letter_unassigned(&database, request.drive_letter.as_deref(), None).await?;
     let root_path = request.root_path.trim().to_owned();
     let known_hosts = request
         .known_hosts
@@ -1187,13 +1212,15 @@ async fn connections_create_sftp(
         return Err("SFTP authentication must be password or private_key".to_owned());
     }
     let authentication = request.authentication.clone();
+    let mut configuration = serde_json::json!({ "host": request.host, "port": request.port, "root_path": root_path, "username": request.username, "known_hosts": known_hosts, "trust_on_first_use": request.trust_on_first_use, "authentication": authentication, "private_key_path": request.private_key_path });
+    set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     create_tested_connection(
         &database,
         &credentials,
         request.name,
         ProviderKind::Sftp,
         format!("sftp://{}:{}", request.host, request.port),
-        serde_json::json!({ "host": request.host, "port": request.port, "root_path": root_path, "username": request.username, "known_hosts": known_hosts, "trust_on_first_use": request.trust_on_first_use, "authentication": authentication, "private_key_path": request.private_key_path, "drive_letter": drive_letter }),
+        configuration,
         serde_json::json!({ "username": request.username, "password": (request.authentication == "password").then_some(request.password), "private_key_path": request.private_key_path, "passphrase": request.passphrase }),
     )
     .await
@@ -1741,31 +1768,14 @@ async fn sync_root_register(
             .path
             .map(PathBuf::from)
             .unwrap_or_else(|| default_sync_root_path(&connection));
-        let mut configuration: serde_json::Value =
-            serde_json::from_str(&connection.configuration_json)
-                .map_err(|_| "Connection configuration is invalid".to_owned())?;
-        let configured_drive = configuration
-            .get("drive_letter")
-            .and_then(|value| value.as_str());
-        let drive_letter =
-            normalize_drive_letter(request.drive_letter.as_deref().or(configured_drive))?;
         if !path.is_absolute() {
             return Err("Sync root path must be absolute".to_owned());
         }
         fs::create_dir_all(&path).map_err(|error| error.to_string())?;
-        if let Some(letter) = &drive_letter {
-            map_drive_letter(letter, &path)?;
-            configuration["drive_letter"] = serde_json::Value::String(letter.clone());
-            database
-                .update_connection_configuration(connection.id, &configuration.to_string())
-                .await
-                .map_err(|error| error.to_string())?;
-        }
         let mut provider_id = [0; 16];
         provider_id.copy_from_slice(connection.id.as_uuid().as_bytes());
         let root = SyncRoot::register(SyncRootConfig {
             path: path.clone(),
-            drive_letter: drive_letter.clone(),
             provider_name: "Bifrost Drive".to_owned(),
             provider_version: env!("CARGO_PKG_VERSION").to_owned(),
             provider_id,
@@ -1783,10 +1793,96 @@ async fn sync_root_register(
             .0
             .lock()
             .expect("sync root registry poisoned")
-            .insert(path.to_string_lossy().to_string(), root);
+            .insert(connection.id.to_string(), root);
         Ok(bifrost_api::SyncRootRegisterResponse {
             path: path.to_string_lossy().to_string(),
+        })
+    }
+}
+
+#[tauri::command]
+fn sync_root_unregister(
+    registry: State<'_, SyncRootRegistry>,
+    request: ConnectionIdRequest,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (registry, request);
+        Ok(())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        registry
+            .0
+            .lock()
+            .map_err(|_| "sync root registry poisoned".to_owned())?
+            .remove(&request.id.to_string());
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn drive_letters_available() -> Result<Vec<String>, String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Windows drive mounting is available only on Windows".to_owned())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let used = unsafe { windows::Win32::Storage::FileSystem::GetLogicalDrives() };
+        Ok(('D'..='Z')
+            .rev()
+            .filter(|letter| used & (1 << (*letter as u32 - 'A' as u32)) == 0)
+            .map(|letter| format!("{letter}:"))
+            .collect())
+    }
+}
+
+#[tauri::command]
+async fn drive_mount_register(
+    registry: State<'_, DriveMountRegistry>,
+    database: State<'_, Database>,
+    credentials: State<'_, WindowsCredentialStore>,
+    request: DriveMountRegisterRequest,
+) -> Result<DriveMountRegisterResponse, String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (registry, database, credentials, request);
+        Err("Windows drive mounting is available only on Windows".to_owned())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let connection = database
+            .find_connection(request.connection_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Connection was not found".to_owned())?;
+        let Some(drive_letter) = configured_drive_letter(&connection.configuration_json)? else {
+            return Err("No drive letter is assigned to this connection".to_owned());
+        };
+        let key = connection.id.to_string();
+        {
+            let mounts = registry.0.lock().expect("drive mount registry poisoned");
+            if mounts.contains_key(&key) {
+                return Ok(DriveMountRegisterResponse {
+                    drive_letter: format!("{drive_letter}:"),
+                });
+            }
+        }
+        let provider = provider_for_connection(&connection, &credentials).await?;
+        let handle = bifrost_windows_winfsp::mount(MountConfig {
             drive_letter,
+            volume_label: connection.name,
+            provider: Arc::from(provider),
+        })
+        .map_err(|error| error.to_string())?;
+        registry
+            .0
+            .lock()
+            .expect("drive mount registry poisoned")
+            .insert(key, handle);
+        Ok(DriveMountRegisterResponse {
+            drive_letter: format!("{drive_letter}:"),
         })
     }
 }
@@ -1846,6 +1942,7 @@ pub fn run() {
         .manage(Mutex::new(Application::new()))
         .manage(WindowsCredentialStore::new())
         .manage(SyncRootRegistry::new())
+        .manage(DriveMountRegistry::new())
         .invoke_handler(tauri::generate_handler![
             app_status,
             connections_list,
@@ -1868,7 +1965,9 @@ pub fn run() {
             sync_conflicts_list,
             sync_conflict_resolve,
             sync_root_register,
-            available_drive_letters
+            sync_root_unregister,
+            drive_letters_available,
+            drive_mount_register
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bifrost Drive");

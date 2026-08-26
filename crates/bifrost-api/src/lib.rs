@@ -47,7 +47,6 @@ pub struct CreateS3ConnectionRequest {
     pub path_style: bool,
     pub access_key_id: String,
     pub secret_access_key: String,
-    #[serde(default)]
     pub drive_letter: Option<String>,
 }
 
@@ -57,7 +56,6 @@ pub struct CreateWebDavConnectionRequest {
     pub endpoint: String,
     pub username: String,
     pub password: String,
-    #[serde(default)]
     pub drive_letter: Option<String>,
 }
 
@@ -67,7 +65,6 @@ pub struct CreateFtpConnectionRequest {
     pub endpoint: String,
     pub username: String,
     pub password: String,
-    #[serde(default)]
     pub drive_letter: Option<String>,
 }
 
@@ -78,7 +75,6 @@ pub struct CreateSmbConnectionRequest {
     pub username: String,
     pub password: String,
     pub domain: String,
-    #[serde(default)]
     pub drive_letter: Option<String>,
 }
 
@@ -97,13 +93,22 @@ pub struct CreateSftpConnectionRequest {
     pub authentication: String,
     pub private_key_path: Option<String>,
     pub passphrase: Option<String>,
-    #[serde(default)]
     pub drive_letter: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionIdRequest {
     pub id: ConnectionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveMountRegisterRequest {
+    pub connection_id: ConnectionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveMountRegisterResponse {
+    pub drive_letter: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,14 +174,11 @@ pub struct SyncRootRegisterRequest {
     pub connection_id: ConnectionId,
     #[serde(default)]
     pub path: Option<String>,
-    #[serde(default)]
-    pub drive_letter: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncRootRegisterResponse {
     pub path: String,
-    pub drive_letter: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

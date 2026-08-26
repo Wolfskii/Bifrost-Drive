@@ -28,8 +28,8 @@ import {
     createWebDavConnection,
     checkForUpdate,
     getAutostartEnabled,
-    getAvailableDriveLetters,
     getConnectionDetails,
+    getAvailableDriveLetters,
     FileSummary,
     hydrateFile,
     installUpdate,
@@ -38,13 +38,14 @@ import {
     listConflicts,
     listFiles,
     registerSyncRoot,
+    registerDriveMount,
     removeConnection,
     resolveConflict,
     runSync,
     setAutostartEnabled,
     S3ConnectionForm,
-    SyncRootRegisterResponse,
     updateConnection,
+    unregisterSyncRoot,
 } from "./api";
 
 const providerTypes = [
@@ -81,13 +82,12 @@ export function App() {
     const [explorerPaths, setExplorerPaths] = useState<Record<string, string>>(
         {},
     );
-    const [driveAssignments, setDriveAssignments] = useState<
-        Record<string, string>
-    >({});
+    const [mountedDrives, setMountedDrives] = useState<Record<string, string>>(
+        {},
+    );
     const [availableDriveLetters, setAvailableDriveLetters] = useState<
         string[]
     >([]);
-    const [selectedDriveLetter, setSelectedDriveLetter] = useState("");
     const [editingConnection, setEditingConnection] =
         useState<ConnectionSummary | null>(null);
     const [formDefaults, setFormDefaults] = useState<FormDefaults>({});
@@ -97,8 +97,31 @@ export function App() {
         listConnections()
             .then(async (loadedConnections) => {
                 setConnections(loadedConnections);
+                const details = await Promise.all(
+                    loadedConnections.map(async (connection) => {
+                        try {
+                            return [
+                                connection.id,
+                                await getConnectionDetails(connection.id),
+                            ] as const;
+                        } catch {
+                            return null;
+                        }
+                    }),
+                );
+                const driveConnections = new Set(
+                    details.flatMap((entry) =>
+                        entry?.[1].configuration.drive_letter ? [entry[0]] : [],
+                    ),
+                );
                 const registeredRoots = await Promise.all(
                     loadedConnections.map(async (connection) => {
+                        if (driveConnections.has(connection.id)) {
+                            await unregisterSyncRoot(connection.id).catch(
+                                () => undefined,
+                            );
+                            return null;
+                        }
                         try {
                             const root = await registerSyncRoot(connection.id);
                             return [connection.id, root] as const;
@@ -109,52 +132,37 @@ export function App() {
                 );
                 setExplorerPaths(
                     Object.fromEntries(
-                        registeredRoots
-                            .filter(
-                                (
-                                    root,
-                                ): root is readonly [
-                                    string,
-                                    SyncRootRegisterResponse,
-                                ] => root !== null,
-                            )
-                            .map(([id, root]) => [id, root.path]),
+                        registeredRoots.flatMap((root) =>
+                            root ? [[root[0], root[1].path]] : [],
+                        ),
                     ),
                 );
-                setDriveAssignments(
+                const mounted = await Promise.all(
+                    loadedConnections.map(async (connection) => {
+                        if (!driveConnections.has(connection.id)) {
+                            return null;
+                        }
+                        try {
+                            const mount = await registerDriveMount(
+                                connection.id,
+                            );
+                            return [connection.id, mount.drive_letter] as const;
+                        } catch {
+                            return null;
+                        }
+                    }),
+                );
+                setMountedDrives(
                     Object.fromEntries(
-                        registeredRoots
-                            .filter(
-                                (
-                                    root,
-                                ): root is readonly [
-                                    string,
-                                    SyncRootRegisterResponse,
-                                ] =>
-                                    root !== null &&
-                                    root[1].drive_letter !== null,
-                            )
-                            .map(([id, root]) => [
-                                id,
-                                root.drive_letter as string,
-                            ]),
+                        mounted.flatMap((mount) =>
+                            mount ? [[mount[0], mount[1]]] : [],
+                        ),
                     ),
                 );
             })
             .catch(() => {
                 setError("Unable to load saved connections.");
             });
-    }, []);
-
-    useEffect(() => {
-        getAvailableDriveLetters()
-            .then((letters) => {
-                setAvailableDriveLetters(letters);
-                setSelectedDriveLetter(
-                    (current) => current || (letters.includes("Z") ? "Z" : ""),
-                );
-            })
-            .catch(() => undefined);
     }, []);
 
     useEffect(() => {
@@ -184,6 +192,13 @@ export function App() {
             .then(setAutostartEnabledState)
             .catch(() => undefined);
     }, []);
+
+    useEffect(() => {
+        if (!wizardOpen) return;
+        getAvailableDriveLetters()
+            .then(setAvailableDriveLetters)
+            .catch(() => setAvailableDriveLetters([]));
+    }, [wizardOpen]);
 
     async function handleAutostartChange(enabled: boolean) {
         setUpdatingAutostart(true);
@@ -237,21 +252,14 @@ export function App() {
                 rootPath: String(configuration.root_path ?? ""),
                 domain: String(configuration.domain ?? ""),
                 bucket: String(configuration.bucket ?? ""),
-                region: String(configuration.region ?? ""),
                 pathStyle: Boolean(configuration.path_style),
                 privateKeyPath: String(configuration.private_key_path ?? ""),
                 trustOnFirstUse: Boolean(configuration.trust_on_first_use),
                 knownHosts: String(configuration.known_hosts ?? ""),
+                driveLetter: configuration.drive_letter
+                    ? `${String(configuration.drive_letter)}:`
+                    : "",
             });
-            const driveLetter = String(configuration.drive_letter ?? "");
-            setSelectedDriveLetter(driveLetter);
-            if (driveLetter) {
-                setAvailableDriveLetters((current) =>
-                    current.includes(driveLetter)
-                        ? current
-                        : [...current, driveLetter].sort(),
-                );
-            }
             setProviderChoice(providerChoiceFor(connection.kind));
             setSftpAuthentication(
                 configuration.authentication === "private_key"
@@ -280,7 +288,7 @@ export function App() {
                 delete next[connection.id];
                 return next;
             });
-            setDriveAssignments((current) => {
+            setMountedDrives((current) => {
                 const next = { ...current };
                 delete next[connection.id];
                 return next;
@@ -299,21 +307,20 @@ export function App() {
         const form = event.currentTarget;
         const values = new FormData(form);
         const name = String(values.get("name") ?? "").trim();
+        const driveLetter = String(values.get("driveLetter") ?? "").trim();
         const common = {
             name,
             username: String(values.get("username") ?? "").trim(),
             password: String(values.get("password") ?? ""),
-            driveLetter: String(values.get("driveLetter") ?? ""),
         };
         let connectionOperation: Promise<ConnectionSummary>;
         const endpoint = String(values.get("endpoint") ?? "").trim();
-        const driveLetter = String(values.get("driveLetter") ?? "");
         if (editingConnection) {
             let updateEndpoint = endpoint;
             let configuration: Record<string, unknown>;
             let credentials: Record<string, string>;
             if (providerChoice === "FTP") {
-                configuration = { drive_letter: driveLetter || null };
+                configuration = {};
                 credentials = {
                     username: common.username,
                     password: common.password,
@@ -321,14 +328,13 @@ export function App() {
             } else if (providerChoice === "SMB") {
                 configuration = {
                     domain: String(values.get("domain") ?? "").trim(),
-                    drive_letter: driveLetter || null,
                 };
                 credentials = {
                     username: common.username,
                     password: common.password,
                 };
             } else if (providerChoice === "WebDAV") {
-                configuration = { drive_letter: driveLetter || null };
+                configuration = {};
                 credentials = {
                     username: common.username,
                     password: common.password,
@@ -349,7 +355,6 @@ export function App() {
                     private_key_path: String(
                         values.get("privateKeyPath") ?? "",
                     ).trim(),
-                    drive_letter: driveLetter || null,
                 };
                 credentials = {
                     username: common.username,
@@ -364,7 +369,6 @@ export function App() {
                     region: String(values.get("region") ?? "").trim(),
                     bucket: String(values.get("bucket") ?? "").trim(),
                     path_style: values.get("pathStyle") === "on",
-                    drive_letter: driveLetter || null,
                 };
                 credentials = {
                     access_key_id: String(
@@ -374,6 +378,9 @@ export function App() {
                         values.get("secretAccessKey") ?? "",
                     ),
                 };
+            }
+            if (driveLetter) {
+                configuration.drive_letter = driveLetter;
             }
             connectionOperation = updateConnection({
                 id: editingConnection.id,
@@ -386,17 +393,20 @@ export function App() {
             connectionOperation = createFtpConnection({
                 ...common,
                 endpoint: String(values.get("endpoint") ?? "").trim(),
+                driveLetter,
             });
         } else if (providerChoice === "SMB") {
             connectionOperation = createSmbConnection({
                 ...common,
                 endpoint: String(values.get("endpoint") ?? "").trim(),
                 domain: String(values.get("domain") ?? "").trim(),
+                driveLetter,
             });
         } else if (providerChoice === "WebDAV") {
             connectionOperation = createWebDavConnection({
                 ...common,
                 endpoint: String(values.get("endpoint") ?? "").trim(),
+                driveLetter,
             });
         } else if (providerChoice === "SFTP") {
             connectionOperation = createSftpConnection({
@@ -412,6 +422,7 @@ export function App() {
                     values.get("privateKeyPath") ?? "",
                 ).trim(),
                 passphrase: String(values.get("passphrase") ?? ""),
+                driveLetter,
             });
         } else {
             const form: S3ConnectionForm = {
@@ -422,7 +433,7 @@ export function App() {
                 pathStyle: values.get("pathStyle") === "on",
                 accessKeyId: String(values.get("accessKeyId") ?? "").trim(),
                 secretAccessKey: String(values.get("secretAccessKey") ?? ""),
-                driveLetter: String(values.get("driveLetter") ?? ""),
+                driveLetter,
             };
             connectionOperation = createS3Connection(form);
         }
@@ -434,34 +445,49 @@ export function App() {
                 ...current.filter((item) => item.id !== editingConnection?.id),
                 connection,
             ]);
-            try {
-                const root = await registerSyncRoot(
-                    connection.id,
-                    String(values.get("driveLetter") ?? ""),
-                );
-                setExplorerPaths((current) => ({
-                    ...current,
-                    [connection.id]: root.path,
-                }));
-                if (root.drive_letter) {
-                    setDriveAssignments((current) => ({
+            if (driveLetter) {
+                await unregisterSyncRoot(connection.id).catch(() => undefined);
+                setExplorerPaths((current) => {
+                    const next = { ...current };
+                    delete next[connection.id];
+                    return next;
+                });
+            } else {
+                try {
+                    const root = await registerSyncRoot(connection.id);
+                    setExplorerPaths((current) => ({
                         ...current,
-                        [connection.id]: root.drive_letter as string,
+                        [connection.id]: root.path,
                     }));
+                } catch (cause) {
+                    setError(
+                        `Connection saved, but its sync folder could not be registered: ${errorMessage(cause, "unknown error")}`,
+                    );
                 }
-                const remainingLetters = await getAvailableDriveLetters();
-                setAvailableDriveLetters(remainingLetters);
+            }
+            setMountedDrives((current) => {
+                const next = { ...current };
+                delete next[connection.id];
+                return next;
+            });
+            try {
+                const mount = await registerDriveMount(connection.id);
+                setMountedDrives((current) => ({
+                    ...current,
+                    [connection.id]: mount.drive_letter,
+                }));
             } catch (cause) {
-                setError(
-                    `Connection saved, but it could not be registered in Explorer: ${errorMessage(cause, "unknown error")}`,
-                );
+                if (driveLetter) {
+                    setError(
+                        `Connection saved, but ${driveLetter} could not be mounted: ${errorMessage(cause, "unknown error")}`,
+                    );
+                }
             }
             setWizardOpen(false);
             form.reset();
             setEditingConnection(null);
             setFormDefaults({});
             setSftpAuthentication("password");
-            setSelectedDriveLetter("");
         } catch (cause) {
             setError(errorMessage(cause, "Unable to save connection."));
         } finally {
@@ -574,9 +600,6 @@ export function App() {
                             setEditingConnection(null);
                             setFormDefaults({});
                             setSftpAuthentication("password");
-                            setSelectedDriveLetter(
-                                availableDriveLetters.includes("Z") ? "Z" : "",
-                            );
                             setWizardOpen(true);
                         }}
                     >
@@ -698,21 +721,16 @@ export function App() {
                                     <div>
                                         <h3>{connection.name}</h3>
                                         <p>{connection.endpoint}</p>
-                                        {driveAssignments[connection.id] && (
-                                            <p className="explorer-location">
-                                                Drive:{" "}
-                                                {
-                                                    driveAssignments[
-                                                        connection.id
-                                                    ]
-                                                }
-                                                :\
-                                            </p>
-                                        )}
                                         {explorerPaths[connection.id] && (
                                             <p className="explorer-location">
-                                                Explorer:{" "}
+                                                Sync folder:{" "}
                                                 {explorerPaths[connection.id]}
+                                            </p>
+                                        )}
+                                        {mountedDrives[connection.id] && (
+                                            <p className="explorer-location">
+                                                Drive:{" "}
+                                                {mountedDrives[connection.id]}
                                             </p>
                                         )}
                                     </div>
@@ -939,6 +957,14 @@ export function App() {
                         />
                         Start Bifrost Drive when I sign in
                     </label>
+                    <p className="legal-notice">
+                        WinFsp - Windows File System Proxy, Copyright (C) Bill
+                        Zissimopoulos. Bifrost uses WinFsp for Windows drive
+                        mounting.{" "}
+                        <a href="https://github.com/winfsp/winfsp">
+                            Source and license
+                        </a>
+                    </p>
                 </section>
             </section>
             {wizardOpen && (
@@ -1017,22 +1043,29 @@ export function App() {
                                 />
                             </label>
                             <label>
-                                Explorer drive letter
+                                Windows drive
                                 <select
                                     name="driveLetter"
-                                    value={selectedDriveLetter}
-                                    onChange={(event) =>
-                                        setSelectedDriveLetter(
-                                            event.target.value,
-                                        )
+                                    defaultValue={
+                                        (formDefaults.driveLetter as string) ??
+                                        ""
                                     }
                                 >
-                                    <option value="">Folder only</option>
-                                    {availableDriveLetters.map((letter) => (
-                                        <option value={letter} key={letter}>
-                                            {letter}:
-                                        </option>
-                                    ))}
+                                    <option value="">No drive letter</option>
+                                    {Array.from(
+                                        new Set([
+                                            String(
+                                                formDefaults.driveLetter ?? "",
+                                            ),
+                                            ...availableDriveLetters,
+                                        ]),
+                                    )
+                                        .filter(Boolean)
+                                        .map((letter) => (
+                                            <option key={letter} value={letter}>
+                                                {letter}
+                                            </option>
+                                        ))}
                                 </select>
                             </label>
                             {providerChoice !== "SFTP" && (
