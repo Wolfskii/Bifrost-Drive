@@ -24,7 +24,7 @@ describe("App", () => {
         );
 
         expect(
-            screen.getByRole("heading", { name: "Connect to S3" }),
+            screen.getByRole("heading", { name: "Connect to Amazon S3" }),
         ).toBeTruthy();
         expect(screen.queryByRole("dialog")).toBeNull();
         expect(
@@ -42,7 +42,7 @@ describe("App", () => {
             screen.getByRole("button", { name: "Browse custom" }),
         ).toBeTruthy();
         fireEvent.pointerDown(
-            screen.getByRole("heading", { name: "Connect to S3" }),
+            screen.getByRole("heading", { name: "Connect to Amazon S3" }),
         );
         expect(
             screen.queryByRole("dialog", { name: "Choose drive icon" }),
@@ -58,15 +58,13 @@ describe("App", () => {
             screen.getByRole("button", { name: /add connection/i }),
         );
 
-        fireEvent.change(
+        fireEvent.click(
             screen.getByRole("combobox", { name: /storage type/i }),
-            {
-                target: { value: "SFTP" },
-            },
         );
+        fireEvent.click(screen.getByRole("option", { name: /SFTP server/i }));
 
         expect(
-            screen.getByRole("heading", { name: "Connect to SFTP" }),
+            screen.getByRole("heading", { name: "Connect to SFTP server" }),
         ).toBeTruthy();
         expect(screen.queryByLabelText("Known hosts file")).toBeNull();
         expect(screen.getByLabelText("Start path")).toBeTruthy();
@@ -83,14 +81,47 @@ describe("App", () => {
         expect(screen.getByLabelText("Password")).toBeTruthy();
         expect(screen.queryByLabelText("Private key path")).toBeNull();
 
-        fireEvent.change(
+        fireEvent.click(
             screen.getByRole("combobox", { name: /authentication/i }),
-            {
-                target: { value: "private_key" },
-            },
         );
+        fireEvent.click(screen.getByRole("option", { name: /Private key/i }));
 
         expect(screen.getByLabelText("Private key path")).toBeTruthy();
         expect(screen.queryByLabelText("Password")).toBeNull();
+    });
+
+    it("offers S3 presets and disables planned providers", () => {
+        render(<App />);
+        fireEvent.click(
+            screen.getByRole("button", { name: /add connection/i }),
+        );
+        fireEvent.click(
+            screen.getByRole("combobox", { name: /storage type/i }),
+        );
+
+        const googleDrive = screen.getByRole("option", {
+            name: /Google Drive/i,
+        }) as HTMLButtonElement;
+        expect(googleDrive.disabled).toBe(true);
+
+        fireEvent.click(screen.getByRole("option", { name: /Cloudflare R2/i }));
+        expect(
+            screen.getByRole("heading", { name: "Connect to Cloudflare R2" }),
+        ).toBeTruthy();
+        expect(screen.getByLabelText("Bucket")).toBeTruthy();
+    });
+
+    it("shows the start-minimized tray setting", () => {
+        render(<App />);
+        fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+        const checkbox = screen.getByRole("checkbox", {
+            name: /Start minimized in the notification tray/i,
+        }) as HTMLInputElement;
+        fireEvent.click(
+            screen.getByText("Start minimized in the notification tray"),
+        );
+
+        expect(checkbox.checked).toBe(false);
     });
 });

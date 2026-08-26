@@ -1,6 +1,14 @@
 import {
     Cloud,
+    CloudCog,
+    Database,
+    GitBranch,
+    Globe2,
     HardDrive,
+    KeyRound,
+    LockKeyhole,
+    Network,
+    Server,
     Settings,
     Activity,
     Plus,
@@ -10,6 +18,35 @@ import {
     Trash2,
 } from "lucide-react";
 import {
+    SiAlibabacloud,
+    SiBackblaze,
+    SiBaidu,
+    SiBitbucket,
+    SiBox,
+    SiCloudflare,
+    SiDigitalocean,
+    SiDropbox,
+    SiFilen,
+    SiGithub,
+    SiGitlab,
+    SiGooglecloudstorage,
+    SiGoogledrive,
+    SiGooglephotos,
+    SiHetzner,
+    SiImmich,
+    SiMaildotru,
+    SiMediafire,
+    SiMega,
+    SiMinio,
+    SiNextcloud,
+    SiOpenstack,
+    SiProtondrive,
+    SiSeafile,
+    SiWasabi,
+    SiYandexcloud,
+    SiZoho,
+} from "@icons-pack/react-simple-icons";
+import {
     isPermissionGranted,
     requestPermission,
     sendNotification,
@@ -17,6 +54,7 @@ import {
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import packageJson from "../package.json";
+import { CustomSelect, CustomSelectOption } from "./CustomSelect";
 import {
     ActivitySummary,
     ConnectionSummary,
@@ -28,6 +66,7 @@ import {
     createWebDavConnection,
     checkForUpdate,
     getAutostartEnabled,
+    getStartMinimized,
     getConnectionDetails,
     getDriveIconPreview,
     getAvailableDriveLetters,
@@ -43,6 +82,7 @@ import {
     resolveConflict,
     setDriveMountStartup,
     setAutostartEnabled,
+    setStartMinimized,
     S3ConnectionForm,
     StockDriveIcon,
     updateConnection,
@@ -61,6 +101,149 @@ interface DrivePreference {
     iconPreview: string | null;
 }
 
+const planned = { disabled: true, badge: "Planned" } as const;
+const providerOptions: CustomSelectOption<string>[] = [
+    {
+        value: "SFTP",
+        label: "SFTP server",
+        group: "Protocols",
+        description: "SSH File Transfer Protocol",
+        icon: <LockKeyhole size={19} />,
+    },
+    {
+        value: "WebDAV",
+        label: "WebDAV server",
+        group: "Protocols",
+        icon: <Globe2 size={19} />,
+    },
+    {
+        value: "FTP",
+        label: "FTP / FTPS server",
+        group: "Protocols",
+        icon: <Server size={19} />,
+    },
+    {
+        value: "SMB",
+        label: "Samba / SMB share",
+        group: "Protocols",
+        icon: <Network size={19} />,
+    },
+    {
+        value: "nfs",
+        label: "NFS",
+        group: "Protocols",
+        icon: <Network size={19} />,
+        ...planned,
+    },
+    ...[
+        "Custom S3-compatible",
+        "Amazon S3",
+        "Cloudflare R2",
+        "Backblaze B2",
+        "Wasabi",
+        "DigitalOcean Spaces",
+        "MinIO",
+        "Storj",
+        "IDrive e2",
+        "Vultr Object Storage",
+        "Scaleway Object Storage",
+        "IONOS Object Storage",
+        "Hetzner Object Storage",
+        "Tigris",
+        "Linode/Akamai Object Storage",
+        "Oracle Cloud Object Storage",
+        "IBM Cloud Object Storage",
+        "Alibaba Cloud OSS",
+        "Tencent Cloud COS",
+        "OVHcloud Object Storage",
+        "Exoscale Object Storage",
+        "Impossible Cloud",
+        "Cloudian",
+        "Ceph RGW",
+    ].map((label, index) => ({
+        value: `s3-${index}`,
+        label,
+        group: "S3-compatible object storage",
+        description: "Uses the implemented S3 connection flow",
+        icon:
+            label === "Cloudflare R2" ? (
+                <SiCloudflare size={19} />
+            ) : label === "Backblaze B2" ? (
+                <SiBackblaze size={19} />
+            ) : label === "Wasabi" ? (
+                <SiWasabi size={19} />
+            ) : label === "DigitalOcean Spaces" ? (
+                <SiDigitalocean size={19} />
+            ) : label === "MinIO" ? (
+                <SiMinio size={19} />
+            ) : label === "Hetzner Object Storage" ? (
+                <SiHetzner size={19} />
+            ) : label === "Alibaba Cloud OSS" ? (
+                <SiAlibabacloud size={19} />
+            ) : label === "Ceph RGW" ? (
+                <SiOpenstack size={19} />
+            ) : (
+                <Database size={19} />
+            ),
+    })),
+    ...[
+        ["google-drive", "Google Drive", <SiGoogledrive size={19} />],
+        ["dropbox", "Dropbox", <SiDropbox size={19} />],
+        ["mega", "MEGA", <SiMega size={19} />],
+        ["mailru", "Mail.ru Cloud", <SiMaildotru size={19} />],
+        ["yandex", "Yandex Disk", <SiYandexcloud size={19} />],
+        ["google-photos", "Google Photos", <SiGooglephotos size={19} />],
+        ["pcloud", "pCloud", <Cloud size={19} />],
+        ["onedrive", "OneDrive", <Cloud size={19} />],
+        ["box", "Box", <SiBox size={19} />],
+        ["zoho", "Zoho WorkDrive", <SiZoho size={19} />],
+        ["azure-blob", "Azure Blob Storage", <CloudCog size={19} />],
+        ["gcs", "Google Cloud Storage", <SiGooglecloudstorage size={19} />],
+        ["proton", "Proton Drive", <SiProtondrive size={19} />],
+        ["koofr", "Koofr", <Cloud size={19} />],
+        ["filen", "Filen", <SiFilen size={19} />],
+        ["hetzner-storage", "Hetzner Storage", <SiHetzner size={19} />],
+        ["nextcloud", "Nextcloud", <SiNextcloud size={19} />],
+        ["4shared", "4shared", <Cloud size={19} />],
+        ["mediafire", "MediaFire", <SiMediafire size={19} />],
+        ["jottacloud", "Jottacloud", <Cloud size={19} />],
+        ["immich", "Immich", <SiImmich size={19} />],
+        ["opendrive", "OpenDrive", <Cloud size={19} />],
+        ["nordlocker", "NordLocker", <KeyRound size={19} />],
+        ["sharepoint", "SharePoint Online", <CloudCog size={19} />],
+        ["seafile", "Seafile", <SiSeafile size={19} />],
+        ["baidu", "Baidu Netdisk", <SiBaidu size={19} />],
+        ["alibaba-drive", "Alibaba Cloud Drive", <SiAlibabacloud size={19} />],
+        ["tencent", "Tencent Weiyun", <Cloud size={19} />],
+    ].map(([value, label, icon]) => ({
+        value: value as string,
+        label: label as string,
+        group: "Cloud services",
+        icon,
+        ...planned,
+    })),
+    ...[
+        ["github", "GitHub", <SiGithub size={19} />],
+        ["gitlab", "GitLab", <SiGitlab size={19} />],
+        ["bitbucket", "Bitbucket", <SiBitbucket size={19} />],
+        ["azure-devops", "Azure DevOps", <GitBranch size={19} />],
+    ].map(([value, label, icon]) => ({
+        value: value as string,
+        label: label as string,
+        group: "Git",
+        icon,
+        ...planned,
+    })),
+];
+
+function providerChoiceFromSelection(value: string): ProviderChoice {
+    if (value.startsWith("s3-")) return "S3";
+    if (["SFTP", "WebDAV", "FTP", "SMB"].includes(value)) {
+        return value as ProviderChoice;
+    }
+    return "S3";
+}
+
 export function App() {
     const [activeView, setActiveView] = useState<AppView>("connections");
     const [connections, setConnections] = useState<ConnectionSummary[]>([]);
@@ -73,6 +256,8 @@ export function App() {
     const [installingUpdate, setInstallingUpdate] = useState(false);
     const [autostartEnabled, setAutostartEnabledState] = useState(false);
     const [updatingAutostart, setUpdatingAutostart] = useState(false);
+    const [startMinimized, setStartMinimizedState] = useState(false);
+    const [updatingStartMinimized, setUpdatingStartMinimized] = useState(false);
     const [sftpAuthentication, setSftpAuthentication] = useState<
         "password" | "private_key"
     >("password");
@@ -105,6 +290,8 @@ export function App() {
         useState<ConnectionSummary | null>(null);
     const [formDefaults, setFormDefaults] = useState<FormDefaults>({});
     const [providerChoice, setProviderChoice] = useState<ProviderChoice>("S3");
+    const [providerSelection, setProviderSelection] = useState("s3-1");
+    const [driveLetter, setDriveLetter] = useState("");
 
     useEffect(() => {
         listConnections()
@@ -239,6 +426,9 @@ export function App() {
         getAutostartEnabled()
             .then(setAutostartEnabledState)
             .catch(() => undefined);
+        getStartMinimized()
+            .then(setStartMinimizedState)
+            .catch(() => undefined);
     }, []);
 
     useEffect(() => {
@@ -265,6 +455,23 @@ export function App() {
             );
         } finally {
             setUpdatingAutostart(false);
+        }
+    }
+
+    async function handleStartMinimizedChange(enabled: boolean) {
+        setUpdatingStartMinimized(true);
+        setError(null);
+        try {
+            await setStartMinimized(enabled);
+            setStartMinimizedState(enabled);
+        } catch (cause) {
+            setError(
+                cause instanceof Error
+                    ? cause.message
+                    : "Unable to update minimized startup settings.",
+            );
+        } finally {
+            setUpdatingStartMinimized(false);
         }
     }
 
@@ -400,6 +607,16 @@ export function App() {
                 builtInIcon ? "" : (details.drive_icon_preview ?? ""),
             );
             setProviderChoice(providerChoiceFor(connection.kind));
+            setProviderSelection(
+                connection.kind === "S3"
+                    ? "s3-0"
+                    : providerChoiceFor(connection.kind),
+            );
+            setDriveLetter(
+                configuration.drive_letter
+                    ? `${String(configuration.drive_letter)}:`
+                    : "",
+            );
             setSftpAuthentication(
                 configuration.authentication === "private_key"
                     ? "private_key"
@@ -599,6 +816,9 @@ export function App() {
         setError(null);
         try {
             const connection = await connectionOperation;
+            if (editingConnection) {
+                await unregisterDriveMount(connection.id);
+            }
             setConnections((current) => [
                 ...current.filter((item) => item.id !== editingConnection?.id),
                 connection,
@@ -669,6 +889,8 @@ export function App() {
             setDriveIcon("system");
             setCustomDriveIcon("");
             setCustomDriveIconPreview("");
+            setProviderSelection("s3-1");
+            setDriveLetter("");
         } catch (cause) {
             setError(errorMessage(cause, "Unable to save connection."));
         } finally {
@@ -710,6 +932,23 @@ export function App() {
               : driveIcon === "custom"
                 ? "Custom icon"
                 : (selectedStockIcon?.label ?? "Windows icon");
+    const selectedProvider = providerOptions.find(
+        (option) => option.value === providerSelection,
+    );
+    const driveLetterOptions: CustomSelectOption<string>[] = [
+        {
+            value: "",
+            label: "No drive letter",
+            icon: <HardDrive size={18} />,
+        },
+        ...Array.from(
+            new Set([driveLetter, ...availableDriveLetters].filter(Boolean)),
+        ).map((letter) => ({
+            value: letter,
+            label: letter,
+            icon: <HardDrive size={18} />,
+        })),
+    ];
 
     return (
         <main className="app-shell">
@@ -780,6 +1019,8 @@ export function App() {
                                         setDriveIcon("system");
                                         setCustomDriveIcon("");
                                         setCustomDriveIconPreview("");
+                                        setProviderSelection("s3-1");
+                                        setDriveLetter("");
                                         setWizardOpen(true);
                                         setActiveView("add");
                                     }}
@@ -977,9 +1218,10 @@ export function App() {
                                                     {drivePreferences[
                                                         connection.id
                                                     ] && (
-                                                        <label className="connection-startup">
+                                                        <div className="connection-startup">
                                                             <input
                                                                 type="checkbox"
+                                                                aria-label="Mount when Bifrost starts"
                                                                 checked={
                                                                     drivePreferences[
                                                                         connection
@@ -1004,7 +1246,7 @@ export function App() {
                                                             />
                                                             Mount when Bifrost
                                                             starts
-                                                        </label>
+                                                        </div>
                                                     )}
                                                 </div>
                                                 <span className="connection-state">
@@ -1178,9 +1420,10 @@ export function App() {
                                     <h2 id="settings-title">Settings</h2>
                                 </div>
                             </div>
-                            <label className="checkbox-row">
+                            <div className="checkbox-row">
                                 <input
                                     type="checkbox"
+                                    aria-label="Start Bifrost Drive when I sign in"
                                     checked={autostartEnabled}
                                     disabled={updatingAutostart}
                                     onChange={(event) =>
@@ -1190,7 +1433,27 @@ export function App() {
                                     }
                                 />
                                 Start Bifrost Drive when I sign in
-                            </label>
+                            </div>
+                            <div className="checkbox-row settings-option">
+                                <input
+                                    type="checkbox"
+                                    aria-label="Start minimized in the notification tray"
+                                    checked={startMinimized}
+                                    disabled={updatingStartMinimized}
+                                    onChange={(event) =>
+                                        handleStartMinimizedChange(
+                                            event.target.checked,
+                                        )
+                                    }
+                                />
+                                <span>
+                                    Start minimized in the notification tray
+                                    <small>
+                                        Keep mounted drives available without
+                                        opening the main window.
+                                    </small>
+                                </span>
+                            </div>
                         </section>
                     )}
                 </section>
@@ -1210,7 +1473,7 @@ export function App() {
                                 </p>
                                 <h2 id="wizard-title">
                                     {editingConnection ? "Edit" : "Connect to"}{" "}
-                                    {providerChoice}
+                                    {selectedProvider?.label ?? providerChoice}
                                 </h2>
                             </div>
                             <button
@@ -1238,30 +1501,18 @@ export function App() {
                             </p>
                         )}
                         <form onSubmit={handleCreate}>
-                            <label>
-                                Storage type
-                                <select
-                                    value={providerChoice}
-                                    onChange={(event) =>
-                                        setProviderChoice(
-                                            event.target
-                                                .value as ProviderChoice,
-                                        )
-                                    }
-                                >
-                                    <option value="S3">
-                                        S3-compatible storage
-                                    </option>
-                                    <option value="SFTP">SFTP server</option>
-                                    <option value="WebDAV">
-                                        WebDAV server
-                                    </option>
-                                    <option value="FTP">
-                                        FTP / FTPS server
-                                    </option>
-                                    <option value="SMB">SMB share</option>
-                                </select>
-                            </label>
+                            <CustomSelect
+                                className="provider-select"
+                                label="Storage type"
+                                value={providerSelection}
+                                options={providerOptions}
+                                onChange={(value) => {
+                                    setProviderSelection(value);
+                                    setProviderChoice(
+                                        providerChoiceFromSelection(value),
+                                    );
+                                }}
+                            />
                             <label>
                                 Connection name
                                 <input
@@ -1271,53 +1522,32 @@ export function App() {
                                     placeholder="Production S3"
                                 />
                             </label>
-                            <label>
-                                Windows drive
-                                <select
-                                    name="driveLetter"
-                                    defaultValue={
-                                        (formDefaults.driveLetter as string) ??
-                                        ""
-                                    }
-                                >
-                                    <option value="">No drive letter</option>
-                                    {Array.from(
-                                        new Set([
-                                            String(
-                                                formDefaults.driveLetter ?? "",
-                                            ),
-                                            ...availableDriveLetters,
-                                        ]),
-                                    )
-                                        .filter(Boolean)
-                                        .map((letter) => (
-                                            <option key={letter} value={letter}>
-                                                {letter}
-                                            </option>
-                                        ))}
-                                </select>
-                            </label>
+                            <CustomSelect
+                                label="Windows drive"
+                                name="driveLetter"
+                                value={driveLetter}
+                                options={driveLetterOptions}
+                                onChange={setDriveLetter}
+                            />
                             <div className="form-grid">
-                                <label>
-                                    Drive type
-                                    <select
-                                        name="driveType"
-                                        value={driveType}
-                                        onChange={(event) =>
-                                            setDriveType(
-                                                event.target.value as
-                                                    "network" | "local",
-                                            )
-                                        }
-                                    >
-                                        <option value="network">
-                                            Network location
-                                        </option>
-                                        <option value="local">
-                                            Local drive
-                                        </option>
-                                    </select>
-                                </label>
+                                <CustomSelect
+                                    label="Drive type"
+                                    name="driveType"
+                                    value={driveType}
+                                    options={[
+                                        {
+                                            value: "network",
+                                            label: "Network location",
+                                            icon: <Network size={18} />,
+                                        },
+                                        {
+                                            value: "local",
+                                            label: "Local drive",
+                                            icon: <HardDrive size={18} />,
+                                        },
+                                    ]}
+                                    onChange={setDriveType}
+                                />
                                 <div
                                     className="drive-icon-field"
                                     ref={iconPickerRef}
@@ -1538,16 +1768,17 @@ export function App() {
                                     </button>
                                 </div>
                             )}
-                            <label className="checkbox-row">
+                            <div className="checkbox-row">
                                 <input
                                     name="mountOnStartup"
                                     type="checkbox"
+                                    aria-label="Mount this drive when Bifrost starts"
                                     defaultChecked={
                                         formDefaults.mountOnStartup !== false
                                     }
                                 />
                                 Mount this drive when Bifrost starts
-                            </label>
+                            </div>
                             {providerChoice !== "SFTP" && (
                                 <label>
                                     Endpoint
@@ -1617,27 +1848,24 @@ export function App() {
                             )}
                             {providerChoice === "SFTP" && (
                                 <>
-                                    <label>
-                                        Authentication
-                                        <select
-                                            name="authentication"
-                                            value={sftpAuthentication}
-                                            onChange={(event) =>
-                                                setSftpAuthentication(
-                                                    event.target.value as
-                                                        | "password"
-                                                        | "private_key",
-                                                )
-                                            }
-                                        >
-                                            <option value="password">
-                                                Password
-                                            </option>
-                                            <option value="private_key">
-                                                Private key
-                                            </option>
-                                        </select>
-                                    </label>
+                                    <CustomSelect
+                                        label="Authentication"
+                                        name="authentication"
+                                        value={sftpAuthentication}
+                                        options={[
+                                            {
+                                                value: "password",
+                                                label: "Password",
+                                                icon: <LockKeyhole size={18} />,
+                                            },
+                                            {
+                                                value: "private_key",
+                                                label: "Private key",
+                                                icon: <KeyRound size={18} />,
+                                            },
+                                        ]}
+                                        onChange={setSftpAuthentication}
+                                    />
                                     {sftpAuthentication === "private_key" && (
                                         <div className="form-grid">
                                             <label>
@@ -1661,10 +1889,11 @@ export function App() {
                                             </label>
                                         </div>
                                     )}
-                                    <label className="checkbox-row">
+                                    <div className="checkbox-row">
                                         <input
                                             name="trustOnFirstUse"
                                             type="checkbox"
+                                            aria-label="Trust a new server key on first use"
                                             defaultChecked={Boolean(
                                                 editingConnection
                                                     ? formDefaults.trustOnFirstUse
@@ -1672,7 +1901,7 @@ export function App() {
                                             )}
                                         />
                                         Trust a new server key on first use
-                                    </label>
+                                    </div>
                                 </>
                             )}
                             {providerChoice !== "S3" && (
@@ -1760,16 +1989,17 @@ export function App() {
                                 </>
                             )}
                             {providerChoice === "S3" && (
-                                <label className="checkbox-row">
+                                <div className="checkbox-row">
                                     <input
                                         name="pathStyle"
                                         type="checkbox"
+                                        aria-label="Use path-style addressing"
                                         defaultChecked={Boolean(
                                             formDefaults.pathStyle,
                                         )}
-                                    />{" "}
+                                    />
                                     Use path-style addressing
-                                </label>
+                                </div>
                             )}
                             <div className="wizard-actions">
                                 <button

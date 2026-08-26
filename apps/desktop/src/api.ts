@@ -207,6 +207,20 @@ export async function setAutostartEnabled(enabled: boolean): Promise<void> {
     }
 }
 
+export async function getStartMinimized(): Promise<boolean> {
+    if (!tauriAvailable()) {
+        return false;
+    }
+    return invoke<boolean>("app_start_minimized_get");
+}
+
+export async function setStartMinimized(enabled: boolean): Promise<void> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    await invoke("app_start_minimized_set", { enabled });
+}
+
 export async function checkForUpdate(): Promise<string | null> {
     if (!tauriAvailable()) {
         return null;

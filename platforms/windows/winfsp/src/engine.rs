@@ -57,7 +57,7 @@ struct ReadCache {
 }
 
 const INITIAL_READ_AHEAD_SIZE: usize = 1024 * 1024;
-const SEQUENTIAL_READ_AHEAD_SIZE: usize = 16 * 1024 * 1024;
+const SEQUENTIAL_READ_AHEAD_SIZE: usize = 32 * 1024 * 1024;
 
 pub struct OpenFile {
     path: RwLock<RemotePath>,

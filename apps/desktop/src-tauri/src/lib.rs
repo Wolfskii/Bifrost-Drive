@@ -35,7 +35,7 @@ use bifrost_windows_credentials::WindowsCredentialStore;
 use bifrost_windows_winfsp::{MountConfig, MountHandle};
 #[cfg(target_os = "windows")]
 use image::ImageEncoder;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
 use std::collections::HashMap;
 use std::{
@@ -128,6 +128,60 @@ impl SyncRootRegistry {
 
 struct SqliteTransferStore {
     database: Database,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct AppPreferences {
+    start_minimized: bool,
+}
+
+fn preferences_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("preferences.json"))
+        .map_err(|error| error.to_string())
+}
+
+fn load_preferences(path: &std::path::Path) -> Result<AppPreferences, String> {
+    match fs::read(path) {
+        Ok(contents) => serde_json::from_slice(&contents).map_err(|error| error.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AppPreferences::default()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn save_preferences(path: &std::path::Path, preferences: &AppPreferences) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Preferences path has no parent directory".to_owned())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+    fs::write(
+        temporary.path(),
+        serde_json::to_vec_pretty(preferences).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    temporary
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| error.error.to_string())
+}
+
+#[tauri::command]
+fn app_start_minimized_get(app: tauri::AppHandle) -> Result<bool, String> {
+    Ok(load_preferences(&preferences_path(&app)?)?.start_minimized)
+}
+
+#[tauri::command]
+fn app_start_minimized_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let path = preferences_path(&app)?;
+    let mut preferences = load_preferences(&path)?;
+    preferences.start_minimized = enabled;
+    save_preferences(&path, &preferences)
 }
 
 #[async_trait::async_trait]
@@ -2640,6 +2694,14 @@ pub fn run() {
                 _ => {}
             })
             .build(app)?;
+            let preferences = load_preferences(&data_dir.join("preferences.json"))
+                .map_err(std::io::Error::other)?;
+            if !preferences.start_minimized {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -2654,6 +2716,8 @@ pub fn run() {
         .manage(DriveMountRegistry::new())
         .invoke_handler(tauri::generate_handler![
             app_status,
+            app_start_minimized_get,
+            app_start_minimized_set,
             connections_list,
             connections_details,
             connections_update,
@@ -2904,5 +2968,28 @@ mod registry_tests {
         assert!(icons
             .iter()
             .all(|icon| icon.preview.starts_with("data:image/png;base64,")));
+    }
+}
+
+#[cfg(test)]
+mod preferences_tests {
+    use super::{load_preferences, save_preferences, AppPreferences};
+
+    #[test]
+    fn start_minimized_preference_round_trips() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("preferences.json");
+
+        assert!(!load_preferences(&path).unwrap().start_minimized);
+        save_preferences(
+            &path,
+            &AppPreferences {
+                start_minimized: true,
+            },
+        )
+        .unwrap();
+        assert!(load_preferences(&path).unwrap().start_minimized);
+        save_preferences(&path, &AppPreferences::default()).unwrap();
+        assert!(!load_preferences(&path).unwrap().start_minimized);
     }
 }
