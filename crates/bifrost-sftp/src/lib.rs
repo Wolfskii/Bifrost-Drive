@@ -269,11 +269,8 @@ impl SftpProvider {
             }
             let root = self.path(&RemotePath::root());
             if matches!(
-                tokio::time::timeout(
-                    SESSION_VALIDATION_TIMEOUT,
-                    session.value.canonicalize(root)
-                )
-                .await,
+                tokio::time::timeout(SESSION_VALIDATION_TIMEOUT, session.value.canonicalize(root))
+                    .await,
                 Ok(Ok(_))
             ) {
                 session.last_used = Instant::now();

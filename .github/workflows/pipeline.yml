@@ -1,0 +1,359 @@
+name: Check, Build, and Release
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (for example 0.2.0); defaults to one patch after the latest release
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  VITE_BUILD_CHANNEL: release
+
+concurrency:
+  group: develop-pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build frontend
+        run: npm --prefix apps/desktop run build
+      - name: Lint frontend
+        run: npm --prefix apps/desktop run lint
+      - name: Test frontend
+        run: npm --prefix apps/desktop run test
+
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf libgtk-3-dev libglib2.0-dev libayatana-appindicator3-dev libfuse3-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+      - name: Run Rust tests
+        run: cargo test --workspace
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  version:
+    name: Plan release version
+    if: github.event_name != 'pull_request'
+    needs: [frontend, rust]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Calculate release version
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${MANUAL_VERSION#v}"
+          if [[ -z "$version" ]]; then
+            latest_tag="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft --jq '[.[] | select(.isDraft == false)][0].tagName // ""')"
+            if [[ -z "$latest_tag" ]]; then
+              version="$(node -p "require('./package.json').version")"
+            else
+              latest="${latest_tag#v}"
+              if [[ ! "$latest" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+                echo "Latest release tag '$latest_tag' is not a patchable semantic version" >&2
+                exit 1
+              fi
+              version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+            fi
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release version '$version' is not valid semantic versioning" >&2
+            exit 1
+          fi
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$version already exists" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Release version: $version"
+      - name: Validate updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY repository secret is required" >&2
+            exit 1
+          fi
+
+  linux:
+    name: Build Linux package
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Tauri dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libgdk-pixbuf-2.0-dev libglib2.0-dev librsvg2-dev libayatana-appindicator3-dev patchelf libfuse3-dev
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      - run: npm ci
+      - name: Apply release version
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: cargo run -p xtask -- version-set "$RELEASE_VERSION"
+      - name: Build Linux updater package
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm --prefix apps/desktop run tauri -- build --bundles appimage --config src-tauri/tauri.release.conf.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: bifrost-drive-linux-${{ needs.version.outputs.version }}
+          path: target/release/bundle/appimage/*
+          if-no-files-found: error
+
+  macos:
+    name: Build macOS package
+    needs: version
+    runs-on: macos-latest
+    outputs:
+      updater_platform: ${{ steps.platform.outputs.updater_platform }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      - run: npm ci
+      - name: Apply release version
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: cargo run -p xtask -- version-set "$RELEASE_VERSION"
+      - name: Select updater platform
+        id: platform
+        shell: bash
+        run: |
+          if [[ "$RUNNER_ARCH" == "ARM64" ]]; then
+            echo "updater_platform=darwin-aarch64" >> "$GITHUB_OUTPUT"
+          else
+            echo "updater_platform=darwin-x86_64" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build macOS updater package
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm --prefix apps/desktop run tauri -- build --bundles app,dmg --config src-tauri/tauri.release.conf.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: bifrost-drive-macos-${{ needs.version.outputs.version }}
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app.tar.gz
+            target/release/bundle/macos/*.app.tar.gz.sig
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows package
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      - name: Install verified WinFsp SDK
+        shell: pwsh
+        run: |
+          & apps/desktop/src-tauri/windows/fetch-winfsp.ps1
+          $msi = (Resolve-Path .cache/winfsp/winfsp-2.1.25156.msi).Path
+          $arguments = @('/i', $msi, '/qn', '/norestart', 'ADDLOCAL=ALL')
+          $process = Start-Process msiexec.exe -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -notin 0, 3010) {
+            throw "WinFsp installation failed with exit code $($process.ExitCode)"
+          }
+          $library = Join-Path ${env:ProgramFiles(x86)} 'WinFsp\lib\winfsp-x64.lib'
+          if (!(Test-Path $library)) {
+            throw "WinFsp SDK import library was not installed: $library"
+          }
+      - run: npm ci
+      - name: Apply release version
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: cargo run -p xtask -- version-set $env:RELEASE_VERSION
+      - name: Build Windows updater package
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm --prefix apps/desktop run tauri -- build --target x86_64-pc-windows-msvc --config src-tauri/tauri.release.conf.json
+      - name: Authenticode-sign Windows installer
+        id: authenticode
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64)) {
+            $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Bifrost Drive Development' -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(1)
+          } else {
+            $certificatePath = Join-Path $env:RUNNER_TEMP 'bifrost-drive-signing.pfx'
+            [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+            $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          }
+          $installer = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if ($null -eq $installer) { throw 'Windows installer was not produced' }
+          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          $signTool = Get-ChildItem $sdkRoot -Filter signtool.exe -Recurse -File |
+            Where-Object { $_.DirectoryName -like '*\x64' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if ($null -eq $signTool) { throw "Windows SDK signtool.exe was not found under $sdkRoot" }
+          & $signTool.FullName sign /sha1 $certificate.Thumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $installer.FullName
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed: $($signTool.FullName)" }
+      - name: Re-sign updater artifact after Authenticode
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          $keyPath = Join-Path $env:RUNNER_TEMP 'bifrost-drive-updater.key'
+          [IO.File]::WriteAllText($keyPath, $env:TAURI_SIGNING_PRIVATE_KEY, [Text.UTF8Encoding]::new($false))
+          $installer = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if ($null -eq $installer) { throw 'Windows installer was not produced' }
+          npm --prefix apps/desktop run tauri -- signer sign --private-key-path $keyPath --password "" $installer.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'Tauri updater signing failed' }
+          $normalized = Join-Path $installer.DirectoryName 'Bifrost-Drive-Setup-x64.exe'
+          Move-Item $installer.FullName $normalized -Force
+          Move-Item "$($installer.FullName).sig" "$normalized.sig" -Force
+      - uses: actions/upload-artifact@v6
+        with:
+          name: bifrost-drive-windows-${{ needs.version.outputs.version }}
+          path: |
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/Bifrost-Drive-Setup-x64.exe
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/Bifrost-Drive-Setup-x64.exe.sig
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: [version, linux, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: bifrost-drive-linux-${{ needs.version.outputs.version }}
+          path: release-assets/linux
+      - uses: actions/download-artifact@v7
+        with:
+          name: bifrost-drive-macos-${{ needs.version.outputs.version }}
+          path: release-assets/macos
+      - uses: actions/download-artifact@v7
+        with:
+          name: bifrost-drive-windows-${{ needs.version.outputs.version }}
+          path: release-assets/windows
+      - name: Generate updater manifest and checksums
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          MACOS_UPDATER_PLATFORM: ${{ needs.macos.outputs.updater_platform }}
+        run: |
+          set -euo pipefail
+          windows_artifact="$(find release-assets/windows -type f -name '*.exe' -print -quit)"
+          linux_artifact="$(find release-assets/linux -type f -name '*.AppImage' -print -quit)"
+          macos_artifact="$(find release-assets/macos -type f -name '*.app.tar.gz' -print -quit)"
+          for artifact in "$windows_artifact" "$linux_artifact" "$macos_artifact"; do
+            if [[ -z "$artifact" || ! -f "$artifact.sig" ]]; then
+              echo "Updater artifact or signature is missing: $artifact" >&2
+              exit 1
+            fi
+          done
+          windows_name="$(basename "$windows_artifact")"
+          linux_name="$(basename "$linux_artifact")"
+          macos_name="$(basename "$macos_artifact")"
+          windows_url_name="$(jq -rn --arg value "$windows_name" '$value | @uri')"
+          linux_url_name="$(jq -rn --arg value "$linux_name" '$value | @uri')"
+          macos_url_name="$(jq -rn --arg value "$macos_name" '$value | @uri')"
+          base_url="https://github.com/$GITHUB_REPOSITORY/releases/download/v$RELEASE_VERSION"
+          jq -n \
+            --arg version "$RELEASE_VERSION" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg windows_signature "$(tr -d '\r\n' < "$windows_artifact.sig")" \
+            --arg windows_url "$base_url/$windows_url_name" \
+            --arg linux_signature "$(tr -d '\r\n' < "$linux_artifact.sig")" \
+            --arg linux_url "$base_url/$linux_url_name" \
+            --arg macos_platform "$MACOS_UPDATER_PLATFORM" \
+            --arg macos_signature "$(tr -d '\r\n' < "$macos_artifact.sig")" \
+            --arg macos_url "$base_url/$macos_url_name" \
+            '{
+              version: $version,
+              notes: ("Bifrost Drive " + $version),
+              pub_date: $pub_date,
+              platforms: {
+                "windows-x86_64": { signature: $windows_signature, url: $windows_url },
+                "linux-x86_64": { signature: $linux_signature, url: $linux_url },
+                ($macos_platform): { signature: $macos_signature, url: $macos_url }
+              }
+            }' > release-assets/latest.json
+          : > release-assets/SHA256SUMS.txt
+          while IFS= read -r -d '' file; do
+            hash="$(sha256sum "$file" | cut -d ' ' -f 1)"
+            printf '%s  %s\n' "$hash" "$(basename "$file")" >> release-assets/SHA256SUMS.txt
+          done < <(find release-assets -type f ! -name latest.json ! -name SHA256SUMS.txt -print0 | sort -z)
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' assets < <(find release-assets -type f -print0 | sort -z)
+          gh release create "v$RELEASE_VERSION" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Bifrost Drive $RELEASE_VERSION" \
+            --generate-notes \
+            --target "$GITHUB_SHA"

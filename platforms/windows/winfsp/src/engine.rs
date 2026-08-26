@@ -628,10 +628,13 @@ mod tests {
     use bifrost_storage::{ByteStream, Page, StorageCapacity};
     use bytes::Bytes;
     use futures_util::stream;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    #[cfg(all(target_os = "windows", feature = "native"))]
+    use std::time::Instant;
 
     use super::*;
 
+    #[cfg(all(target_os = "windows", feature = "native"))]
     static NATIVE_MOUNT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[derive(Default)]

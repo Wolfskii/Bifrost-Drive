@@ -38,10 +38,12 @@ use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
 use std::collections::HashMap;
+#[cfg(target_os = "windows")]
+use std::sync::MutexGuard;
 use std::{
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
 use tauri::{
@@ -498,6 +500,7 @@ fn convert_drive_image_to_ico(
     directory.write(file).map_err(|error| error.to_string())
 }
 
+#[cfg(target_os = "windows")]
 fn configured_drive_icon(
     configuration_json: &str,
     data_dir: &std::path::Path,

@@ -7,6 +7,12 @@ fn main() -> Result<()> {
     match command.as_str() {
         "version-check" => version_check(),
         "version-bump" => version_bump(),
+        "version-set" => {
+            let version = std::env::args()
+                .nth(2)
+                .context("version-set requires a version")?;
+            version_set(&version)
+        }
         "release-check" => version_check(),
         "release-dry-run" => {
             version_check()?;
@@ -22,10 +28,21 @@ fn main() -> Result<()> {
             Ok(())
         }
         _ => {
-            println!("xtask commands: version-check, version-bump, release-check, release-dry-run, db-reset");
+            println!("xtask commands: version-check, version-bump, version-set, release-check, release-dry-run, db-reset");
             Ok(())
         }
     }
+}
+
+fn version_set(next: &str) -> Result<()> {
+    Version::parse(next).context("parse requested version")?;
+    let current = synchronized_version()?;
+    version_check()?;
+    replace_workspace_version(&current, next)?;
+    replace_json_version("package.json", &current, next)?;
+    replace_json_version("apps/desktop/package.json", &current, next)?;
+    println!("Set version from {current} to {next}.");
+    Ok(())
 }
 
 fn version_bump() -> Result<()> {

@@ -35,6 +35,8 @@ On Windows, `task cleanup:windows-drives` opens a terminal menu containing only 
 
 Feature branches merge into `develop`. Stable release proposals merge into protected `main`. Use Conventional Commits. Before a pull request, run `task format`, `task check`, `task lint`, and `task test`.
 
+One GitHub Actions workflow handles pushes to `develop`: frontend and Rust checks gate three parallel operating-system package builds, and the release job publishes only the artifacts produced by those successful builds. Manual runs may provide an explicit release version; otherwise CI increments the latest published release patch version.
+
 ## Database
 
 Use `BIFROST_DATABASE_URL` for local migration testing. Never point development commands at production data. Use `task db:reset` only for the local `bifrost-drive.db` file.
