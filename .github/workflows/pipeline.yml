@@ -142,7 +142,9 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: bifrost-drive-linux-${{ needs.version.outputs.version }}
-          path: target/release/bundle/appimage/*
+          path: |
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/appimage/*.AppImage.sig
           if-no-files-found: error
 
   macos:
@@ -339,11 +341,34 @@ jobs:
                 ($macos_platform): { signature: $macos_signature, url: $macos_url }
               }
             }' > release-assets/latest.json
-          : > release-assets/SHA256SUMS.txt
+
+          publish_directory="release-assets/publish"
+          mkdir -p "$publish_directory"
+          stage_asset() {
+            local source="$1"
+            local destination="$publish_directory/$(basename "$source")"
+            if [[ -e "$destination" ]]; then
+              echo "Duplicate release asset name: $(basename "$source")" >&2
+              exit 1
+            fi
+            cp "$source" "$destination"
+          }
+          for artifact in \
+            "$windows_artifact" "$windows_artifact.sig" \
+            "$linux_artifact" "$linux_artifact.sig" \
+            "$macos_artifact" "$macos_artifact.sig"; do
+            stage_asset "$artifact"
+          done
+          while IFS= read -r -d '' dmg; do
+            stage_asset "$dmg"
+          done < <(find release-assets/macos -type f -name '*.dmg' -print0)
+          stage_asset release-assets/latest.json
+
+          : > "$publish_directory/SHA256SUMS.txt"
           while IFS= read -r -d '' file; do
             hash="$(sha256sum "$file" | cut -d ' ' -f 1)"
-            printf '%s  %s\n' "$hash" "$(basename "$file")" >> release-assets/SHA256SUMS.txt
-          done < <(find release-assets -type f ! -name latest.json ! -name SHA256SUMS.txt -print0 | sort -z)
+            printf '%s  %s\n' "$hash" "$(basename "$file")" >> "$publish_directory/SHA256SUMS.txt"
+          done < <(find "$publish_directory" -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 | sort -z)
       - name: Create GitHub release
         shell: bash
         env:
@@ -351,7 +376,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
-          mapfile -d '' assets < <(find release-assets -type f -print0 | sort -z)
+          mapfile -d '' assets < <(find release-assets/publish -maxdepth 1 -type f -print0 | sort -z)
           gh release create "v$RELEASE_VERSION" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Bifrost Drive $RELEASE_VERSION" \
