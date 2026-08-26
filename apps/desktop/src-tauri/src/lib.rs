@@ -331,6 +331,7 @@ fn system_time_parse(value: String) -> Option<SystemTime> {
         .map(|value| value.with_timezone(&chrono::Utc).into())
 }
 
+#[cfg(target_os = "windows")]
 fn default_sync_root_path(connection: &ConnectionRecord) -> PathBuf {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -471,6 +472,7 @@ fn set_drive_presentation(
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 fn configured_drive_type(configuration_json: &str) -> Result<bool, String> {
     let configuration: serde_json::Value = serde_json::from_str(configuration_json)
         .map_err(|_| "Connection configuration is invalid".to_owned())?;
@@ -481,6 +483,7 @@ fn configured_drive_type(configuration_json: &str) -> Result<bool, String> {
         != "local")
 }
 
+#[cfg(target_os = "windows")]
 fn convert_drive_image_to_ico(
     source: &std::path::Path,
     destination: &std::path::Path,
