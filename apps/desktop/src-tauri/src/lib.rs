@@ -2,10 +2,10 @@ use bifrost_api::{
     ActivitySummary, AppStatus, ConnectionIdRequest, ConnectionSummary, CreateConnectionRequest,
     CreateFtpConnectionRequest, CreateS3ConnectionRequest, CreateSftpConnectionRequest,
     CreateSmbConnectionRequest, CreateWebDavConnectionRequest, CredentialSummary,
-    DriveMountRegisterRequest, DriveMountRegisterResponse, FilePage, FileSummary,
-    HydrateFileRequest, HydrateFileResponse, ListFilesRequest, StoreS3CredentialRequest,
-    SyncReconcileRequest, SyncReconcileResponse, SyncRunRequest, SyncRunResponse,
-    TestConnectionRequest,
+    DriveMountRegisterRequest, DriveMountRegisterResponse, DriveMountStartupRequest, FilePage,
+    FileSummary, HydrateFileRequest, HydrateFileResponse, ListFilesRequest,
+    StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse, SyncRunRequest,
+    SyncRunResponse, TestConnectionRequest,
 };
 use bifrost_cache::{CacheManager, CacheRecord};
 use bifrost_common::{ConnectionState, ProviderKind};
@@ -307,6 +307,20 @@ fn configured_drive_letter(configuration_json: &str) -> Result<Option<char>, Str
             .get("drive_letter")
             .and_then(serde_json::Value::as_str),
     )
+}
+
+fn set_mount_on_startup(
+    configuration: &mut serde_json::Value,
+    enabled: bool,
+) -> Result<(), String> {
+    configuration
+        .as_object_mut()
+        .ok_or_else(|| "Connection configuration must be an object".to_owned())?
+        .insert(
+            "mount_on_startup".to_owned(),
+            serde_json::Value::Bool(enabled),
+        );
+    Ok(())
 }
 
 async fn ensure_drive_letter_unassigned(
@@ -684,6 +698,7 @@ async fn connections_create_s3(
         "path_style": request.path_style,
     });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
+    set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
     let test_request = TestConnectionRequest {
         kind: ProviderKind::S3,
         endpoint: request.endpoint.clone(),
@@ -1109,6 +1124,7 @@ async fn connections_create_webdav(
         .map_err(|_| "WebDAV endpoint must be a valid URL".to_owned())?;
     let mut configuration = serde_json::json!({});
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
+    set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
     create_tested_connection(
         &database,
         &credentials,
@@ -1141,6 +1157,7 @@ async fn connections_create_ftp(
     }
     let mut configuration = serde_json::json!({});
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
+    set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
     create_tested_connection(
         &database,
         &credentials,
@@ -1170,6 +1187,7 @@ async fn connections_create_smb(
     }
     let mut configuration = serde_json::json!({ "domain": request.domain });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
+    set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
     create_tested_connection(
         &database,
         &credentials,
@@ -1214,6 +1232,7 @@ async fn connections_create_sftp(
     let authentication = request.authentication.clone();
     let mut configuration = serde_json::json!({ "host": request.host, "port": request.port, "root_path": root_path, "username": request.username, "known_hosts": known_hosts, "trust_on_first_use": request.trust_on_first_use, "authentication": authentication, "private_key_path": request.private_key_path });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
+    set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
     create_tested_connection(
         &database,
         &credentials,
@@ -1887,6 +1906,86 @@ async fn drive_mount_register(
     }
 }
 
+#[tauri::command]
+fn drive_mount_unregister(
+    registry: State<'_, DriveMountRegistry>,
+    request: ConnectionIdRequest,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (registry, request);
+        Err("Windows drive mounting is available only on Windows".to_owned())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        registry
+            .0
+            .lock()
+            .map_err(|_| "drive mount registry poisoned".to_owned())?
+            .remove(&request.id.to_string());
+        Ok(())
+    }
+}
+
+#[tauri::command]
+async fn drive_mount_startup_set(
+    database: State<'_, Database>,
+    request: DriveMountStartupRequest,
+) -> Result<(), String> {
+    let mut connection = database
+        .find_connection(request.connection_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Connection was not found".to_owned())?;
+    let mut configuration: serde_json::Value = serde_json::from_str(&connection.configuration_json)
+        .map_err(|_| "Connection configuration is invalid".to_owned())?;
+    set_mount_on_startup(&mut configuration, request.enabled)?;
+    connection.configuration_json = configuration.to_string();
+    database
+        .update_connection(&connection)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn connection_location_open(
+    registry: State<'_, DriveMountRegistry>,
+    database: State<'_, Database>,
+    request: ConnectionIdRequest,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (registry, database, request);
+        Err("Opening connection locations is available only on Windows".to_owned())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let connection = database
+            .find_connection(request.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Connection was not found".to_owned())?;
+        let path = if let Some(letter) = configured_drive_letter(&connection.configuration_json)? {
+            if !registry
+                .0
+                .lock()
+                .map_err(|_| "drive mount registry poisoned".to_owned())?
+                .contains_key(&connection.id.to_string())
+            {
+                return Err("The drive is not mounted".to_owned());
+            }
+            PathBuf::from(format!(r"{letter}:\"))
+        } else {
+            default_sync_root_path(&connection)
+        };
+        std::process::Command::new("explorer.exe")
+            .arg(path)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -1967,7 +2066,10 @@ pub fn run() {
             sync_root_register,
             sync_root_unregister,
             drive_letters_available,
-            drive_mount_register
+            drive_mount_register,
+            drive_mount_unregister,
+            drive_mount_startup_set,
+            connection_location_open
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bifrost Drive");

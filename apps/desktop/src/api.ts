@@ -40,6 +40,7 @@ export interface S3ConnectionForm {
     accessKeyId: string;
     secretAccessKey: string;
     driveLetter: string;
+    mountOnStartup: boolean;
 }
 
 export interface WebDavConnectionForm {
@@ -48,6 +49,7 @@ export interface WebDavConnectionForm {
     username: string;
     password: string;
     driveLetter: string;
+    mountOnStartup: boolean;
 }
 
 export interface FtpConnectionForm {
@@ -56,6 +58,7 @@ export interface FtpConnectionForm {
     username: string;
     password: string;
     driveLetter: string;
+    mountOnStartup: boolean;
 }
 
 export interface SmbConnectionForm {
@@ -65,6 +68,7 @@ export interface SmbConnectionForm {
     password: string;
     domain: string;
     driveLetter: string;
+    mountOnStartup: boolean;
 }
 
 export interface SftpConnectionForm {
@@ -79,6 +83,7 @@ export interface SftpConnectionForm {
     privateKeyPath: string;
     passphrase: string;
     driveLetter: string;
+    mountOnStartup: boolean;
 }
 
 export interface HydrateFileResponse {
@@ -212,6 +217,7 @@ export async function createS3Connection(
             access_key_id: form.accessKeyId,
             secret_access_key: form.secretAccessKey,
             drive_letter: form.driveLetter || null,
+            mount_on_startup: form.mountOnStartup,
         },
     });
 }
@@ -223,7 +229,11 @@ export async function createWebDavConnection(
         throw new Error("The desktop service is not available in this window");
     }
     return invoke<ConnectionSummary>("connections_create_webdav", {
-        request: { ...form, drive_letter: form.driveLetter || null },
+        request: {
+            ...form,
+            drive_letter: form.driveLetter || null,
+            mount_on_startup: form.mountOnStartup,
+        },
     });
 }
 
@@ -234,7 +244,11 @@ export async function createFtpConnection(
         throw new Error("The desktop service is not available in this window");
     }
     return invoke<ConnectionSummary>("connections_create_ftp", {
-        request: { ...form, drive_letter: form.driveLetter || null },
+        request: {
+            ...form,
+            drive_letter: form.driveLetter || null,
+            mount_on_startup: form.mountOnStartup,
+        },
     });
 }
 
@@ -245,7 +259,11 @@ export async function createSmbConnection(
         throw new Error("The desktop service is not available in this window");
     }
     return invoke<ConnectionSummary>("connections_create_smb", {
-        request: { ...form, drive_letter: form.driveLetter || null },
+        request: {
+            ...form,
+            drive_letter: form.driveLetter || null,
+            mount_on_startup: form.mountOnStartup,
+        },
     });
 }
 
@@ -261,6 +279,7 @@ export async function createSftpConnection(
             root_path: form.rootPath,
             trust_on_first_use: form.trustOnFirstUse,
             drive_letter: form.driveLetter || null,
+            mount_on_startup: form.mountOnStartup,
         },
     });
 }
@@ -280,6 +299,40 @@ export async function registerDriveMount(
     }
     return invoke<DriveMountRegisterResponse>("drive_mount_register", {
         request: { connection_id: connectionId },
+    });
+}
+
+export async function unregisterDriveMount(
+    connectionId: string,
+): Promise<void> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    await invoke("drive_mount_unregister", {
+        request: { id: connectionId },
+    });
+}
+
+export async function setDriveMountStartup(
+    connectionId: string,
+    enabled: boolean,
+): Promise<void> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    await invoke("drive_mount_startup_set", {
+        request: { connection_id: connectionId, enabled },
+    });
+}
+
+export async function openConnectionLocation(
+    connectionId: string,
+): Promise<void> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    await invoke("connection_location_open", {
+        request: { id: connectionId },
     });
 }
 

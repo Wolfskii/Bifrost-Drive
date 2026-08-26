@@ -48,6 +48,7 @@ pub struct CreateS3ConnectionRequest {
     pub access_key_id: String,
     pub secret_access_key: String,
     pub drive_letter: Option<String>,
+    pub mount_on_startup: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +58,7 @@ pub struct CreateWebDavConnectionRequest {
     pub username: String,
     pub password: String,
     pub drive_letter: Option<String>,
+    pub mount_on_startup: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +68,7 @@ pub struct CreateFtpConnectionRequest {
     pub username: String,
     pub password: String,
     pub drive_letter: Option<String>,
+    pub mount_on_startup: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +79,7 @@ pub struct CreateSmbConnectionRequest {
     pub password: String,
     pub domain: String,
     pub drive_letter: Option<String>,
+    pub mount_on_startup: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +98,7 @@ pub struct CreateSftpConnectionRequest {
     pub private_key_path: Option<String>,
     pub passphrase: Option<String>,
     pub drive_letter: Option<String>,
+    pub mount_on_startup: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +114,12 @@ pub struct DriveMountRegisterRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriveMountRegisterResponse {
     pub drive_letter: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveMountStartupRequest {
+    pub connection_id: ConnectionId,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

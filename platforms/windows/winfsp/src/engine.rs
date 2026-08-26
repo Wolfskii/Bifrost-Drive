@@ -1,6 +1,10 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
 };
 
 use bifrost_common::{RemoteMetadata, RemotePath};
@@ -47,10 +51,18 @@ struct StagedFile {
     file: Mutex<File>,
 }
 
+struct ReadCache {
+    offset: u64,
+    data: Vec<u8>,
+}
+
+const READ_AHEAD_SIZE: usize = 1024 * 1024;
+
 pub struct OpenFile {
     path: RwLock<RemotePath>,
     is_directory: bool,
     stage: Option<StagedFile>,
+    read_cache: Mutex<Option<ReadCache>>,
     dirty: AtomicBool,
     delete_pending: AtomicBool,
 }
@@ -79,15 +91,46 @@ impl OpenFile {
 
 pub struct RemoteFilesystem {
     provider: Arc<dyn StorageProvider>,
+    metadata_cache: RwLock<HashMap<RemotePath, Cached<RemoteMetadata>>>,
+    directory_cache: RwLock<HashMap<RemotePath, Cached<Vec<RemoteEntry>>>>,
 }
+
+struct Cached<T> {
+    value: T,
+    cached_at: Instant,
+}
+
+const METADATA_CACHE_TTL: Duration = Duration::from_secs(5);
 
 impl RemoteFilesystem {
     pub fn new(provider: Arc<dyn StorageProvider>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            metadata_cache: RwLock::new(HashMap::new()),
+            directory_cache: RwLock::new(HashMap::new()),
+        }
     }
 
     pub async fn stat(&self, path: &RemotePath) -> Result<RemoteMetadata, WinFspFilesystemError> {
-        Ok(self.provider.stat(path).await?)
+        if let Some(metadata) = self
+            .metadata_cache
+            .read()
+            .await
+            .get(path)
+            .filter(|entry| entry.cached_at.elapsed() < METADATA_CACHE_TTL)
+            .map(|entry| entry.value.clone())
+        {
+            return Ok(metadata);
+        }
+        let metadata = self.provider.stat(path).await?;
+        self.metadata_cache.write().await.insert(
+            path.clone(),
+            Cached {
+                value: metadata.clone(),
+                cached_at: Instant::now(),
+            },
+        );
+        Ok(metadata)
     }
 
     pub async fn resolve_case_insensitive(
@@ -124,9 +167,15 @@ impl RemoteFilesystem {
     }
 
     pub async fn list(&self, path: &RemotePath) -> Result<Vec<RemoteEntry>, WinFspFilesystemError> {
-        let metadata = self.provider.stat(path).await?;
-        if !metadata.is_directory {
-            return Err(WinFspFilesystemError::NotDirectory(path.clone()));
+        if let Some(entries) = self
+            .directory_cache
+            .read()
+            .await
+            .get(path)
+            .filter(|entry| entry.cached_at.elapsed() < METADATA_CACHE_TTL)
+            .map(|entry| entry.value.clone())
+        {
+            return Ok(entries);
         }
 
         let mut entries = Vec::new();
@@ -136,9 +185,29 @@ impl RemoteFilesystem {
             entries.extend(page.entries);
             cursor = page.next_cursor;
             if cursor.is_none() {
-                return Ok(entries);
+                break;
             }
         }
+        let cached_at = Instant::now();
+        let mut metadata_cache = self.metadata_cache.write().await;
+        for entry in &entries {
+            metadata_cache.insert(
+                entry.metadata.path.clone(),
+                Cached {
+                    value: entry.metadata.clone(),
+                    cached_at,
+                },
+            );
+        }
+        drop(metadata_cache);
+        self.directory_cache.write().await.insert(
+            path.clone(),
+            Cached {
+                value: entries.clone(),
+                cached_at,
+            },
+        );
+        Ok(entries)
     }
 
     pub async fn open(
@@ -146,7 +215,7 @@ impl RemoteFilesystem {
         path: RemotePath,
         writable: bool,
     ) -> Result<Arc<OpenFile>, WinFspFilesystemError> {
-        let metadata = self.provider.stat(&path).await?;
+        let metadata = self.stat(&path).await?;
         let stage = if writable && !metadata.is_directory {
             Some(self.stage_remote_file(&path).await?)
         } else {
@@ -156,6 +225,7 @@ impl RemoteFilesystem {
             path: RwLock::new(path),
             is_directory: metadata.is_directory,
             stage,
+            read_cache: Mutex::new(None),
             dirty: AtomicBool::new(false),
             delete_pending: AtomicBool::new(false),
         }))
@@ -170,6 +240,7 @@ impl RemoteFilesystem {
             path: RwLock::new(path),
             is_directory: false,
             stage: Some(Self::empty_stage().await?),
+            read_cache: Mutex::new(None),
             dirty: AtomicBool::new(true),
             delete_pending: AtomicBool::new(false),
         }))
@@ -181,10 +252,12 @@ impl RemoteFilesystem {
     ) -> Result<Arc<OpenFile>, WinFspFilesystemError> {
         self.ensure_missing(&path).await?;
         self.provider.create_directory(&path).await?;
+        self.invalidate_caches().await;
         Ok(Arc::new(OpenFile {
             path: RwLock::new(path),
             is_directory: true,
             stage: None,
+            read_cache: Mutex::new(None),
             dirty: AtomicBool::new(false),
             delete_pending: AtomicBool::new(false),
         }))
@@ -209,7 +282,16 @@ impl RemoteFilesystem {
         }
 
         let path = handle.path().await;
-        let end = offset.saturating_add(length as u64);
+        let mut cache = handle.read_cache.lock().await;
+        if let Some(cached) = cache.as_ref() {
+            let relative = offset.saturating_sub(cached.offset) as usize;
+            if offset >= cached.offset && relative < cached.data.len() {
+                let available = (cached.data.len() - relative).min(length);
+                return Ok(cached.data[relative..relative + available].to_vec());
+            }
+        }
+        let read_length = length.max(READ_AHEAD_SIZE);
+        let end = offset.saturating_add(read_length as u64);
         let mut stream = self
             .provider
             .read(ReadRequest {
@@ -217,16 +299,18 @@ impl RemoteFilesystem {
                 range: Some(offset..end),
             })
             .await?;
-        let mut data = Vec::with_capacity(length);
+        let mut data = Vec::with_capacity(read_length);
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
-            let remaining = length.saturating_sub(data.len());
+            let remaining = read_length.saturating_sub(data.len());
             data.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-            if data.len() == length {
+            if data.len() == read_length {
                 break;
             }
         }
-        Ok(data)
+        let requested = data[..data.len().min(length)].to_vec();
+        *cache = Some(ReadCache { offset, data });
+        Ok(requested)
     }
 
     pub async fn write(
@@ -288,14 +372,14 @@ impl RemoteFilesystem {
     pub async fn flush(&self, handle: &OpenFile) -> Result<RemoteMetadata, WinFspFilesystemError> {
         let path = handle.path().await;
         if handle.is_directory {
-            return Ok(self.provider.stat(&path).await?);
+            return self.stat(&path).await;
         }
         let Some(stage) = &handle.stage else {
-            return Ok(self.provider.stat(&path).await?);
+            return self.stat(&path).await;
         };
         let file = stage.file.lock().await;
         if !handle.dirty.load(Ordering::Acquire) {
-            return Ok(self.provider.stat(&path).await?);
+            return self.stat(&path).await;
         }
         file.sync_all().await?;
         let size = file.metadata().await?.len();
@@ -311,6 +395,7 @@ impl RemoteFilesystem {
             })
             .await?;
         handle.dirty.store(false, Ordering::Release);
+        self.invalidate_caches().await;
         Ok(metadata)
     }
 
@@ -318,6 +403,7 @@ impl RemoteFilesystem {
         self.can_delete(handle).await?;
         let path = handle.path().await;
         self.provider.delete(&path).await?;
+        self.invalidate_caches().await;
         Ok(())
     }
 
@@ -335,26 +421,32 @@ impl RemoteFilesystem {
         destination: RemotePath,
         replace_if_exists: bool,
     ) -> Result<(), WinFspFilesystemError> {
-        match self.provider.stat(&destination).await {
+        match self.stat(&destination).await {
             Ok(metadata) if !replace_if_exists || metadata.is_directory => {
                 return Err(WinFspFilesystemError::AlreadyExists(destination));
             }
             Ok(_) => self.provider.delete(&destination).await?,
-            Err(StorageError::NotFound { .. }) => {}
-            Err(error) => return Err(error.into()),
+            Err(WinFspFilesystemError::Storage(StorageError::NotFound { .. })) => {}
+            Err(error) => return Err(error),
         }
         let source = handle.path().await;
         self.provider.rename(&source, &destination).await?;
         *handle.path.write().await = destination;
+        self.invalidate_caches().await;
         Ok(())
     }
 
     async fn ensure_missing(&self, path: &RemotePath) -> Result<(), WinFspFilesystemError> {
-        match self.provider.stat(path).await {
-            Err(StorageError::NotFound { .. }) => Ok(()),
-            Err(error) => Err(error.into()),
+        match self.stat(path).await {
+            Err(WinFspFilesystemError::Storage(StorageError::NotFound { .. })) => Ok(()),
+            Err(error) => Err(error),
             Ok(_) => Err(WinFspFilesystemError::AlreadyExists(path.clone())),
         }
+    }
+
+    async fn invalidate_caches(&self) {
+        self.metadata_cache.write().await.clear();
+        self.directory_cache.write().await.clear();
     }
 
     async fn stage_remote_file(
@@ -395,6 +487,7 @@ impl RemoteFilesystem {
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::AtomicUsize;
 
     use async_trait::async_trait;
     use bifrost_common::{CapabilitySet, ProviderKind};
@@ -412,6 +505,9 @@ mod tests {
         files: Mutex<HashMap<RemotePath, Vec<u8>>>,
         directories: Mutex<HashSet<RemotePath>>,
         capacity_delay: Duration,
+        list_calls: AtomicUsize,
+        stat_calls: AtomicUsize,
+        read_calls: AtomicUsize,
     }
 
     impl MemoryProvider {
@@ -487,6 +583,7 @@ mod tests {
             prefix: &RemotePath,
             _cursor: Option<&str>,
         ) -> Result<Page<RemoteEntry>, StorageError> {
+            self.list_calls.fetch_add(1, Ordering::Relaxed);
             let directories = self.directories.lock().await;
             let files = self.files.lock().await;
             let mut entries = directories
@@ -513,6 +610,7 @@ mod tests {
         }
 
         async fn stat(&self, path: &RemotePath) -> Result<RemoteMetadata, StorageError> {
+            self.stat_calls.fetch_add(1, Ordering::Relaxed);
             if path == &RemotePath::root() {
                 return Ok(Self::directory_metadata(path.clone()));
             }
@@ -528,6 +626,7 @@ mod tests {
         }
 
         async fn read(&self, request: ReadRequest) -> Result<ByteStream, StorageError> {
+            self.read_calls.fetch_add(1, Ordering::Relaxed);
             let files = self.files.lock().await;
             let data = files
                 .get(&request.path)
@@ -602,6 +701,41 @@ mod tests {
         );
         assert_eq!(remote_path_from_windows(r"\").unwrap(), RemotePath::root());
         assert!(remote_path_from_windows(r"\docs\..\secret.txt").is_err());
+    }
+
+    #[tokio::test]
+    async fn directory_listing_warms_child_metadata_cache() {
+        let provider = Arc::new(MemoryProvider::default());
+        provider.insert("video.mp4", b"content").await;
+        let filesystem = RemoteFilesystem::new(provider.clone());
+        let root = RemotePath::root();
+        let file = RemotePath::parse("video.mp4").unwrap();
+
+        filesystem.list(&root).await.unwrap();
+        filesystem.stat(&file).await.unwrap();
+        filesystem
+            .resolve_case_insensitive(&file, false)
+            .await
+            .unwrap();
+
+        assert_eq!(provider.list_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(provider.stat_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn adjacent_reads_share_one_provider_range_request() {
+        let provider = Arc::new(MemoryProvider::default());
+        provider.insert("video.mp4", b"thumbnail payload").await;
+        let filesystem = RemoteFilesystem::new(provider.clone());
+        let handle = filesystem
+            .open(RemotePath::parse("video.mp4").unwrap(), false)
+            .await
+            .unwrap();
+
+        assert_eq!(filesystem.read(&handle, 0, 4).await.unwrap(), b"thum");
+        assert_eq!(filesystem.read(&handle, 4, 5).await.unwrap(), b"bnail");
+
+        assert_eq!(provider.read_calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

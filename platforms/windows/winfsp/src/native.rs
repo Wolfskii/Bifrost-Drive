@@ -406,7 +406,7 @@ pub fn mount(config: MountConfig) -> Result<MountHandle, WinFspError> {
         .set_sectors_per_allocation_unit(8)
         .set_volume_creation_time(filetime_now())
         .set_volume_serial_number(drive_letter as u32)
-        .set_file_info_timeout(1000)
+        .set_file_info_timeout(5000)
         .set_case_sensitive_search(false)
         .set_case_preserved_names(true)
         .set_unicode_on_disk(true)

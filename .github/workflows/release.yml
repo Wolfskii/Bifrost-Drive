@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  VITE_BUILD_CHANNEL: release
+
 concurrency:
   group: development-release
   cancel-in-progress: false

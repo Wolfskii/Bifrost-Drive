@@ -5,10 +5,8 @@ import {
     Activity,
     Plus,
     Pencil,
-    ArrowUpRight,
-    File,
-    Folder,
-    RefreshCw,
+    FolderOpen,
+    Power,
     Trash2,
 } from "lucide-react";
 import {
@@ -17,6 +15,7 @@ import {
     sendNotification,
 } from "@tauri-apps/plugin-notification";
 import { FormEvent, useEffect, useState } from "react";
+import packageJson from "../package.json";
 import {
     ActivitySummary,
     ConnectionSummary,
@@ -30,48 +29,41 @@ import {
     getAutostartEnabled,
     getConnectionDetails,
     getAvailableDriveLetters,
-    FileSummary,
-    hydrateFile,
     installUpdate,
     listConnections,
     listActivity,
     listConflicts,
-    listFiles,
+    openConnectionLocation,
     registerSyncRoot,
     registerDriveMount,
     removeConnection,
     resolveConflict,
-    runSync,
+    setDriveMountStartup,
     setAutostartEnabled,
     S3ConnectionForm,
     updateConnection,
+    unregisterDriveMount,
     unregisterSyncRoot,
 } from "./api";
 
-const providerTypes = [
-    { name: "S3", status: "Available now" },
-    { name: "SFTP", status: "Password sign-in available" },
-    { name: "WebDAV", status: "Available now" },
-    { name: "FTP / FTPS", status: "Available now" },
-    { name: "SMB", status: "Available now" },
-];
-
 type ProviderChoice = "S3" | "SFTP" | "WebDAV" | "FTP" | "SMB";
+type AppView = "connections" | "activity" | "settings" | "add";
 
 type FormDefaults = Record<string, boolean | number | string>;
 
+interface DrivePreference {
+    driveLetter: string;
+    mountOnStartup: boolean;
+}
+
 export function App() {
+    const [activeView, setActiveView] = useState<AppView>("connections");
     const [connections, setConnections] = useState<ConnectionSummary[]>([]);
     const [conflicts, setConflicts] = useState<ConflictSummary[]>([]);
     const [activity, setActivity] = useState<ActivitySummary[]>([]);
-    const [files, setFiles] = useState<FileSummary[]>([]);
-    const [openedConnection, setOpenedConnection] =
-        useState<ConnectionSummary | null>(null);
-    const [loadingFiles, setLoadingFiles] = useState(false);
     const [wizardOpen, setWizardOpen] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
-    const [hydratingPath, setHydratingPath] = useState<string | null>(null);
     const [updateVersion, setUpdateVersion] = useState<string | null>(null);
     const [installingUpdate, setInstallingUpdate] = useState(false);
     const [autostartEnabled, setAutostartEnabledState] = useState(false);
@@ -85,6 +77,10 @@ export function App() {
     const [mountedDrives, setMountedDrives] = useState<Record<string, string>>(
         {},
     );
+    const [drivePreferences, setDrivePreferences] = useState<
+        Record<string, DrivePreference>
+    >({});
+    const [updatingDrive, setUpdatingDrive] = useState<string | null>(null);
     const [availableDriveLetters, setAvailableDriveLetters] = useState<
         string[]
     >([]);
@@ -114,6 +110,26 @@ export function App() {
                         entry?.[1].configuration.drive_letter ? [entry[0]] : [],
                     ),
                 );
+                const preferences = Object.fromEntries(
+                    details.flatMap((entry) => {
+                        const driveLetter =
+                            entry?.[1].configuration.drive_letter;
+                        return entry && driveLetter
+                            ? [
+                                  [
+                                      entry[0],
+                                      {
+                                          driveLetter: `${String(driveLetter)}:`,
+                                          mountOnStartup:
+                                              entry[1].configuration
+                                                  .mount_on_startup !== false,
+                                      },
+                                  ],
+                              ]
+                            : [];
+                    }),
+                );
+                setDrivePreferences(preferences);
                 const registeredRoots = await Promise.all(
                     loadedConnections.map(async (connection) => {
                         if (driveConnections.has(connection.id)) {
@@ -140,6 +156,9 @@ export function App() {
                 const mounted = await Promise.all(
                     loadedConnections.map(async (connection) => {
                         if (!driveConnections.has(connection.id)) {
+                            return null;
+                        }
+                        if (!preferences[connection.id].mountOnStartup) {
                             return null;
                         }
                         try {
@@ -217,20 +236,61 @@ export function App() {
         }
     }
 
-    async function handleOpen(connection: ConnectionSummary) {
-        setLoadingFiles(true);
+    async function handleMountToggle(connection: ConnectionSummary) {
+        setUpdatingDrive(connection.id);
         setError(null);
         try {
-            setFiles(await listFiles(connection.id));
-            setOpenedConnection(connection);
+            if (mountedDrives[connection.id]) {
+                await unregisterDriveMount(connection.id);
+                setMountedDrives((current) => {
+                    const next = { ...current };
+                    delete next[connection.id];
+                    return next;
+                });
+            } else {
+                const mount = await registerDriveMount(connection.id);
+                setMountedDrives((current) => ({
+                    ...current,
+                    [connection.id]: mount.drive_letter,
+                }));
+            }
+        } catch (cause) {
+            setError(errorMessage(cause, "Unable to update the drive mount."));
+        } finally {
+            setUpdatingDrive(null);
+        }
+    }
+
+    async function handleDriveStartupChange(
+        connection: ConnectionSummary,
+        enabled: boolean,
+    ) {
+        setUpdatingDrive(connection.id);
+        setError(null);
+        try {
+            await setDriveMountStartup(connection.id, enabled);
+            setDrivePreferences((current) => ({
+                ...current,
+                [connection.id]: {
+                    ...current[connection.id],
+                    mountOnStartup: enabled,
+                },
+            }));
         } catch (cause) {
             setError(
-                cause instanceof Error
-                    ? cause.message
-                    : "Unable to list remote files.",
+                errorMessage(cause, "Unable to update the startup setting."),
             );
         } finally {
-            setLoadingFiles(false);
+            setUpdatingDrive(null);
+        }
+    }
+
+    async function handleOpenLocation(connection: ConnectionSummary) {
+        setError(null);
+        try {
+            await openConnectionLocation(connection.id);
+        } catch (cause) {
+            setError(errorMessage(cause, "Unable to open Windows Explorer."));
         }
     }
 
@@ -259,6 +319,7 @@ export function App() {
                 driveLetter: configuration.drive_letter
                     ? `${String(configuration.drive_letter)}:`
                     : "",
+                mountOnStartup: configuration.mount_on_startup !== false,
             });
             setProviderChoice(providerChoiceFor(connection.kind));
             setSftpAuthentication(
@@ -268,6 +329,7 @@ export function App() {
             );
             setEditingConnection(connection);
             setWizardOpen(true);
+            setActiveView("add");
         } catch (cause) {
             setError(errorMessage(cause, "Unable to load connection details."));
         }
@@ -293,10 +355,11 @@ export function App() {
                 delete next[connection.id];
                 return next;
             });
-            if (openedConnection?.id === connection.id) {
-                setOpenedConnection(null);
-                setFiles([]);
-            }
+            setDrivePreferences((current) => {
+                const next = { ...current };
+                delete next[connection.id];
+                return next;
+            });
         } catch (cause) {
             setError(errorMessage(cause, "Unable to remove connection."));
         }
@@ -308,10 +371,12 @@ export function App() {
         const values = new FormData(form);
         const name = String(values.get("name") ?? "").trim();
         const driveLetter = String(values.get("driveLetter") ?? "").trim();
+        const mountOnStartup = values.get("mountOnStartup") === "on";
         const common = {
             name,
             username: String(values.get("username") ?? "").trim(),
             password: String(values.get("password") ?? ""),
+            mountOnStartup,
         };
         let connectionOperation: Promise<ConnectionSummary>;
         const endpoint = String(values.get("endpoint") ?? "").trim();
@@ -382,6 +447,7 @@ export function App() {
             if (driveLetter) {
                 configuration.drive_letter = driveLetter;
             }
+            configuration.mount_on_startup = mountOnStartup;
             connectionOperation = updateConnection({
                 id: editingConnection.id,
                 name,
@@ -434,6 +500,7 @@ export function App() {
                 accessKeyId: String(values.get("accessKeyId") ?? "").trim(),
                 secretAccessKey: String(values.get("secretAccessKey") ?? ""),
                 driveLetter,
+                mountOnStartup,
             };
             connectionOperation = createS3Connection(form);
         }
@@ -470,6 +537,18 @@ export function App() {
                 delete next[connection.id];
                 return next;
             });
+            setDrivePreferences((current) => {
+                const next = { ...current };
+                if (driveLetter) {
+                    next[connection.id] = {
+                        driveLetter,
+                        mountOnStartup,
+                    };
+                } else {
+                    delete next[connection.id];
+                }
+                return next;
+            });
             try {
                 const mount = await registerDriveMount(connection.id);
                 setMountedDrives((current) => ({
@@ -484,6 +563,7 @@ export function App() {
                 }
             }
             setWizardOpen(false);
+            setActiveView("connections");
             form.reset();
             setEditingConnection(null);
             setFormDefaults({});
@@ -492,46 +572,6 @@ export function App() {
             setError(errorMessage(cause, "Unable to save connection."));
         } finally {
             setSaving(false);
-        }
-    }
-
-    async function handleHydrate(path: string) {
-        if (!openedConnection) return;
-        setHydratingPath(path);
-        setError(null);
-        try {
-            await hydrateFile(openedConnection.id, path);
-            await notify("File ready", path);
-        } catch (cause) {
-            setError(
-                cause instanceof Error
-                    ? cause.message
-                    : "Unable to download the file.",
-            );
-        } finally {
-            setHydratingPath(null);
-        }
-    }
-
-    async function handleSync(path: string) {
-        if (!openedConnection) return;
-        setHydratingPath(path);
-        setError(null);
-        try {
-            const result = await runSync(openedConnection.id, path);
-            if (result.conflict) {
-                setConflicts(await listConflicts());
-            } else {
-                await notify("Sync complete", path);
-            }
-        } catch (cause) {
-            setError(
-                cause instanceof Error
-                    ? cause.message
-                    : "Unable to synchronize the file.",
-            );
-        } finally {
-            setHydratingPath(null);
         }
     }
 
@@ -568,22 +608,41 @@ export function App() {
                     </div>
                 </div>
                 <nav aria-label="Primary navigation">
-                    <a className="nav-item active" href="#connections">
+                    <button
+                        className={`nav-item ${activeView === "connections" ? "active" : ""}`}
+                        type="button"
+                        onClick={() => setActiveView("connections")}
+                    >
                         <HardDrive size={17} /> Connections
-                    </a>
-                    <a className="nav-item" href="#activity">
+                    </button>
+                    <button
+                        className={`nav-item ${activeView === "activity" ? "active" : ""}`}
+                        type="button"
+                        onClick={() => setActiveView("activity")}
+                    >
                         <Activity size={17} /> Activity
-                    </a>
-                    <a className="nav-item" href="#settings">
+                    </button>
+                    <button
+                        className={`nav-item ${activeView === "settings" ? "active" : ""}`}
+                        type="button"
+                        onClick={() => setActiveView("settings")}
+                    >
                         <Settings size={17} /> Settings
-                    </a>
+                    </button>
                 </nav>
                 <div className="sidebar-footer">
                     <span className="status-dot" /> Service ready
-                    <small>Foundation build 0.1.0</small>
+                    <small>
+                        Build {packageJson.version}
+                        {import.meta.env.VITE_BUILD_CHANNEL === "release"
+                            ? ""
+                            : " DEV"}
+                    </small>
                 </div>
             </aside>
-            <section className="content" id="connections">
+            {activeView !== "add" && <section className="content">
+                {activeView === "connections" && (
+                    <>
                 <header className="topbar">
                     <div>
                         <p className="eyebrow">Storage workspace</p>
@@ -601,6 +660,7 @@ export function App() {
                             setFormDefaults({});
                             setSftpAuthentication("password");
                             setWizardOpen(true);
+                            setActiveView("add");
                         }}
                     >
                         <Plus size={17} /> Add connection
@@ -733,18 +793,99 @@ export function App() {
                                                 {mountedDrives[connection.id]}
                                             </p>
                                         )}
+                                        {drivePreferences[connection.id] &&
+                                            !mountedDrives[connection.id] && (
+                                                <p className="explorer-location">
+                                                    Drive:{" "}
+                                                    {
+                                                        drivePreferences[
+                                                            connection.id
+                                                        ].driveLetter
+                                                    }{" "}
+                                                    (not mounted)
+                                                </p>
+                                            )}
+                                        {drivePreferences[connection.id] && (
+                                            <label className="connection-startup">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={
+                                                        drivePreferences[
+                                                            connection.id
+                                                        ].mountOnStartup
+                                                    }
+                                                    disabled={
+                                                        updatingDrive ===
+                                                        connection.id
+                                                    }
+                                                    onChange={(event) =>
+                                                        handleDriveStartupChange(
+                                                            connection,
+                                                            event.target
+                                                                .checked,
+                                                        )
+                                                    }
+                                                />
+                                                Mount when Bifrost starts
+                                            </label>
+                                        )}
                                     </div>
                                     <span className="connection-state">
-                                        <span className="status-dot" />{" "}
-                                        {connection.state}
+                                        <span
+                                            className={`status-dot ${
+                                                drivePreferences[
+                                                    connection.id
+                                                ] &&
+                                                !mountedDrives[connection.id]
+                                                    ? "disconnected"
+                                                    : ""
+                                            }`}
+                                        />{" "}
+                                        {drivePreferences[connection.id]
+                                            ? mountedDrives[connection.id]
+                                                ? "MOUNTED"
+                                                : "UNMOUNTED"
+                                            : connection.state}
                                     </span>
+                                    {drivePreferences[connection.id] && (
+                                        <button
+                                            className="icon-button"
+                                            type="button"
+                                            aria-label={`${
+                                                mountedDrives[connection.id]
+                                                    ? "Unmount"
+                                                    : "Mount"
+                                            } ${connection.name}`}
+                                            title={
+                                                mountedDrives[connection.id]
+                                                    ? "Unmount drive"
+                                                    : "Mount drive"
+                                            }
+                                            disabled={
+                                                updatingDrive === connection.id
+                                            }
+                                            onClick={() =>
+                                                handleMountToggle(connection)
+                                            }
+                                        >
+                                            <Power size={15} />
+                                        </button>
+                                    )}
                                     <button
-                                        className="link-button"
+                                        className="icon-button"
                                         type="button"
-                                        onClick={() => handleOpen(connection)}
-                                        disabled={loadingFiles}
+                                        aria-label={`Open ${connection.name} in Explorer`}
+                                        title="Open in Explorer"
+                                        disabled={
+                                            Boolean(
+                                                drivePreferences[connection.id],
+                                            ) && !mountedDrives[connection.id]
+                                        }
+                                        onClick={() =>
+                                            handleOpenLocation(connection)
+                                        }
                                     >
-                                        {loadingFiles ? "Loading..." : "Open"}
+                                        <FolderOpen size={15} />
                                     </button>
                                     <button
                                         className="icon-button"
@@ -767,90 +908,9 @@ export function App() {
                         </div>
                     </section>
                 )}
-                {openedConnection && (
-                    <section
-                        className="file-browser"
-                        aria-labelledby="files-title"
-                    >
-                        <div className="section-heading">
-                            <div>
-                                <p className="eyebrow">Remote files</p>
-                                <h2 id="files-title">
-                                    {openedConnection.name}
-                                </h2>
-                            </div>
-                            <button
-                                className="icon-button"
-                                type="button"
-                                aria-label="Refresh files"
-                                onClick={() => handleOpen(openedConnection)}
-                            >
-                                <RefreshCw size={16} />
-                            </button>
-                        </div>
-                        {files.length === 0 ? (
-                            <p className="empty-files">
-                                This space has no items at its root.
-                            </p>
-                        ) : (
-                            <div className="file-list">
-                                {files.map((file) => (
-                                    <div className="file-row" key={file.path}>
-                                        <span className="file-icon">
-                                            {file.is_directory ? (
-                                                <Folder size={17} />
-                                            ) : (
-                                                <File size={17} />
-                                            )}
-                                        </span>
-                                        <span className="file-name">
-                                            {file.path}
-                                        </span>
-                                        <span className="file-size">
-                                            {file.is_directory
-                                                ? "Folder"
-                                                : formatBytes(file.size_bytes)}
-                                        </span>
-                                        {openedConnection.kind === "S3" &&
-                                            !file.is_directory && (
-                                                <button
-                                                    className="link-button"
-                                                    type="button"
-                                                    onClick={() =>
-                                                        handleHydrate(file.path)
-                                                    }
-                                                    disabled={
-                                                        hydratingPath ===
-                                                        file.path
-                                                    }
-                                                >
-                                                    {hydratingPath === file.path
-                                                        ? "Downloading..."
-                                                        : "Download"}
-                                                </button>
-                                            )}
-                                        {!file.is_directory && (
-                                            <button
-                                                className="link-button"
-                                                type="button"
-                                                onClick={() =>
-                                                    handleSync(file.path)
-                                                }
-                                                disabled={
-                                                    hydratingPath === file.path
-                                                }
-                                            >
-                                                {hydratingPath === file.path
-                                                    ? "Syncing..."
-                                                    : "Sync"}
-                                            </button>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </section>
+                    </>
                 )}
+                {activeView === "activity" && (
                 <section
                     className="file-browser"
                     id="activity"
@@ -883,58 +943,8 @@ export function App() {
                         </div>
                     )}
                 </section>
-                <section
-                    className="welcome-panel"
-                    aria-labelledby="welcome-title"
-                >
-                    <div>
-                        <span className="panel-kicker">
-                            Early access foundation
-                        </span>
-                        <h2 id="welcome-title">
-                            A quieter way to reach every file.
-                        </h2>
-                        <p>
-                            Connect an S3-compatible space, keep its credentials
-                            in Windows Credential Manager, and browse remote
-                            metadata without downloading every file.
-                        </p>
-                    </div>
-                    <div className="bridge-graphic" aria-hidden="true">
-                        <span />
-                        <span />
-                        <span />
-                    </div>
-                </section>
-                <section className="section-heading">
-                    <div>
-                        <p className="eyebrow">Provider support</p>
-                        <h2>Connection types</h2>
-                    </div>
-                    <span className="muted-label">
-                        {
-                            providerTypes.filter(
-                                (provider) =>
-                                    provider.status === "Available now",
-                            ).length
-                        }{" "}
-                        connection flow ready
-                    </span>
-                </section>
-                <div className="provider-grid">
-                    {providerTypes.map((provider) => (
-                        <article className="provider-card" key={provider.name}>
-                            <div className="provider-icon">
-                                <Cloud size={20} />
-                            </div>
-                            <div>
-                                <h3>{provider.name}</h3>
-                                <p>{provider.status}</p>
-                            </div>
-                            <ArrowUpRight className="card-arrow" size={17} />
-                        </article>
-                    ))}
-                </div>
+                )}
+                {activeView === "settings" && (
                 <section
                     className="file-browser"
                     id="settings"
@@ -957,24 +967,12 @@ export function App() {
                         />
                         Start Bifrost Drive when I sign in
                     </label>
-                    <p className="legal-notice">
-                        WinFsp - Windows File System Proxy, Copyright (C) Bill
-                        Zissimopoulos. Bifrost uses WinFsp for Windows drive
-                        mounting.{" "}
-                        <a href="https://github.com/winfsp/winfsp">
-                            Source and license
-                        </a>
-                    </p>
                 </section>
-            </section>
-            {wizardOpen && (
-                <div className="modal-backdrop" role="presentation">
-                    <section
-                        className="wizard"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="wizard-title"
-                    >
+                )}
+            </section>}
+            {activeView === "add" && (
+                <section className="content add-view">
+                    <section className="wizard connection-form-view" aria-labelledby="wizard-title">
                         <div className="wizard-header">
                             <div>
                                 <p className="eyebrow">
@@ -991,7 +989,10 @@ export function App() {
                                 className="icon-button"
                                 type="button"
                                 aria-label="Close"
-                                onClick={() => setWizardOpen(false)}
+                                onClick={() => {
+                                    setWizardOpen(false);
+                                    setActiveView("connections");
+                                }}
                             >
                                 ×
                             </button>
@@ -1067,6 +1068,16 @@ export function App() {
                                             </option>
                                         ))}
                                 </select>
+                            </label>
+                            <label className="checkbox-row">
+                                <input
+                                    name="mountOnStartup"
+                                    type="checkbox"
+                                    defaultChecked={
+                                        formDefaults.mountOnStartup !== false
+                                    }
+                                />
+                                Mount this drive when Bifrost starts
                             </label>
                             {providerChoice !== "SFTP" && (
                                 <label>
@@ -1293,7 +1304,10 @@ export function App() {
                                 <button
                                     className="secondary-button"
                                     type="button"
-                                    onClick={() => setWizardOpen(false)}
+                                    onClick={() => {
+                                        setWizardOpen(false);
+                                        setActiveView("connections");
+                                    }}
                                 >
                                     Cancel
                                 </button>
@@ -1311,7 +1325,7 @@ export function App() {
                             </div>
                         </form>
                     </section>
-                </div>
+                </section>
             )}
         </main>
     );
@@ -1327,15 +1341,6 @@ async function notify(title: string, body: string): Promise<void> {
     } catch {
         return;
     }
-}
-
-function formatBytes(value: number | null): string {
-    if (value === null) return "Size unavailable";
-    if (value < 1024) return `${value} B`;
-    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-    if (value < 1024 * 1024 * 1024)
-        return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 function errorMessage(cause: unknown, fallback: string): string {

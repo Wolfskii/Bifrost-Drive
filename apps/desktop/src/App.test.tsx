@@ -24,7 +24,10 @@ describe("App", () => {
         );
 
         expect(
-            screen.getByRole("dialog", { name: "Connect to S3" }),
+            screen.getByRole("heading", { name: "Connect to S3" }),
+        ).toBeTruthy();
+        expect(
+            screen.getByLabelText("Mount this drive when Bifrost starts"),
         ).toBeTruthy();
     });
 
@@ -41,9 +44,7 @@ describe("App", () => {
             },
         );
 
-        expect(
-            screen.getByRole("heading", { name: "Connect to SFTP" }),
-        ).toBeTruthy();
+        expect(screen.getByRole("heading", { name: "Connect to SFTP" })).toBeTruthy();
         expect(screen.queryByLabelText("Known hosts file")).toBeNull();
         expect(screen.getByLabelText("Start path")).toBeTruthy();
         expect(
