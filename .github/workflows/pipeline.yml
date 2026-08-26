@@ -259,12 +259,12 @@ jobs:
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
-          $keyPath = Join-Path $env:RUNNER_TEMP 'bifrost-drive-updater.key'
-          [IO.File]::WriteAllText($keyPath, $env:TAURI_SIGNING_PRIVATE_KEY, [Text.UTF8Encoding]::new($false))
+          $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $null
           $installer = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           if ($null -eq $installer) { throw 'Windows installer was not produced' }
-          npm --prefix apps/desktop run tauri -- signer sign --private-key-path $keyPath --password "" $installer.FullName
+          npm --prefix apps/desktop run tauri -- signer sign $installer.FullName
           if ($LASTEXITCODE -ne 0) { throw 'Tauri updater signing failed' }
           $normalized = Join-Path $installer.DirectoryName 'Bifrost-Drive-Setup-x64.exe'
           Move-Item $installer.FullName $normalized -Force
