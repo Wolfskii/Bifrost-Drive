@@ -139,7 +139,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm --prefix apps/desktop run tauri -- build --bundles appimage --config src-tauri/tauri.release.conf.json
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: bifrost-drive-linux-${{ needs.version.outputs.version }}
           path: target/release/bundle/appimage/*
@@ -180,7 +180,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm --prefix apps/desktop run tauri -- build --bundles app,dmg --config src-tauri/tauri.release.conf.json
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: bifrost-drive-macos-${{ needs.version.outputs.version }}
           path: |
@@ -269,7 +269,7 @@ jobs:
           $normalized = Join-Path $installer.DirectoryName 'Bifrost-Drive-Setup-x64.exe'
           Move-Item $installer.FullName $normalized -Force
           Move-Item "$($installer.FullName).sig" "$normalized.sig" -Force
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: bifrost-drive-windows-${{ needs.version.outputs.version }}
           path: |
