@@ -56,7 +56,8 @@ struct ReadCache {
     data: Vec<u8>,
 }
 
-const READ_AHEAD_SIZE: usize = 1024 * 1024;
+const INITIAL_READ_AHEAD_SIZE: usize = 1024 * 1024;
+const SEQUENTIAL_READ_AHEAD_SIZE: usize = 32 * 1024 * 1024;
 
 pub struct OpenFile {
     path: RwLock<RemotePath>,
@@ -290,7 +291,14 @@ impl RemoteFilesystem {
                 return Ok(cached.data[relative..relative + available].to_vec());
             }
         }
-        let read_length = length.max(READ_AHEAD_SIZE);
+        let sequential = cache
+            .as_ref()
+            .is_some_and(|cached| offset == cached.offset.saturating_add(cached.data.len() as u64));
+        let read_length = length.max(if sequential {
+            SEQUENTIAL_READ_AHEAD_SIZE
+        } else {
+            INITIAL_READ_AHEAD_SIZE
+        });
         let end = offset.saturating_add(read_length as u64);
         let mut stream = self
             .provider

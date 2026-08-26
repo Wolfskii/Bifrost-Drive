@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::{
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::{Duration, SystemTime},
 };
 use tauri::{
@@ -63,12 +63,48 @@ impl SyncRootRegistry {
     fn new() -> Self {
         Self(Mutex::new(HashMap::new()))
     }
+
+    fn roots(&self) -> MutexGuard<'_, HashMap<String, SyncRoot>> {
+        self.0.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!("recovering poisoned sync root registry");
+            self.0.clear_poison();
+            poisoned.into_inner()
+        })
+    }
+
+    fn insert(&self, key: String, root: SyncRoot) -> Option<SyncRoot> {
+        self.roots().insert(key, root)
+    }
+
+    fn take(&self, key: &str) -> Option<SyncRoot> {
+        self.roots().remove(key)
+    }
 }
 
 #[cfg(target_os = "windows")]
 impl DriveMountRegistry {
     fn new() -> Self {
         Self(Mutex::new(HashMap::new()))
+    }
+
+    fn mounts(&self) -> MutexGuard<'_, HashMap<String, MountHandle>> {
+        self.0.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!("recovering poisoned drive mount registry");
+            self.0.clear_poison();
+            poisoned.into_inner()
+        })
+    }
+
+    fn contains(&self, key: &str) -> bool {
+        self.mounts().contains_key(key)
+    }
+
+    fn insert(&self, key: String, handle: MountHandle) -> Option<MountHandle> {
+        self.mounts().insert(key, handle)
+    }
+
+    fn take(&self, key: &str) -> Option<MountHandle> {
+        self.mounts().remove(key)
     }
 }
 
@@ -323,6 +359,38 @@ fn set_mount_on_startup(
     Ok(())
 }
 
+fn connection_activity_details(connection: &ConnectionRecord) -> String {
+    let drive = configured_drive_letter(&connection.configuration_json)
+        .ok()
+        .flatten()
+        .map(|letter| format!(" · Drive {letter}:"))
+        .unwrap_or_default();
+    format!(
+        "{} · {} · {}{}",
+        connection.name,
+        connection.kind.as_str(),
+        connection.endpoint,
+        drive
+    )
+}
+
+async fn record_connection_activity(
+    database: &Database,
+    kind: &str,
+    connection: &ConnectionRecord,
+) {
+    if let Err(error) = database
+        .insert_activity(
+            kind,
+            Some(&connection_activity_details(connection)),
+            "completed",
+        )
+        .await
+    {
+        tracing::warn!(%error, %kind, "activity history write failed");
+    }
+}
+
 async fn ensure_drive_letter_unassigned(
     database: &Database,
     requested: Option<&str>,
@@ -505,13 +573,10 @@ async fn connections_update(
         let _ = credentials.delete(&new_credential).await;
         return Err(error.to_string());
     }
+    record_connection_activity(&database, "connection_updated", &updated).await;
     let _ = credentials.delete(&old_credential).await;
     #[cfg(target_os = "windows")]
-    mounts
-        .0
-        .lock()
-        .expect("drive mount registry poisoned")
-        .remove(&updated.id.to_string());
+    drop(mounts.take(&updated.id.to_string()));
     #[cfg(not(target_os = "windows"))]
     let _ = mounts;
     Ok(ConnectionSummary {
@@ -536,6 +601,7 @@ async fn activity_list(database: State<'_, Database>) -> Result<Vec<ActivitySumm
                     kind: event.kind,
                     remote_path: event.remote_path,
                     status: event.status,
+                    created_at: event.created_at,
                 })
                 .collect()
         })
@@ -589,6 +655,7 @@ async fn connections_create(
         .insert_connection(&record)
         .await
         .map_err(|error| error.to_string())?;
+    record_connection_activity(&database, "connection_added", &record).await;
     Ok(ConnectionSummary {
         id: record.id,
         name: record.name,
@@ -609,28 +676,24 @@ async fn connections_remove(
     let connection = database
         .find_connection(request.id)
         .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Connection was not found".to_owned())?;
+        .map_err(|error| error.to_string())?;
+    #[cfg(target_os = "windows")]
+    {
+        drop(mounts.take(&request.id.to_string()));
+        drop(registry.take(&request.id.to_string()));
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = (&registry, &mounts);
+    let Some(connection) = connection else {
+        return Ok(());
+    };
     let credential: CredentialRef = serde_json::from_str(&connection.credential_ref)
         .map_err(|_| "Connection credential reference is invalid".to_owned())?;
     database
         .delete_connection(request.id)
         .await
         .map_err(|error| error.to_string())?;
-    #[cfg(target_os = "windows")]
-    mounts
-        .0
-        .lock()
-        .expect("drive mount registry poisoned")
-        .remove(&connection.id.to_string());
-    #[cfg(target_os = "windows")]
-    registry
-        .0
-        .lock()
-        .expect("sync root registry poisoned")
-        .remove(&connection.id.to_string());
-    #[cfg(not(target_os = "windows"))]
-    let _ = (registry, mounts);
+    record_connection_activity(&database, "connection_removed", &connection).await;
     if let Err(error) = credentials.delete(&credential).await {
         if !matches!(error, CredentialError::NotFound) {
             tracing::warn!(%error, "connection removed but credential cleanup failed");
@@ -738,6 +801,7 @@ async fn connections_create_s3(
             .await;
         return Err(error.to_string());
     }
+    record_connection_activity(&database, "connection_added", &record).await;
     Ok(ConnectionSummary {
         id: record.id,
         name: record.name,
@@ -979,6 +1043,7 @@ async fn create_tested_connection(
         let _ = credentials.delete(&credential).await;
         return Err(error.to_string());
     }
+    record_connection_activity(database, "connection_added", &record).await;
     Ok(ConnectionSummary {
         id: record.id,
         name: record.name,
@@ -1808,11 +1873,8 @@ async fn sync_root_register(
             request.connection_id,
         ))
         .map_err(|error| error.to_string())?;
-        registry
-            .0
-            .lock()
-            .expect("sync root registry poisoned")
-            .insert(connection.id.to_string(), root);
+        let previous = registry.insert(connection.id.to_string(), root);
+        drop(previous);
         Ok(bifrost_api::SyncRootRegisterResponse {
             path: path.to_string_lossy().to_string(),
         })
@@ -1831,11 +1893,7 @@ fn sync_root_unregister(
     }
     #[cfg(target_os = "windows")]
     {
-        registry
-            .0
-            .lock()
-            .map_err(|_| "sync root registry poisoned".to_owned())?
-            .remove(&request.id.to_string());
+        drop(registry.take(&request.id.to_string()));
         Ok(())
     }
 }
@@ -1880,26 +1938,21 @@ async fn drive_mount_register(
             return Err("No drive letter is assigned to this connection".to_owned());
         };
         let key = connection.id.to_string();
-        {
-            let mounts = registry.0.lock().expect("drive mount registry poisoned");
-            if mounts.contains_key(&key) {
-                return Ok(DriveMountRegisterResponse {
-                    drive_letter: format!("{drive_letter}:"),
-                });
-            }
+        if registry.contains(&key) {
+            return Ok(DriveMountRegisterResponse {
+                drive_letter: format!("{drive_letter}:"),
+            });
         }
         let provider = provider_for_connection(&connection, &credentials).await?;
         let handle = bifrost_windows_winfsp::mount(MountConfig {
             drive_letter,
-            volume_label: connection.name,
+            volume_label: connection.name.clone(),
             provider: Arc::from(provider),
         })
         .map_err(|error| error.to_string())?;
-        registry
-            .0
-            .lock()
-            .expect("drive mount registry poisoned")
-            .insert(key, handle);
+        let previous = registry.insert(key, handle);
+        drop(previous);
+        record_connection_activity(&database, "drive_mounted", &connection).await;
         Ok(DriveMountRegisterResponse {
             drive_letter: format!("{drive_letter}:"),
         })
@@ -1907,22 +1960,30 @@ async fn drive_mount_register(
 }
 
 #[tauri::command]
-fn drive_mount_unregister(
+async fn drive_mount_unregister(
     registry: State<'_, DriveMountRegistry>,
+    database: State<'_, Database>,
     request: ConnectionIdRequest,
 ) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (registry, request);
+        let _ = (registry, database, request);
         Err("Windows drive mounting is available only on Windows".to_owned())
     }
     #[cfg(target_os = "windows")]
     {
-        registry
-            .0
-            .lock()
-            .map_err(|_| "drive mount registry poisoned".to_owned())?
-            .remove(&request.id.to_string());
+        let removed = registry.take(&request.id.to_string());
+        let was_mounted = removed.is_some();
+        drop(removed);
+        if was_mounted {
+            if let Some(connection) = database
+                .find_connection(request.id)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                record_connection_activity(&database, "drive_unmounted", &connection).await;
+            }
+        }
         Ok(())
     }
 }
@@ -1944,7 +2005,18 @@ async fn drive_mount_startup_set(
     database
         .update_connection(&connection)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    record_connection_activity(
+        &database,
+        if request.enabled {
+            "startup_mount_enabled"
+        } else {
+            "startup_mount_disabled"
+        },
+        &connection,
+    )
+    .await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1966,12 +2038,7 @@ async fn connection_location_open(
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Connection was not found".to_owned())?;
         let path = if let Some(letter) = configured_drive_letter(&connection.configuration_json)? {
-            if !registry
-                .0
-                .lock()
-                .map_err(|_| "drive mount registry poisoned".to_owned())?
-                .contains_key(&connection.id.to_string())
-            {
+            if !registry.contains(&connection.id.to_string()) {
                 return Err("The drive is not mounted".to_owned());
             }
             PathBuf::from(format!(r"{letter}:\"))
@@ -1982,6 +2049,7 @@ async fn connection_location_open(
             .arg(path)
             .spawn()
             .map_err(|error| error.to_string())?;
+        record_connection_activity(&database, "explorer_opened", &connection).await;
         Ok(())
     }
 }
@@ -2073,4 +2141,22 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bifrost Drive");
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod registry_tests {
+    use super::DriveMountRegistry;
+
+    #[test]
+    fn drive_registry_recovers_from_poisoning() {
+        let registry = DriveMountRegistry::new();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = registry.0.lock().unwrap();
+            panic!("poison registry for regression coverage");
+        }));
+
+        assert!(registry.0.is_poisoned());
+        assert!(!registry.contains("missing"));
+        assert!(!registry.0.is_poisoned());
+    }
 }

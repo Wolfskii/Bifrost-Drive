@@ -25,6 +25,7 @@ use crate::{
 };
 
 const UNKNOWN_VOLUME_SIZE: u64 = 1 << 50;
+static NEXT_MOUNT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct MountHandle {
     filesystem: Option<FileSystem>,
@@ -33,7 +34,7 @@ pub struct MountHandle {
 impl MountHandle {
     pub fn unmount(mut self) {
         if let Some(filesystem) = self.filesystem.take() {
-            filesystem.stop();
+            stop_filesystem(filesystem);
         }
     }
 }
@@ -41,8 +42,14 @@ impl MountHandle {
 impl Drop for MountHandle {
     fn drop(&mut self) {
         if let Some(filesystem) = self.filesystem.take() {
-            filesystem.stop();
+            stop_filesystem(filesystem);
         }
+    }
+}
+
+fn stop_filesystem(filesystem: FileSystem) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filesystem.stop())).is_err() {
+        tracing::error!("WinFsp filesystem teardown panicked");
     }
 }
 
@@ -125,6 +132,25 @@ impl BifrostFileSystem {
             || access.is(FileAccessRights::FILE_APPEND_DATA)
             || access.is(FileAccessRights::FILE_WRITE_ATTRIBUTES)
     }
+}
+
+fn network_prefix(volume_label: &str) -> String {
+    let share = volume_label
+        .chars()
+        .map(|character| match character {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            character if character.is_control() => '_',
+            character => character,
+        })
+        .collect::<String>();
+    let share = share.trim().trim_matches('.');
+    let share = if share.is_empty() {
+        "Bifrost Drive"
+    } else {
+        share
+    };
+    let mount_id = NEXT_MOUNT_ID.fetch_add(1, Ordering::Relaxed);
+    format!(r"\bifrost-{}-{mount_id}\{share}", std::process::id())
 }
 
 impl FileSystemInterface for BifrostFileSystem {
@@ -374,6 +400,8 @@ pub fn mount(config: MountConfig) -> Result<MountHandle, WinFspError> {
     let drive_letter = config.normalized_drive_letter()?;
     let mountpoint = U16CString::from_str(format!("{drive_letter}:"))
         .map_err(|error| WinFspError::Initialization(error.to_string()))?;
+    let prefix = U16CString::from_str(network_prefix(&config.volume_label))
+        .map_err(|error| WinFspError::Initialization(error.to_string()))?;
     let volume_label = U16CString::from_vec(
         config
             .volume_label
@@ -413,7 +441,9 @@ pub fn mount(config: MountConfig) -> Result<MountHandle, WinFspError> {
         .set_persistent_acls(true)
         .set_post_cleanup_when_modified_only(true)
         .set_file_system_name(u16cstr!("Bifrost"))
-        .map_err(|_| WinFspError::Initialization("filesystem name is too long".to_owned()))?;
+        .map_err(|_| WinFspError::Initialization("filesystem name is too long".to_owned()))?
+        .set_prefix(&prefix)
+        .map_err(|_| WinFspError::Initialization("network prefix is too long".to_owned()))?;
 
     let context = BifrostFileSystem {
         engine: RemoteFilesystem::new(config.provider),
@@ -461,7 +491,7 @@ fn status_from_error(error: WinFspFilesystemError) -> NTSTATUS {
 
 #[cfg(test)]
 mod tests {
-    use super::BifrostFileSystem;
+    use super::{network_prefix, BifrostFileSystem};
     use bifrost_common::{RemoteMetadata, RemotePath};
     use winfsp_wrs::FileAttributes;
 
@@ -478,5 +508,14 @@ mod tests {
         let info = BifrostFileSystem::file_info(&metadata);
         assert!(info.file_attributes().is(FileAttributes::DIRECTORY));
         assert!(info.file_attributes().is(FileAttributes::HIDDEN));
+    }
+
+    #[test]
+    fn network_prefixes_are_safe_named_and_unique() {
+        let first = network_prefix("Yggdrasil:data");
+        let second = network_prefix("Yggdrasil:data");
+
+        assert!(first.ends_with(r"\Yggdrasil_data"));
+        assert_ne!(first, second);
     }
 }

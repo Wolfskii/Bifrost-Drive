@@ -191,12 +191,13 @@ export function App() {
     }, []);
 
     useEffect(() => {
+        if (activeView !== "activity") return;
         listActivity()
             .then(setActivity)
             .catch(() => {
                 setError("Unable to load activity history.");
             });
-    }, []);
+    }, [activeView]);
 
     useEffect(() => {
         listConflicts()
@@ -640,339 +641,432 @@ export function App() {
                     </small>
                 </div>
             </aside>
-            {activeView !== "add" && <section className="content">
-                {activeView === "connections" && (
-                    <>
-                <header className="topbar">
-                    <div>
-                        <p className="eyebrow">Storage workspace</p>
-                        <h1>Your connections</h1>
-                        <p className="lede">
-                            Remote files, ready when you are.
-                        </p>
-                    </div>
-                    <button
-                        className="primary-button"
-                        type="button"
-                        onClick={() => {
-                            setError(null);
-                            setEditingConnection(null);
-                            setFormDefaults({});
-                            setSftpAuthentication("password");
-                            setWizardOpen(true);
-                            setActiveView("add");
-                        }}
-                    >
-                        <Plus size={17} /> Add connection
-                    </button>
-                </header>
-                {error && !wizardOpen && (
-                    <p className="inline-error" role="alert">
-                        {error}
-                    </p>
-                )}
-                {updateVersion && (
-                    <p className="inline-error" role="status">
-                        Version {updateVersion} is available.{" "}
-                        <button
-                            className="link-button"
-                            type="button"
-                            disabled={installingUpdate}
-                            onClick={async () => {
-                                setInstallingUpdate(true);
-                                try {
-                                    await installUpdate();
-                                } catch (cause) {
-                                    setError(
-                                        cause instanceof Error
-                                            ? cause.message
-                                            : "Unable to install the update.",
-                                    );
-                                } finally {
-                                    setInstallingUpdate(false);
-                                }
-                            }}
-                        >
-                            {installingUpdate
-                                ? "Installing..."
-                                : "Install update"}
-                        </button>
-                    </p>
-                )}
-                {conflicts.length > 0 && (
-                    <section
-                        className="saved-connections"
-                        aria-labelledby="conflicts-title"
-                    >
-                        <div className="section-heading">
-                            <div>
-                                <p className="eyebrow">Needs attention</p>
-                                <h2 id="conflicts-title">File conflicts</h2>
-                            </div>
-                            <span className="muted-label">
-                                {conflicts.length} unresolved
-                            </span>
-                        </div>
-                        <div className="connection-list">
-                            {conflicts.map((conflict) => (
-                                <article
-                                    className="connection-row"
-                                    key={conflict.id}
+            {activeView !== "add" && (
+                <section className="content">
+                    {activeView === "connections" && (
+                        <>
+                            <header className="topbar">
+                                <div>
+                                    <p className="eyebrow">Storage workspace</p>
+                                    <h1>Your connections</h1>
+                                    <p className="lede">
+                                        Remote files, ready when you are.
+                                    </p>
+                                </div>
+                                <button
+                                    className="primary-button"
+                                    type="button"
+                                    onClick={() => {
+                                        setError(null);
+                                        setEditingConnection(null);
+                                        setFormDefaults({});
+                                        setSftpAuthentication("password");
+                                        setWizardOpen(true);
+                                        setActiveView("add");
+                                    }}
                                 >
-                                    <div className="provider-icon">
-                                        <Activity size={20} />
-                                    </div>
-                                    <div>
-                                        <h3>{conflict.remote_path}</h3>
-                                        <p>Local and remote changes differ.</p>
-                                    </div>
+                                    <Plus size={17} /> Add connection
+                                </button>
+                            </header>
+                            {error && !wizardOpen && (
+                                <p className="inline-error" role="alert">
+                                    {error}
+                                </p>
+                            )}
+                            {updateVersion && (
+                                <p className="inline-error" role="status">
+                                    Version {updateVersion} is available.{" "}
                                     <button
                                         className="link-button"
                                         type="button"
-                                        onClick={() =>
-                                            handleResolveConflict(
-                                                conflict,
-                                                "keep_remote",
-                                            )
-                                        }
+                                        disabled={installingUpdate}
+                                        onClick={async () => {
+                                            setInstallingUpdate(true);
+                                            try {
+                                                await installUpdate();
+                                            } catch (cause) {
+                                                setError(
+                                                    cause instanceof Error
+                                                        ? cause.message
+                                                        : "Unable to install the update.",
+                                                );
+                                            } finally {
+                                                setInstallingUpdate(false);
+                                            }
+                                        }}
                                     >
-                                        Keep remote
+                                        {installingUpdate
+                                            ? "Installing..."
+                                            : "Install update"}
                                     </button>
-                                    <button
-                                        className="link-button"
-                                        type="button"
-                                        onClick={() =>
-                                            handleResolveConflict(
-                                                conflict,
-                                                "keep_local",
-                                            )
-                                        }
-                                    >
-                                        Keep local
-                                    </button>
-                                </article>
-                            ))}
-                        </div>
-                    </section>
-                )}
-                {connections.length > 0 && (
-                    <section
-                        className="saved-connections"
-                        aria-labelledby="saved-title"
-                    >
-                        <div className="section-heading">
-                            <div>
-                                <p className="eyebrow">Connected storage</p>
-                                <h2 id="saved-title">Your spaces</h2>
-                            </div>
-                            <span className="muted-label">
-                                {connections.length} saved
-                            </span>
-                        </div>
-                        <div className="connection-list">
-                            {connections.map((connection) => (
-                                <article
-                                    className="connection-row"
-                                    key={connection.id}
+                                </p>
+                            )}
+                            {conflicts.length > 0 && (
+                                <section
+                                    className="saved-connections"
+                                    aria-labelledby="conflicts-title"
                                 >
-                                    <div className="provider-icon">
-                                        <Cloud size={20} />
+                                    <div className="section-heading">
+                                        <div>
+                                            <p className="eyebrow">
+                                                Needs attention
+                                            </p>
+                                            <h2 id="conflicts-title">
+                                                File conflicts
+                                            </h2>
+                                        </div>
+                                        <span className="muted-label">
+                                            {conflicts.length} unresolved
+                                        </span>
                                     </div>
-                                    <div>
-                                        <h3>{connection.name}</h3>
-                                        <p>{connection.endpoint}</p>
-                                        {explorerPaths[connection.id] && (
-                                            <p className="explorer-location">
-                                                Sync folder:{" "}
-                                                {explorerPaths[connection.id]}
-                                            </p>
-                                        )}
-                                        {mountedDrives[connection.id] && (
-                                            <p className="explorer-location">
-                                                Drive:{" "}
-                                                {mountedDrives[connection.id]}
-                                            </p>
-                                        )}
-                                        {drivePreferences[connection.id] &&
-                                            !mountedDrives[connection.id] && (
-                                                <p className="explorer-location">
-                                                    Drive:{" "}
-                                                    {
-                                                        drivePreferences[
-                                                            connection.id
-                                                        ].driveLetter
-                                                    }{" "}
-                                                    (not mounted)
-                                                </p>
-                                            )}
-                                        {drivePreferences[connection.id] && (
-                                            <label className="connection-startup">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={
-                                                        drivePreferences[
-                                                            connection.id
-                                                        ].mountOnStartup
-                                                    }
-                                                    disabled={
-                                                        updatingDrive ===
-                                                        connection.id
-                                                    }
-                                                    onChange={(event) =>
-                                                        handleDriveStartupChange(
-                                                            connection,
-                                                            event.target
-                                                                .checked,
+                                    <div className="connection-list">
+                                        {conflicts.map((conflict) => (
+                                            <article
+                                                className="connection-row"
+                                                key={conflict.id}
+                                            >
+                                                <div className="provider-icon">
+                                                    <Activity size={20} />
+                                                </div>
+                                                <div>
+                                                    <h3>
+                                                        {conflict.remote_path}
+                                                    </h3>
+                                                    <p>
+                                                        Local and remote changes
+                                                        differ.
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    className="link-button"
+                                                    type="button"
+                                                    onClick={() =>
+                                                        handleResolveConflict(
+                                                            conflict,
+                                                            "keep_remote",
                                                         )
                                                     }
-                                                />
-                                                Mount when Bifrost starts
-                                            </label>
-                                        )}
+                                                >
+                                                    Keep remote
+                                                </button>
+                                                <button
+                                                    className="link-button"
+                                                    type="button"
+                                                    onClick={() =>
+                                                        handleResolveConflict(
+                                                            conflict,
+                                                            "keep_local",
+                                                        )
+                                                    }
+                                                >
+                                                    Keep local
+                                                </button>
+                                            </article>
+                                        ))}
                                     </div>
-                                    <span className="connection-state">
-                                        <span
-                                            className={`status-dot ${
-                                                drivePreferences[
+                                </section>
+                            )}
+                            {connections.length > 0 && (
+                                <section
+                                    className="saved-connections"
+                                    aria-labelledby="saved-title"
+                                >
+                                    <div className="section-heading">
+                                        <div>
+                                            <p className="eyebrow">
+                                                Connected storage
+                                            </p>
+                                            <h2 id="saved-title">
+                                                Your spaces
+                                            </h2>
+                                        </div>
+                                        <span className="muted-label">
+                                            {connections.length} saved
+                                        </span>
+                                    </div>
+                                    <div className="connection-list">
+                                        {connections.map((connection) => (
+                                            <article
+                                                className="connection-row"
+                                                key={connection.id}
+                                            >
+                                                <div className="provider-icon">
+                                                    <Cloud size={20} />
+                                                </div>
+                                                <div>
+                                                    <h3>{connection.name}</h3>
+                                                    <p>{connection.endpoint}</p>
+                                                    {explorerPaths[
+                                                        connection.id
+                                                    ] && (
+                                                        <p className="explorer-location">
+                                                            Sync folder:{" "}
+                                                            {
+                                                                explorerPaths[
+                                                                    connection
+                                                                        .id
+                                                                ]
+                                                            }
+                                                        </p>
+                                                    )}
+                                                    {mountedDrives[
+                                                        connection.id
+                                                    ] && (
+                                                        <p className="explorer-location">
+                                                            Drive:{" "}
+                                                            {
+                                                                mountedDrives[
+                                                                    connection
+                                                                        .id
+                                                                ]
+                                                            }
+                                                        </p>
+                                                    )}
+                                                    {drivePreferences[
+                                                        connection.id
+                                                    ] &&
+                                                        !mountedDrives[
+                                                            connection.id
+                                                        ] && (
+                                                            <p className="explorer-location">
+                                                                Drive:{" "}
+                                                                {
+                                                                    drivePreferences[
+                                                                        connection
+                                                                            .id
+                                                                    ]
+                                                                        .driveLetter
+                                                                }{" "}
+                                                                (not mounted)
+                                                            </p>
+                                                        )}
+                                                    {drivePreferences[
+                                                        connection.id
+                                                    ] && (
+                                                        <label className="connection-startup">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={
+                                                                    drivePreferences[
+                                                                        connection
+                                                                            .id
+                                                                    ]
+                                                                        .mountOnStartup
+                                                                }
+                                                                disabled={
+                                                                    updatingDrive ===
+                                                                    connection.id
+                                                                }
+                                                                onChange={(
+                                                                    event,
+                                                                ) =>
+                                                                    handleDriveStartupChange(
+                                                                        connection,
+                                                                        event
+                                                                            .target
+                                                                            .checked,
+                                                                    )
+                                                                }
+                                                            />
+                                                            Mount when Bifrost
+                                                            starts
+                                                        </label>
+                                                    )}
+                                                </div>
+                                                <span className="connection-state">
+                                                    <span
+                                                        className={`status-dot ${
+                                                            drivePreferences[
+                                                                connection.id
+                                                            ] &&
+                                                            !mountedDrives[
+                                                                connection.id
+                                                            ]
+                                                                ? "disconnected"
+                                                                : ""
+                                                        }`}
+                                                    />{" "}
+                                                    {drivePreferences[
+                                                        connection.id
+                                                    ]
+                                                        ? mountedDrives[
+                                                              connection.id
+                                                          ]
+                                                            ? "MOUNTED"
+                                                            : "UNMOUNTED"
+                                                        : connection.state}
+                                                </span>
+                                                {drivePreferences[
                                                     connection.id
-                                                ] &&
-                                                !mountedDrives[connection.id]
-                                                    ? "disconnected"
-                                                    : ""
-                                            }`}
-                                        />{" "}
-                                        {drivePreferences[connection.id]
-                                            ? mountedDrives[connection.id]
-                                                ? "MOUNTED"
-                                                : "UNMOUNTED"
-                                            : connection.state}
-                                    </span>
-                                    {drivePreferences[connection.id] && (
-                                        <button
-                                            className="icon-button"
-                                            type="button"
-                                            aria-label={`${
-                                                mountedDrives[connection.id]
-                                                    ? "Unmount"
-                                                    : "Mount"
-                                            } ${connection.name}`}
-                                            title={
-                                                mountedDrives[connection.id]
-                                                    ? "Unmount drive"
-                                                    : "Mount drive"
-                                            }
-                                            disabled={
-                                                updatingDrive === connection.id
-                                            }
-                                            onClick={() =>
-                                                handleMountToggle(connection)
-                                            }
-                                        >
-                                            <Power size={15} />
-                                        </button>
-                                    )}
-                                    <button
-                                        className="icon-button"
-                                        type="button"
-                                        aria-label={`Open ${connection.name} in Explorer`}
-                                        title="Open in Explorer"
-                                        disabled={
-                                            Boolean(
-                                                drivePreferences[connection.id],
-                                            ) && !mountedDrives[connection.id]
-                                        }
-                                        onClick={() =>
-                                            handleOpenLocation(connection)
-                                        }
-                                    >
-                                        <FolderOpen size={15} />
-                                    </button>
-                                    <button
-                                        className="icon-button"
-                                        type="button"
-                                        aria-label={`Edit ${connection.name}`}
-                                        onClick={() => handleEdit(connection)}
-                                    >
-                                        <Pencil size={15} />
-                                    </button>
-                                    <button
-                                        className="icon-button"
-                                        type="button"
-                                        aria-label={`Remove ${connection.name}`}
-                                        onClick={() => handleRemove(connection)}
-                                    >
-                                        <Trash2 size={15} />
-                                    </button>
-                                </article>
-                            ))}
-                        </div>
-                    </section>
-                )}
-                    </>
-                )}
-                {activeView === "activity" && (
-                <section
-                    className="file-browser"
-                    id="activity"
-                    aria-labelledby="activity-title"
-                >
-                    <div className="section-heading">
-                        <div>
-                            <p className="eyebrow">Recent work</p>
-                            <h2 id="activity-title">Activity</h2>
-                        </div>
-                        <span className="muted-label">Last 100 events</span>
-                    </div>
-                    {activity.length === 0 ? (
-                        <p className="empty-files">No transfer activity yet.</p>
-                    ) : (
-                        <div className="file-list">
-                            {activity.map((event) => (
-                                <div className="file-row" key={event.id}>
-                                    <span className="file-icon">
-                                        <Activity size={17} />
-                                    </span>
-                                    <span className="file-name">
-                                        {event.kind} {event.remote_path ?? ""}
-                                    </span>
-                                    <span className="file-size">
-                                        {event.status}
-                                    </span>
+                                                ] && (
+                                                    <button
+                                                        className="icon-button"
+                                                        type="button"
+                                                        aria-label={`${
+                                                            mountedDrives[
+                                                                connection.id
+                                                            ]
+                                                                ? "Unmount"
+                                                                : "Mount"
+                                                        } ${connection.name}`}
+                                                        title={
+                                                            mountedDrives[
+                                                                connection.id
+                                                            ]
+                                                                ? "Unmount drive"
+                                                                : "Mount drive"
+                                                        }
+                                                        disabled={
+                                                            updatingDrive ===
+                                                            connection.id
+                                                        }
+                                                        onClick={() =>
+                                                            handleMountToggle(
+                                                                connection,
+                                                            )
+                                                        }
+                                                    >
+                                                        <Power size={15} />
+                                                    </button>
+                                                )}
+                                                <button
+                                                    className="icon-button"
+                                                    type="button"
+                                                    aria-label={`Open ${connection.name} in Explorer`}
+                                                    title="Open in Explorer"
+                                                    disabled={
+                                                        Boolean(
+                                                            drivePreferences[
+                                                                connection.id
+                                                            ],
+                                                        ) &&
+                                                        !mountedDrives[
+                                                            connection.id
+                                                        ]
+                                                    }
+                                                    onClick={() =>
+                                                        handleOpenLocation(
+                                                            connection,
+                                                        )
+                                                    }
+                                                >
+                                                    <FolderOpen size={15} />
+                                                </button>
+                                                <button
+                                                    className="icon-button"
+                                                    type="button"
+                                                    aria-label={`Edit ${connection.name}`}
+                                                    onClick={() =>
+                                                        handleEdit(connection)
+                                                    }
+                                                >
+                                                    <Pencil size={15} />
+                                                </button>
+                                                <button
+                                                    className="icon-button"
+                                                    type="button"
+                                                    aria-label={`Remove ${connection.name}`}
+                                                    onClick={() =>
+                                                        handleRemove(connection)
+                                                    }
+                                                >
+                                                    <Trash2 size={15} />
+                                                </button>
+                                            </article>
+                                        ))}
+                                    </div>
+                                </section>
+                            )}
+                        </>
+                    )}
+                    {activeView === "activity" && (
+                        <section
+                            className="file-browser"
+                            id="activity"
+                            aria-labelledby="activity-title"
+                        >
+                            <div className="section-heading">
+                                <div>
+                                    <p className="eyebrow">Recent work</p>
+                                    <h2 id="activity-title">Activity</h2>
                                 </div>
-                            ))}
-                        </div>
+                                <span className="muted-label">
+                                    Last 100 events
+                                </span>
+                            </div>
+                            {activity.length === 0 ? (
+                                <p className="empty-files">
+                                    No app activity yet.
+                                </p>
+                            ) : (
+                                <div className="file-list">
+                                    {activity.map((event) => (
+                                        <div
+                                            className="file-row"
+                                            key={event.id}
+                                        >
+                                            <span className="file-icon">
+                                                <Activity size={17} />
+                                            </span>
+                                            <span className="activity-copy">
+                                                <strong>
+                                                    {activityTitle(event.kind)}
+                                                </strong>
+                                                {event.remote_path && (
+                                                    <span>
+                                                        {event.remote_path}
+                                                    </span>
+                                                )}
+                                            </span>
+                                            <time
+                                                className="file-size"
+                                                dateTime={event.created_at}
+                                            >
+                                                {formatActivityTime(
+                                                    event.created_at,
+                                                )}
+                                            </time>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </section>
+                    )}
+                    {activeView === "settings" && (
+                        <section
+                            className="file-browser"
+                            id="settings"
+                            aria-labelledby="settings-title"
+                        >
+                            <div className="section-heading">
+                                <div>
+                                    <p className="eyebrow">Application</p>
+                                    <h2 id="settings-title">Settings</h2>
+                                </div>
+                            </div>
+                            <label className="checkbox-row">
+                                <input
+                                    type="checkbox"
+                                    checked={autostartEnabled}
+                                    disabled={updatingAutostart}
+                                    onChange={(event) =>
+                                        handleAutostartChange(
+                                            event.target.checked,
+                                        )
+                                    }
+                                />
+                                Start Bifrost Drive when I sign in
+                            </label>
+                        </section>
                     )}
                 </section>
-                )}
-                {activeView === "settings" && (
-                <section
-                    className="file-browser"
-                    id="settings"
-                    aria-labelledby="settings-title"
-                >
-                    <div className="section-heading">
-                        <div>
-                            <p className="eyebrow">Application</p>
-                            <h2 id="settings-title">Settings</h2>
-                        </div>
-                    </div>
-                    <label className="checkbox-row">
-                        <input
-                            type="checkbox"
-                            checked={autostartEnabled}
-                            disabled={updatingAutostart}
-                            onChange={(event) =>
-                                handleAutostartChange(event.target.checked)
-                            }
-                        />
-                        Start Bifrost Drive when I sign in
-                    </label>
-                </section>
-                )}
-            </section>}
+            )}
             {activeView === "add" && (
                 <section className="content add-view">
-                    <section className="wizard connection-form-view" aria-labelledby="wizard-title">
+                    <section
+                        className="wizard connection-form-view"
+                        aria-labelledby="wizard-title"
+                    >
                         <div className="wizard-header">
                             <div>
                                 <p className="eyebrow">
@@ -1347,6 +1441,28 @@ function errorMessage(cause: unknown, fallback: string): string {
     if (cause instanceof Error) return cause.message;
     if (typeof cause === "string") return cause;
     return fallback;
+}
+
+function activityTitle(kind: string): string {
+    const titles: Record<string, string> = {
+        connection_added: "Connection added",
+        connection_updated: "Connection updated",
+        connection_removed: "Connection removed",
+        drive_mounted: "Drive mounted",
+        drive_unmounted: "Drive unmounted",
+        startup_mount_enabled: "Startup mount enabled",
+        startup_mount_disabled: "Startup mount disabled",
+        explorer_opened: "Opened in Explorer",
+        hydrate: "File downloaded",
+        sync: "File synchronized",
+        conflict: "Conflict resolved",
+    };
+    return titles[kind] ?? kind.replaceAll("_", " ");
+}
+
+function formatActivityTime(value: string): string {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function providerChoiceFor(kind: ConnectionSummary["kind"]): ProviderChoice {

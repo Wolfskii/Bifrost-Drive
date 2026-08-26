@@ -110,6 +110,7 @@ export interface ActivitySummary {
     kind: string;
     remote_path: string | null;
     status: string;
+    created_at: string;
 }
 
 export interface SyncRootRegisterResponse {

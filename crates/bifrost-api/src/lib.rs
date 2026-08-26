@@ -204,6 +204,7 @@ pub struct ActivitySummary {
     pub kind: String,
     pub remote_path: Option<String>,
     pub status: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

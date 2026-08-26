@@ -409,6 +409,21 @@ h1 {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.activity-copy {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+}
+.activity-copy strong {
+    color: var(--ink);
+    font-weight: 650;
+}
+.activity-copy span {
+    overflow: hidden;
+    color: var(--muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .file-size {
     margin-left: auto;
     color: var(--muted);

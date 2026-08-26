@@ -44,7 +44,9 @@ describe("App", () => {
             },
         );
 
-        expect(screen.getByRole("heading", { name: "Connect to SFTP" })).toBeTruthy();
+        expect(
+            screen.getByRole("heading", { name: "Connect to SFTP" }),
+        ).toBeTruthy();
         expect(screen.queryByLabelText("Known hosts file")).toBeNull();
         expect(screen.getByLabelText("Start path")).toBeTruthy();
         expect(

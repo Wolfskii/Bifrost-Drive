@@ -63,6 +63,7 @@ pub struct ActivityRecord {
     pub kind: String,
     pub remote_path: Option<String>,
     pub status: String,
+    pub created_at: String,
 }
 
 #[derive(Clone)]
@@ -327,7 +328,7 @@ impl Database {
 
     pub async fn list_activity(&self) -> Result<Vec<ActivityRecord>, DatabaseError> {
         let rows = sqlx::query(
-            "SELECT id, kind, remote_path, status FROM activity_events ORDER BY created_at DESC LIMIT 100",
+            "SELECT id, kind, remote_path, status, created_at FROM activity_events ORDER BY created_at DESC LIMIT 100",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -339,6 +340,7 @@ impl Database {
                     kind: row.get("kind"),
                     remote_path: row.get("remote_path"),
                     status: row.get("status"),
+                    created_at: row.get("created_at"),
                 })
             })
             .collect()
@@ -421,6 +423,31 @@ mod tests {
 
         database.insert_connection(&connection).await.unwrap();
         assert_eq!(database.list_connections().await.unwrap(), vec![connection]);
+    }
+
+    #[tokio::test]
+    async fn activity_history_includes_details_and_timestamp() {
+        let database = Database::connect("sqlite::memory:").await.unwrap();
+        database.migrate().await.unwrap();
+
+        database
+            .insert_activity(
+                "connection_added",
+                Some("Yggdrasil · Sftp · sftp://example.test:22"),
+                "completed",
+            )
+            .await
+            .unwrap();
+
+        let events = database.list_activity().await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "connection_added");
+        assert!(events[0]
+            .remote_path
+            .as_deref()
+            .unwrap()
+            .contains("Yggdrasil"));
+        assert!(!events[0].created_at.is_empty());
     }
 
     #[tokio::test]

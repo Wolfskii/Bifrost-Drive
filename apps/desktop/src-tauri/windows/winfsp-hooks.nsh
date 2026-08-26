@@ -21,3 +21,12 @@
 
   Delete "$INSTDIR\resources\winfsp-2.1.25156.msi"
 !macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $UpdateMode <> 1
+    SetShellVarContext current
+    DetailPrint "Removing Bifrost Drive local data..."
+    RmDir /r /REBOOTOK "$PROFILE\Bifrost Drive"
+  ${EndIf}
+!macroend

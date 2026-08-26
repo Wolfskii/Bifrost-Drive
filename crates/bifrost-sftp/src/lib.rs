@@ -22,6 +22,9 @@ use std::{ops::Range, path::PathBuf, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
+const READ_PIPELINE_CHUNK_SIZE: u64 = 512 * 1024;
+const READ_PIPELINE_CONCURRENCY: usize = 8;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SftpConfig {
     pub host: String,
@@ -138,6 +141,13 @@ impl SftpProvider {
     }
 
     async fn connect_session(&self) -> Result<SftpSession, StorageError> {
+        let ssh_config = client::Config {
+            window_size: 32 * 1024 * 1024,
+            maximum_packet_size: 256 * 1024,
+            channel_buffer_size: 1024,
+            nodelay: true,
+            ..Default::default()
+        };
         let handler = ClientHandler {
             host: self.config.host.clone(),
             port: self.config.port,
@@ -145,7 +155,7 @@ impl SftpProvider {
             trust_on_first_use: self.config.trust_on_first_use,
         };
         let mut session = client::connect(
-            Arc::new(client::Config::default()),
+            Arc::new(ssh_config),
             (self.config.host.as_str(), self.config.port),
             handler,
         )
@@ -384,6 +394,44 @@ impl StorageProvider for SftpProvider {
     async fn read(&self, request: ReadRequest) -> Result<ByteStream, StorageError> {
         let session = self.session().await?;
         let (start, limit) = Self::range(request.range)?;
+        if let Some(limit) = limit {
+            let path = self.path(&request.path);
+            let remote_path = request.path;
+            let chunks = (0..limit.div_ceil(READ_PIPELINE_CHUNK_SIZE)).map(move |index| {
+                let session = Arc::clone(&session);
+                let path = path.clone();
+                let remote_path = remote_path.clone();
+                let offset = start + index * READ_PIPELINE_CHUNK_SIZE;
+                let length = (limit - index * READ_PIPELINE_CHUNK_SIZE)
+                    .min(READ_PIPELINE_CHUNK_SIZE) as usize;
+                async move {
+                    let mut file = session
+                        .open(path)
+                        .await
+                        .map_err(|error| Self::map_path_error(error, &remote_path))?;
+                    file.seek(std::io::SeekFrom::Start(offset))
+                        .await
+                        .map_err(StorageError::Io)?;
+                    let mut buffer = vec![0; length];
+                    let mut read = 0;
+                    while read < length {
+                        let size = file
+                            .read(&mut buffer[read..])
+                            .await
+                            .map_err(StorageError::Io)?;
+                        if size == 0 {
+                            break;
+                        }
+                        read += size;
+                    }
+                    buffer.truncate(read);
+                    Ok(Bytes::from(buffer))
+                }
+            });
+            return Ok(Box::pin(
+                stream::iter(chunks).buffered(READ_PIPELINE_CONCURRENCY),
+            ));
+        }
         let mut file = session
             .open(self.path(&request.path))
             .await
@@ -393,25 +441,16 @@ impl StorageProvider for SftpProvider {
                 .await
                 .map_err(Self::map_error)?;
         }
-        let stream =
-            stream::try_unfold((file, 0u64, limit), |(mut file, read, limit)| async move {
-                if limit.is_some_and(|limit| read >= limit) {
-                    return Ok(None);
-                }
-                let chunk_size = limit
-                    .map(|limit| (limit - read).min(64 * 1024) as usize)
-                    .unwrap_or(64 * 1024);
-                let mut buffer = vec![0; chunk_size];
-                let size = file.read(&mut buffer).await.map_err(StorageError::Io)?;
-                if size == 0 {
-                    return Ok(None);
-                }
-                buffer.truncate(size);
-                Ok(Some((
-                    Bytes::from(buffer),
-                    (file, read + size as u64, limit),
-                )))
-            });
+        let stream = stream::try_unfold(file, |mut file| async move {
+            let chunk_size = READ_PIPELINE_CHUNK_SIZE as usize;
+            let mut buffer = vec![0; chunk_size];
+            let size = file.read(&mut buffer).await.map_err(StorageError::Io)?;
+            if size == 0 {
+                return Ok(None);
+            }
+            buffer.truncate(size);
+            Ok(Some((Bytes::from(buffer), file)))
+        });
         Ok(Box::pin(stream))
     }
 
