@@ -19,12 +19,21 @@ use russh_sftp::{
     protocol::{OpenFlags, StatusCode},
 };
 use std::borrow::Cow;
-use std::{ops::Range, path::PathBuf, sync::Arc};
+use std::{
+    ops::Range,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 const READ_PIPELINE_CHUNK_SIZE: u64 = 1024 * 1024;
 const READ_PIPELINE_CONCURRENCY: usize = 16;
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+const KEEPALIVE_MAX_MISSED: usize = 3;
+const SESSION_REVALIDATE_AFTER: Duration = Duration::from_secs(60);
+const SESSION_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SftpConfig {
@@ -48,7 +57,12 @@ pub enum SftpAuthentication {
 pub struct SftpProvider {
     config: SftpConfig,
     authentication: SftpAuthentication,
-    session: Mutex<Option<Arc<SftpSession>>>,
+    session: Mutex<Option<CachedSession>>,
+}
+
+struct CachedSession {
+    value: Arc<SftpSession>,
+    last_used: Instant,
 }
 
 struct ClientHandler {
@@ -146,6 +160,8 @@ impl SftpProvider {
             window_size: 64 * 1024 * 1024,
             maximum_packet_size: 256 * 1024,
             channel_buffer_size: 1024,
+            keepalive_interval: Some(KEEPALIVE_INTERVAL),
+            keepalive_max: KEEPALIVE_MAX_MISSED,
             nodelay: true,
             ..Default::default()
         };
@@ -246,11 +262,30 @@ impl SftpProvider {
 
     async fn session(&self) -> Result<Arc<SftpSession>, StorageError> {
         let mut cached = self.session.lock().await;
-        if let Some(session) = cached.as_ref() {
-            return Ok(Arc::clone(session));
+        if let Some(session) = cached.as_mut() {
+            if session.last_used.elapsed() < SESSION_REVALIDATE_AFTER {
+                session.last_used = Instant::now();
+                return Ok(Arc::clone(&session.value));
+            }
+            let root = self.path(&RemotePath::root());
+            if matches!(
+                tokio::time::timeout(
+                    SESSION_VALIDATION_TIMEOUT,
+                    session.value.canonicalize(root)
+                )
+                .await,
+                Ok(Ok(_))
+            ) {
+                session.last_used = Instant::now();
+                return Ok(Arc::clone(&session.value));
+            }
+            *cached = None;
         }
         let session = Arc::new(self.connect_session().await?);
-        *cached = Some(Arc::clone(&session));
+        *cached = Some(CachedSession {
+            value: Arc::clone(&session),
+            last_used: Instant::now(),
+        });
         Ok(session)
     }
 
