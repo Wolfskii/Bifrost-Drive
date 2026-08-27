@@ -191,7 +191,7 @@ fn app_start_minimized_set(app: tauri::AppHandle, enabled: bool) -> Result<(), S
 fn credential_store_check() -> CredentialStoreStatus {
     #[cfg(target_os = "windows")]
     {
-        return match WindowsCredentialStore::status() {
+        match WindowsCredentialStore::status() {
             Ok(()) => CredentialStoreStatus {
                 available: true,
                 platform: "windows".to_owned(),
@@ -204,12 +204,12 @@ fn credential_store_check() -> CredentialStoreStatus {
                 provider: "Windows Credential Manager".to_owned(),
                 message: Some(error.to_string()),
             },
-        };
+        }
     }
 
     #[cfg(target_os = "macos")]
     {
-        return match MacosCredentialStore::status() {
+        match MacosCredentialStore::status() {
             Ok(()) => CredentialStoreStatus {
                 available: true,
                 platform: "macos".to_owned(),
@@ -222,12 +222,12 @@ fn credential_store_check() -> CredentialStoreStatus {
                 provider: "macOS Keychain".to_owned(),
                 message: Some(error.to_string()),
             },
-        };
+        }
     }
 
     #[cfg(target_os = "linux")]
     {
-        return match bifrost_linux_credentials::LinuxCredentialStore::status() {
+        match bifrost_linux_credentials::LinuxCredentialStore::status() {
             Ok(()) => CredentialStoreStatus {
                 available: true,
                 platform: "linux".to_owned(),
@@ -240,7 +240,7 @@ fn credential_store_check() -> CredentialStoreStatus {
                 provider: "Secret Service".to_owned(),
                 message: Some(error.to_string()),
             },
-        };
+        }
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
