@@ -120,7 +120,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install Tauri dependencies
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libgdk-pixbuf-2.0-dev libglib2.0-dev librsvg2-dev libayatana-appindicator3-dev patchelf libfuse3-dev rpm flatpak flatpak-builder
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libgdk-pixbuf-2.0-dev libglib2.0-dev librsvg2-dev libayatana-appindicator3-dev patchelf libfuse3-dev rpm flatpak flatpak-builder libxml2-utils
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -154,8 +154,9 @@ jobs:
           (cd .cache/flatpak-extract && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null)
           mv .cache/flatpak-extract/squashfs-root .cache/flatpak-appdir
           rmdir .cache/flatpak-extract
+          xmllint --noout packaging/linux/com.bifrost.drive.metainfo.xml
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          flatpak install --user --noninteractive flathub org.gnome.Platform//48 org.gnome.Sdk//48
+          flatpak install --user --noninteractive flathub org.gnome.Platform//50 org.gnome.Sdk//50
           flatpak-builder --user --force-clean --repo=.cache/flatpak-repo .cache/flatpak-build packaging/linux/com.bifrost.drive.yml
           flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo .cache/flatpak-repo "target/release/bundle/flatpak/Bifrost-Drive_${{ needs.version.outputs.version }}_x86_64.flatpak" com.bifrost.drive stable
       - uses: actions/upload-artifact@v6

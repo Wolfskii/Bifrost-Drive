@@ -1,9 +1,10 @@
-app-id: com.bifrost.drive
+id: com.bifrost.drive
 runtime: org.gnome.Platform
-runtime-version: "48"
+runtime-version: "50"
 sdk: org.gnome.Sdk
-command: bifrost-drive
 default-branch: stable
+appstream-compose: false
+command: bifrost-drive
 finish-args:
   - --share=ipc
   - --share=network

@@ -8,7 +8,7 @@ Release CI produces three x86_64 desktop packages:
 
 - AppImage for portable use across compatible distributions such as Ubuntu and Arch Linux.
 - RPM for Fedora, RHEL-compatible, and other RPM-based distributions.
-- Flatpak using the GNOME 48 runtime for distribution-independent desktop dependencies.
+- Flatpak using the supported GNOME 50 runtime for distribution-independent desktop dependencies.
 
 The Linux launcher disables WebKitGTK's DMA-BUF renderer unless the user explicitly overrides `WEBKIT_DISABLE_DMABUF_RENDERER`. This avoids blank webviews observed with some Arch Linux Wayland and GPU combinations. Run the AppImage from a terminal to inspect WebKitGTK diagnostics if rendering still fails.
 
