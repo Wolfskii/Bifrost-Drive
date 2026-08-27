@@ -1,6 +1,8 @@
 import {
     Cloud,
     CloudCog,
+    Check,
+    Copy,
     Database,
     GitBranch,
     Globe2,
@@ -15,6 +17,7 @@ import {
     Pencil,
     FolderOpen,
     Power,
+    RefreshCw,
     Trash2,
 } from "lucide-react";
 import {
@@ -59,6 +62,7 @@ import {
     ActivitySummary,
     ConnectionSummary,
     ConflictSummary,
+    CredentialStoreStatus,
     createFtpConnection,
     createS3Connection,
     createSftpConnection,
@@ -66,6 +70,7 @@ import {
     createWebDavConnection,
     checkForUpdate,
     getAutostartEnabled,
+    getCredentialStoreStatus,
     getStartMinimized,
     getConnectionDetails,
     getDriveIconPreview,
@@ -79,6 +84,7 @@ import {
     registerSyncRoot,
     registerDriveMount,
     removeConnection,
+    restartApp,
     resolveConflict,
     setDriveMountStartup,
     setAutostartEnabled,
@@ -99,6 +105,105 @@ interface DrivePreference {
     driveLetter: string;
     mountOnStartup: boolean;
     iconPreview: string | null;
+}
+
+function CommandBox({ label, command }: { label: string; command: string }) {
+    const [copied, setCopied] = useState(false);
+
+    async function copyCommand() {
+        try {
+            await navigator.clipboard.writeText(command);
+            setCopied(true);
+        } catch {
+            setCopied(false);
+        }
+    }
+
+    return (
+        <div className="command-box">
+            <div className="command-box-header">
+                <span>{label}</span>
+                <button
+                    className="command-copy-button"
+                    type="button"
+                    aria-label={`Copy ${label} command`}
+                    onClick={() => void copyCommand()}
+                >
+                    {copied ? <Check size={14} /> : <Copy size={14} />}
+                    {copied ? "Copied" : "Copy"}
+                </button>
+            </div>
+            <pre>
+                <code>{command}</code>
+            </pre>
+        </div>
+    );
+}
+
+function CredentialStoreBanner({
+    status,
+    restarting,
+    onRestart,
+}: {
+    status: CredentialStoreStatus | null;
+    restarting: boolean;
+    onRestart: () => void;
+}) {
+    if (!status || status.available) return null;
+
+    return (
+        <section className="system-check" role="alert">
+            <div>
+                <strong>{status.provider} needs attention</strong>
+                <p>{status.message}</p>
+                {status.platform === "linux" && (
+                    <>
+                        <p>
+                            Linux: install and start a Secret Service provider
+                            such as GNOME Keyring, or enable the Secret Service
+                            API in KDE Wallet. Unlock the default wallet, then
+                            restart Bifrost.
+                        </p>
+                        <div className="system-commands">
+                            <CommandBox
+                                label="Fedora"
+                                command="sudo dnf install gnome-keyring libsecret"
+                            />
+                            <CommandBox
+                                label="Ubuntu / Debian"
+                                command="sudo apt install gnome-keyring libsecret-1-0"
+                            />
+                            <CommandBox
+                                label="Arch"
+                                command="sudo pacman -S gnome-keyring libsecret"
+                            />
+                        </div>
+                    </>
+                )}
+                {status.platform === "windows" && (
+                    <p>
+                        Check that your Windows profile can access Credential
+                        Manager, then restart Bifrost.
+                    </p>
+                )}
+                {status.platform === "macos" && (
+                    <p>
+                        Unlock your login keychain and allow Bifrost to access
+                        it, then restart Bifrost.
+                    </p>
+                )}
+            </div>
+            <button
+                className="secondary-button"
+                type="button"
+                onClick={onRestart}
+                disabled={restarting}
+            >
+                <RefreshCw size={15} />
+                {restarting ? "Restarting..." : "Restart Bifrost"}
+            </button>
+        </section>
+    );
 }
 
 const planned = { disabled: true, badge: "Planned" } as const;
@@ -251,6 +356,10 @@ export function App() {
     const [activity, setActivity] = useState<ActivitySummary[]>([]);
     const [wizardOpen, setWizardOpen] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [credentialStoreStatus, setCredentialStoreStatus] =
+        useState<CredentialStoreStatus | null>(null);
+    const [restartingApp, setRestartingApp] =
+        useState(false);
     const [saving, setSaving] = useState(false);
     const [updateVersion, setUpdateVersion] = useState<string | null>(null);
     const [installingUpdate, setInstallingUpdate] = useState(false);
@@ -292,6 +401,28 @@ export function App() {
     const [providerChoice, setProviderChoice] = useState<ProviderChoice>("S3");
     const [providerSelection, setProviderSelection] = useState("s3-1");
     const [driveLetter, setDriveLetter] = useState("");
+
+    async function checkCredentialStore() {
+        try {
+            setCredentialStoreStatus(await getCredentialStoreStatus());
+        } catch {
+            setCredentialStoreStatus(null);
+        }
+    }
+
+    async function handleRestartApp() {
+        setRestartingApp(true);
+        try {
+            await restartApp();
+        } catch (cause) {
+            setRestartingApp(false);
+            setError(errorMessage(cause, "Unable to restart Bifrost."));
+        }
+    }
+
+    useEffect(() => {
+        void checkCredentialStore();
+    }, []);
 
     useEffect(() => {
         listConnections()
@@ -892,7 +1023,16 @@ export function App() {
             setProviderSelection("s3-1");
             setDriveLetter("");
         } catch (cause) {
-            setError(errorMessage(cause, "Unable to save connection."));
+            const message = errorMessage(cause, "Unable to save connection.");
+            setError(message);
+            if (/native credential store/i.test(message)) {
+                setCredentialStoreStatus((current) => ({
+                    available: false,
+                    platform: current?.platform ?? "unknown",
+                    provider: current?.provider ?? "Native credential store",
+                    message,
+                }));
+            }
         } finally {
             setSaving(false);
         }
@@ -997,6 +1137,11 @@ export function App() {
             </aside>
             {activeView !== "add" && (
                 <section className="content">
+                    <CredentialStoreBanner
+                        status={credentialStoreStatus}
+                        restarting={restartingApp}
+                        onRestart={() => void handleRestartApp()}
+                    />
                     {activeView === "connections" && (
                         <>
                             <header className="topbar">
@@ -1460,6 +1605,11 @@ export function App() {
             )}
             {activeView === "add" && (
                 <section className="content add-view">
+                    <CredentialStoreBanner
+                        status={credentialStoreStatus}
+                        restarting={restartingApp}
+                        onRestart={() => void handleRestartApp()}
+                    />
                     <section
                         className="wizard connection-form-view"
                         aria-labelledby="wizard-title"

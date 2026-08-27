@@ -301,6 +301,15 @@ impl StorageProvider for WebDavProvider {
     }
 
     async fn stat(&self, path: &RemotePath) -> Result<RemoteMetadata, StorageError> {
+        if path == &RemotePath::root() {
+            return Ok(RemoteMetadata {
+                path: path.clone(),
+                is_directory: true,
+                size_bytes: None,
+                etag: None,
+                modified_at: None,
+            });
+        }
         let page = self.list(path, None).await?;
         page.entries
             .into_iter()
@@ -470,6 +479,8 @@ impl StorageProvider for WebDavProvider {
 #[cfg(test)]
 mod tests {
     use super::{WebDavConfig, WebDavProvider};
+    use bifrost_common::RemotePath;
+    use bifrost_storage::StorageProvider;
     use url::Url;
 
     #[test]
@@ -493,5 +504,23 @@ mod tests {
             "secret",
         );
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn configured_endpoint_is_the_remote_directory_root() {
+        let provider = WebDavProvider::connect(
+            WebDavConfig {
+                endpoint: Url::parse("https://dav.test/files").unwrap(),
+                username: "user".to_owned(),
+            },
+            "secret",
+        )
+        .unwrap();
+
+        let metadata = provider.stat(&RemotePath::root()).await.unwrap();
+
+        assert_eq!(metadata.path, RemotePath::root());
+        assert!(metadata.is_directory);
+        assert_eq!(metadata.size_bytes, None);
     }
 }

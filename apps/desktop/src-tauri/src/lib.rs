@@ -3,11 +3,12 @@ use base64::Engine;
 use bifrost_api::{
     ActivitySummary, AppStatus, ConnectionIdRequest, ConnectionSummary, CreateConnectionRequest,
     CreateFtpConnectionRequest, CreateS3ConnectionRequest, CreateSftpConnectionRequest,
-    CreateSmbConnectionRequest, CreateWebDavConnectionRequest, CredentialSummary,
-    DriveIconPreviewRequest, DriveMountRegisterRequest, DriveMountRegisterResponse,
-    DriveMountStartupRequest, FilePage, FileSummary, HydrateFileRequest, HydrateFileResponse,
-    ListFilesRequest, StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse,
-    SyncRunRequest, SyncRunResponse, TestConnectionRequest,
+    CreateSmbConnectionRequest, CreateWebDavConnectionRequest, CredentialStoreStatus,
+    CredentialSummary, DriveIconPreviewRequest, DriveMountRegisterRequest,
+    DriveMountRegisterResponse, DriveMountStartupRequest, FilePage, FileSummary,
+    HydrateFileRequest, HydrateFileResponse, ListFilesRequest, StoreS3CredentialRequest,
+    SyncReconcileRequest, SyncReconcileResponse, SyncRunRequest, SyncRunResponse,
+    TestConnectionRequest,
 };
 use bifrost_cache::{CacheManager, CacheRecord};
 use bifrost_common::{ConnectionState, ProviderKind};
@@ -184,6 +185,71 @@ fn app_start_minimized_set(app: tauri::AppHandle, enabled: bool) -> Result<(), S
     let mut preferences = load_preferences(&path)?;
     preferences.start_minimized = enabled;
     save_preferences(&path, &preferences)
+}
+
+#[tauri::command]
+fn credential_store_check() -> CredentialStoreStatus {
+    #[cfg(target_os = "windows")]
+    {
+        return match WindowsCredentialStore::status() {
+            Ok(()) => CredentialStoreStatus {
+                available: true,
+                platform: "windows".to_owned(),
+                provider: "Windows Credential Manager".to_owned(),
+                message: None,
+            },
+            Err(error) => CredentialStoreStatus {
+                available: false,
+                platform: "windows".to_owned(),
+                provider: "Windows Credential Manager".to_owned(),
+                message: Some(error.to_string()),
+            },
+        };
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return match MacosCredentialStore::status() {
+            Ok(()) => CredentialStoreStatus {
+                available: true,
+                platform: "macos".to_owned(),
+                provider: "macOS Keychain".to_owned(),
+                message: None,
+            },
+            Err(error) => CredentialStoreStatus {
+                available: false,
+                platform: "macos".to_owned(),
+                provider: "macOS Keychain".to_owned(),
+                message: Some(error.to_string()),
+            },
+        };
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return match bifrost_linux_credentials::LinuxCredentialStore::status() {
+            Ok(()) => CredentialStoreStatus {
+                available: true,
+                platform: "linux".to_owned(),
+                provider: "Secret Service".to_owned(),
+                message: None,
+            },
+            Err(error) => CredentialStoreStatus {
+                available: false,
+                platform: "linux".to_owned(),
+                provider: "Secret Service".to_owned(),
+                message: Some(error.to_string()),
+            },
+        };
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    CredentialStoreStatus {
+        available: true,
+        platform: std::env::consts::OS.to_owned(),
+        provider: "Native credential store".to_owned(),
+        message: None,
+    }
 }
 
 #[async_trait::async_trait]
@@ -2738,6 +2804,7 @@ pub fn run() {
             app_status,
             app_start_minimized_get,
             app_start_minimized_set,
+            credential_store_check,
             connections_list,
             connections_details,
             connections_update,

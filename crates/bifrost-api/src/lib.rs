@@ -14,6 +14,14 @@ pub struct ConnectionSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialStoreStatus {
+    pub available: bool,
+    pub platform: String,
+    pub provider: String,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionDetails {
     pub summary: ConnectionSummary,
     pub configuration: serde_json::Value,

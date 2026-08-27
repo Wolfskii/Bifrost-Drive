@@ -316,6 +316,108 @@ h1 {
         system-ui,
         sans-serif;
 }
+.system-check {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    align-items: start;
+    margin: -28px 0 28px;
+    padding: 15px 17px;
+    border-left: 3px solid #b87938;
+    color: #654522;
+    background: #fff5e8;
+}
+.system-check strong {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 14px;
+}
+.system-check p {
+    max-width: 740px;
+    margin: 0 0 5px;
+    font:
+        12px/1.45 ui-sans-serif,
+        system-ui,
+        sans-serif;
+}
+.system-check p:last-child {
+    margin-bottom: 0;
+}
+.system-check code {
+    padding: 1px 4px;
+    color: #5b4127;
+    background: rgba(184, 121, 56, 0.12);
+}
+.system-commands {
+    display: grid;
+    gap: 8px;
+    max-width: 760px;
+    margin-top: 12px;
+}
+.command-box {
+    overflow: hidden;
+    border: 1px solid #c8965f;
+    border-radius: 5px;
+    color: #fff8ed;
+    background: #263c3d;
+}
+.command-box-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    min-height: 31px;
+    padding: 4px 6px 4px 11px;
+    color: #e6c89d;
+    background: #314c4d;
+    font:
+        11px ui-sans-serif,
+        system-ui,
+        sans-serif;
+}
+.command-copy-button {
+    display: inline-flex;
+    gap: 5px;
+    align-items: center;
+    border: 1px solid rgba(255, 248, 237, 0.3);
+    border-radius: 4px;
+    padding: 4px 7px;
+    color: #fff8ed;
+    background: transparent;
+    font:
+        11px ui-sans-serif,
+        system-ui,
+        sans-serif;
+}
+.command-copy-button:hover {
+    background: rgba(255, 248, 237, 0.12);
+}
+.command-box pre {
+    overflow-x: auto;
+    margin: 0;
+    padding: 10px 11px;
+    font:
+        12px/1.4 ui-monospace,
+        SFMono-Regular,
+        Consolas,
+        monospace;
+}
+.command-box pre code {
+    padding: 0;
+    color: inherit;
+    background: transparent;
+}
+.system-check .secondary-button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: 7px;
+    align-items: center;
+    white-space: nowrap;
+}
+.add-view > .system-check {
+    margin: 0;
+    padding-right: clamp(30px, 4vw, 62px);
+    padding-left: clamp(30px, 4vw, 62px);
+}
 .saved-connections {
     margin: 42px 0 0;
 }
@@ -905,6 +1007,14 @@ input[type="radio"]:disabled {
     }
     .icon-source-field {
         grid-template-columns: 1fr;
+    }
+    .system-check {
+        flex-direction: column;
+        margin: 0 0 20px;
+    }
+    .add-view > .system-check {
+        padding-right: 19px;
+        padding-left: 19px;
     }
     .icon-picker-popover {
         left: 0;

@@ -24,4 +24,4 @@ SQLite stores connections, metadata, cache state, transfers, activity, history, 
 
 ## Native boundaries
 
-Windows CFAPI, WinFsp, Credential Manager, Explorer services, and installer integration belong under `platforms/windows/`. macOS File Provider/Keychain and Linux FUSE/Secret Service are Planned adapters. CFAPI provides sync-root placeholders and hydration. WinFsp provides independent writable drive letters through provider-backed callbacks and disk-staged writes. The official unmodified WinFsp runtime is installed by the Bifrost installer. Windows VM acceptance remains required.
+Windows CFAPI, WinFsp, Credential Manager, Explorer services, and installer integration belong under `platforms/windows/`. macOS File Provider/Keychain and Linux FUSE/Secret Service integrations belong under their platform adapters. CFAPI provides sync-root placeholders and hydration. WinFsp provides independent writable drive letters through provider-backed callbacks and disk-staged writes. The official unmodified WinFsp runtime is installed by the Bifrost installer. Windows VM acceptance remains required.

@@ -9,22 +9,32 @@ use bifrost_webdav::{WebDavConfig, WebDavProvider};
 
 fn integration_provider() -> Option<WebDavProvider> {
     env::var_os("BIFROST_WEBDAV_INTEGRATION")?;
-    let endpoint =
-        env::var("BIFROST_WEBDAV_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:8080/".to_owned());
+    let endpoint = env::var("BIFROST_WEBDAV_ENDPOINT")
+        .unwrap_or_else(|_| "http://127.0.0.1:8080/webdav".to_owned());
     Some(
         WebDavProvider::connect(
             WebDavConfig {
                 endpoint: Url::parse(&endpoint).unwrap(),
-                username: env::var("WEBDAV_USERNAME").unwrap_or_else(|_| "bifrost-dev".to_owned()),
+                username: env::var("WEBDAV_USERNAME").unwrap_or_else(|_| "test".to_owned()),
             },
-            env::var("WEBDAV_PASSWORD").unwrap_or_else(|_| "bifrost-dev-secret".to_owned()),
+            env::var("WEBDAV_PASSWORD").unwrap_or_else(|_| "test".to_owned()),
         )
         .unwrap(),
     )
 }
 
 #[tokio::test]
-#[ignore = "requires task docker:up and BIFROST_WEBDAV_INTEGRATION=1"]
+#[ignore = "requires BIFROST_WEBDAV_INTEGRATION=1 and a live WebDAV endpoint"]
+async fn webdav_connection_probe_is_non_mutating() {
+    let Some(provider) = integration_provider() else {
+        return;
+    };
+    provider.test_connection().await.unwrap();
+    provider.list(&RemotePath::root(), None).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires task docker:webdav:up and BIFROST_WEBDAV_INTEGRATION=1"]
 async fn webdav_round_trip_uses_real_dav_verbs() {
     let Some(provider) = integration_provider() else {
         return;

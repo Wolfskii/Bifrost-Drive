@@ -6,6 +6,7 @@ on:
     paths:
       - "crates/**"
       - "docker-compose.yml"
+      - "tests/servers/**"
       - ".github/workflows/test.yml"
 
 permissions:
@@ -23,26 +24,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
-      - name: Create ephemeral SFTP key
-        run: mkdir -p .cache/sftp_keys && ssh-keygen -q -t ed25519 -N "" -f .cache/sftp_keys/id_ed25519
-      - name: Start MinIO
-        run: docker compose up -d --wait
-      - name: Run integration tests
-        run: |
-          mkdir -p .cache
-          ssh-keyscan -p 2222 127.0.0.1 > .cache/sftp_known_hosts
-          cargo test -p bifrost-s3 --test minio -- --ignored --nocapture
-          cargo test -p bifrost-webdav --test apache -- --ignored --nocapture
-          cargo test -p bifrost-sftp --test atmoz -- --ignored --nocapture
-        env:
-          BIFROST_S3_INTEGRATION: "1"
-          BIFROST_WEBDAV_INTEGRATION: "1"
-          BIFROST_SFTP_INTEGRATION: "1"
-          BIFROST_SFTP_KNOWN_HOSTS: .cache/sftp_known_hosts
-          BIFROST_SFTP_KEY_INTEGRATION: "1"
-          BIFROST_SFTP_PRIVATE_KEY: .cache/sftp_keys/id_ed25519
-      - if: always()
-        name: Service logs
-        run: docker compose logs
-      - if: always()
-        run: docker compose down -v
+      - uses: arduino/setup-task@v2
+      - name: Test provider connections
+        run: task test:connections

@@ -3,6 +3,12 @@ version: "3"
 vars:
   DESKTOP_DIR: apps/desktop
   RUST_TARGET: x86_64-pc-windows-msvc
+  WEBDAV_COMPOSE_FILE: tests/servers/webdav/docker-compose.yml
+  MINIO_TEST_PORT: '{{default "9000" .MINIO_API_PORT}}'
+  WEBDAV_TEST_PORT: '{{default "8080" .WEBDAV_PORT}}'
+  SFTP_TEST_PORT: '{{default "2222" .SFTP_PORT}}'
+  FTP_TEST_PORT: '{{default "2121" .FTP_PORT}}'
+  SMB_TEST_PORT: '{{default "1445" .SMB_PORT}}'
 
 silent: true
 
@@ -78,7 +84,7 @@ tasks:
     desc: Run Rust and frontend tests
     cmds:
       - task: test:unit
-      - task: test:integration
+      - task: test:connections
 
   test:unit:
     desc: Run all unit tests
@@ -87,13 +93,32 @@ tasks:
       - npm --prefix '{{.DESKTOP_DIR}}' run test
 
   test:integration:
-    desc: Start local provider services and run real integration tests
+    desc: Compatibility alias for test:connections
+    cmds:
+      - task: test:connections
+
+  test:connections:
+    desc: Start every provider service, run connection contracts, and tear them down
     env:
       BIFROST_S3_INTEGRATION: "1"
       BIFROST_WEBDAV_INTEGRATION: "1"
       BIFROST_SFTP_INTEGRATION: "1"
       BIFROST_SFTP_KEY_INTEGRATION: "1"
+      BIFROST_FTP_INTEGRATION: "1"
+      BIFROST_SMB_INTEGRATION: "1"
+      MINIO_API_PORT: "{{.MINIO_TEST_PORT}}"
+      BIFROST_S3_ENDPOINT: http://127.0.0.1:{{.MINIO_TEST_PORT}}
+      WEBDAV_PORT: "{{.WEBDAV_TEST_PORT}}"
+      BIFROST_WEBDAV_ENDPOINT: http://127.0.0.1:{{.WEBDAV_TEST_PORT}}/webdav
+      WEBDAV_USERNAME: test
+      WEBDAV_PASSWORD: test
+      SFTP_PORT: "{{.SFTP_TEST_PORT}}"
+      FTP_PORT: "{{.FTP_TEST_PORT}}"
+      BIFROST_FTP_ENDPOINT: ftp://127.0.0.1:{{.FTP_TEST_PORT}}
+      SMB_PORT: "{{.SMB_TEST_PORT}}"
+      BIFROST_SMB_ENDPOINT: smb://127.0.0.1:{{.SMB_TEST_PORT}}/share
     cmds:
+      - defer: docker compose down -v --remove-orphans
       - mkdir -p .cache
       - mkdir -p .cache/sftp_keys
       - rm -f .cache/sftp_keys/id_ed25519 .cache/sftp_keys/id_ed25519.pub
@@ -105,7 +130,18 @@ tasks:
       - cargo test -p bifrost-sftp --test atmoz -- --ignored --nocapture
       - cargo test -p bifrost-ftp --test fixture -- --ignored --nocapture
       - cargo test -p bifrost-smb --test fixture -- --ignored --nocapture
-      - task: docker:down
+
+  test:webdav:
+    desc: Run the WebDAV verb contract against a local Apache server
+    env:
+      BIFROST_WEBDAV_INTEGRATION: "1"
+      BIFROST_WEBDAV_ENDPOINT: http://127.0.0.1:{{.WEBDAV_TEST_PORT}}/webdav
+      WEBDAV_USERNAME: test
+      WEBDAV_PASSWORD: test
+    cmds:
+      - task: docker:webdav:up
+      - defer: docker compose -f '{{.WEBDAV_COMPOSE_FILE}}' down -v
+      - cargo test -p bifrost-webdav --test apache -- --ignored --nocapture
 
   lint:
     desc: Run Rust and frontend linters
@@ -139,8 +175,33 @@ tasks:
 
   docker:up:
     desc: Start local integration services
+    deps: [docker:start]
     cmds:
       - docker compose up -d --build --wait
+
+  docker:start:
+    desc: Start Docker Desktop when the Docker daemon is not ready
+    cmds:
+      - cmd: powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/ensure-docker.ps1
+        platforms: [windows]
+      - cmd: sh ./scripts/ensure-docker.sh
+        platforms: [linux, darwin]
+
+  docker:webdav:up:
+    desc: Start the standalone Apache WebDAV test server
+    deps: [docker:start]
+    cmds:
+      - docker compose -f '{{.WEBDAV_COMPOSE_FILE}}' up -d --build --wait
+
+  docker:webdav:down:
+    desc: Stop the standalone Apache WebDAV test server
+    cmds:
+      - docker compose -f '{{.WEBDAV_COMPOSE_FILE}}' down -v
+
+  docker:webdav:logs:
+    desc: Follow standalone Apache WebDAV test server logs
+    cmds:
+      - docker compose -f '{{.WEBDAV_COMPOSE_FILE}}' logs -f
 
   docker:down:
     desc: Stop local integration services

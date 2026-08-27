@@ -1,0 +1,25 @@
+services:
+  webdav:
+    build:
+      context: .
+    ports:
+      - "127.0.0.1:${WEBDAV_PORT:-8080}:80"
+    volumes:
+      - webdav-data:/srv/webdav
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "--fail",
+          "--silent",
+          "--user",
+          "test:test",
+          "http://127.0.0.1/webdav/",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+volumes:
+  webdav-data:

@@ -1,6 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": false,
+    "linux": {
+      "rpm": {
+        "depends": ["gnome-keyring"]
+      }
+    }
   }
 }

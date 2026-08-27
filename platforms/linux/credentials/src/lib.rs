@@ -6,11 +6,37 @@ use uuid::Uuid;
 #[cfg(target_os = "linux")]
 const SERVICE_NAME: &str = "com.bifrost.drive";
 
+#[cfg(target_os = "linux")]
+fn map_keyring_error(error: keyring::Error) -> CredentialError {
+    match error {
+        keyring::Error::NoDefaultStore => CredentialError::Unavailable(
+            "Linux Secret Service is unavailable. Install and start a provider such as gnome-keyring, then unlock its default collection".to_owned(),
+        ),
+        other => CredentialError::Store(other.to_string()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn entry(id: Uuid) -> Result<keyring::Entry, CredentialError> {
+    keyring::Entry::new(SERVICE_NAME, &id.to_string()).map_err(map_keyring_error)
+}
+
 pub struct LinuxCredentialStore;
 
 impl LinuxCredentialStore {
     pub fn new() -> Self {
         Self
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn status() -> Result<(), CredentialError> {
+        match keyring::Entry::store_status() {
+            Ok(()) => Ok(()),
+            Err(keyring::Error::NoDefaultStore) => Err(CredentialError::Unavailable(
+                "Linux Secret Service is unavailable. Install and start a provider such as gnome-keyring, then unlock its default collection".to_owned(),
+            )),
+            Err(error) => Err(CredentialError::Store(error.to_string())),
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -38,8 +64,7 @@ impl CredentialStore for LinuxCredentialStore {
         let label = label.to_owned();
         tokio::task::spawn_blocking(move || {
             let id = Uuid::new_v4();
-            let entry = keyring::Entry::new(SERVICE_NAME, &id.to_string())
-                .map_err(|error| CredentialError::Store(error.to_string()))?;
+            let entry = entry(id)?;
             entry
                 .set_password(secret.expose())
                 .map_err(|error| CredentialError::Store(error.to_string()))?;
@@ -52,8 +77,7 @@ impl CredentialStore for LinuxCredentialStore {
     async fn get(&self, credential: &CredentialRef) -> Result<SecretString, CredentialError> {
         let id = credential.id;
         tokio::task::spawn_blocking(move || {
-            let entry = keyring::Entry::new(SERVICE_NAME, &id.to_string())
-                .map_err(|error| CredentialError::Store(error.to_string()))?;
+            let entry = entry(id)?;
             entry
                 .get_password()
                 .map(SecretString::new)
@@ -69,8 +93,7 @@ impl CredentialStore for LinuxCredentialStore {
     async fn delete(&self, credential: &CredentialRef) -> Result<(), CredentialError> {
         let id = credential.id;
         tokio::task::spawn_blocking(move || {
-            let entry = keyring::Entry::new(SERVICE_NAME, &id.to_string())
-                .map_err(|error| CredentialError::Store(error.to_string()))?;
+            let entry = entry(id)?;
             entry.delete_credential().map_err(|error| match error {
                 keyring::Error::NoEntry => CredentialError::NotFound,
                 other => CredentialError::Store(other.to_string()),

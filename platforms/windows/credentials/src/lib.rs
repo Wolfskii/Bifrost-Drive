@@ -13,6 +13,18 @@ impl WindowsCredentialStore {
         Self
     }
 
+    #[cfg(target_os = "windows")]
+    pub fn status() -> Result<(), CredentialError> {
+        keyring::Entry::store_status()
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| {
+                CredentialError::Unavailable(format!(
+                    "Windows Credential Manager is unavailable: {error}"
+                ))
+            })
+    }
+
     #[cfg(not(target_os = "windows"))]
     fn unavailable() -> CredentialError {
         CredentialError::Unavailable("Windows Credential Manager requires Windows".to_owned())

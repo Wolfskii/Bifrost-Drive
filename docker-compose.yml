@@ -6,8 +6,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-bifrost-dev}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-bifrost-dev-secret}
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio-data:/data
     healthcheck:
@@ -17,32 +17,32 @@ services:
       retries: 10
 
   webdav:
-    image: rclone/rclone@sha256:01f220de5ee751913c95a6b92c02661b72d1821e36b9ec0ef31c03c3f4edcd23
-    command:
-      - serve
-      - webdav
-      - /data
-      - --addr
-      - ":80"
-      - --user
-      - "${WEBDAV_USERNAME:-bifrost-dev}"
-      - --pass
-      - "${WEBDAV_PASSWORD:-bifrost-dev-secret}"
+    build:
+      context: ./tests/servers/webdav
     ports:
-      - "${WEBDAV_PORT:-8080}:80"
+      - "127.0.0.1:${WEBDAV_PORT:-8080}:80"
     volumes:
-      - webdav-data:/data
+      - webdav-data:/srv/webdav
     healthcheck:
-      test: ["CMD", "rclone", "version"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      test:
+        [
+          "CMD",
+          "curl",
+          "--fail",
+          "--silent",
+          "--user",
+          "test:test",
+          "http://127.0.0.1/webdav/",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 15
 
   sftp:
     image: atmoz/sftp@sha256:81fa92512bf8ead4849f33c1c153907b86d32d77704d1c62a9c70b4316ae9e50
     command: bifrost-dev:bifrost-dev-secret:::upload
     ports:
-      - "${SFTP_PORT:-2222}:22"
+      - "127.0.0.1:${SFTP_PORT:-2222}:22"
     volumes:
       - ./.cache/sftp_keys:/home/bifrost-dev/.ssh/keys:ro
     healthcheck:
@@ -51,6 +51,48 @@ services:
       timeout: 5s
       retries: 10
 
+  ftp:
+    build:
+      context: ./tests/servers/ftp
+    ports:
+      - "127.0.0.1:${FTP_PORT:-2121}:21"
+      - "127.0.0.1:21100-21109:21100-21109"
+    volumes:
+      - ftp-data:/srv/ftp
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "--fail",
+          "--silent",
+          "--user",
+          "bifrost-dev:bifrost-dev-secret",
+          "ftp://127.0.0.1/",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  smb:
+    build:
+      context: ./tests/servers/smb
+    ports:
+      - "127.0.0.1:${SMB_PORT:-1445}:445"
+    volumes:
+      - smb-data:/srv/samba/share
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "smbclient -L //127.0.0.1 -U 'bifrost-dev%bifrost-dev-secret' -m SMB3 >/dev/null",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
 volumes:
   minio-data:
   webdav-data:
+  ftp-data:
+  smb-data:

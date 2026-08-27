@@ -13,6 +13,16 @@ impl MacosCredentialStore {
         Self
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn status() -> Result<(), CredentialError> {
+        keyring::Entry::store_status()
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| {
+                CredentialError::Unavailable(format!("macOS Keychain is unavailable: {error}"))
+            })
+    }
+
     #[cfg(not(target_os = "macos"))]
     fn unavailable() -> CredentialError {
         CredentialError::Unavailable("macOS Keychain requires macOS".to_owned())

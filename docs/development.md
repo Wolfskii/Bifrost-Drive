@@ -15,17 +15,24 @@ Run commands from the repository root:
 | `task build`                  | Build Rust and frontend                              |
 | `task check`                  | Compile Rust and build frontend                      |
 | `task test`                   | Run unit and integration test suites                 |
+| `task test:connections`       | Test every provider against local Docker services    |
 | `task lint`                   | Run Clippy and ESLint                                |
 | `task format`                 | Format Rust and frontend                             |
 | `task format:check`           | Verify formatting                                    |
+| `task docker:start`           | Start Docker Desktop if Docker is not ready          |
 | `task docker:up`              | Start MinIO, WebDAV, and SFTP services               |
 | `task docker:down`            | Stop provider integration services                   |
+| `task docker:webdav:up`       | Start the standalone Apache WebDAV service           |
+| `task docker:webdav:down`     | Stop the standalone Apache WebDAV service            |
+| `task test:webdav`            | Exercise the WebDAV provider against Apache          |
 | `task db:migrate`             | Apply SQLite migrations                              |
 | `task package:windows`        | Build Windows x64 bundle on Windows                  |
 | `task cleanup:windows-drives` | Select stale Bifrost Explorer drive entries          |
 | `task release:dry-run`        | Validate release metadata without publishing         |
 
-The real S3, WebDAV, and SFTP integration tests use `task test:integration`. If the default ports are already in use, set `MINIO_API_PORT`, `MINIO_CONSOLE_PORT`, `WEBDAV_PORT`, `SFTP_PORT`, `BIFROST_S3_ENDPOINT`, and `BIFROST_WEBDAV_ENDPOINT`, for example `MINIO_API_PORT=19000 MINIO_CONSOLE_PORT=19001 WEBDAV_PORT=18080 SFTP_PORT=2222 BIFROST_S3_ENDPOINT=http://127.0.0.1:19000 BIFROST_WEBDAV_ENDPOINT=http://127.0.0.1:18080/ task test:integration`.
+The standalone Apache fixture is available at `http://localhost:8080/webdav` with username `test` and password `test`. Run `task docker:webdav:up` to keep it available for manual testing, or `task test:webdav` to start it, exercise `OPTIONS`, `PROPFIND`, `GET`, `PUT`, `DELETE`, `MKCOL`, `MOVE`, `COPY`, `LOCK`, and `UNLOCK`, and remove it afterward. Both startup tasks run `task docker:start`, which opens Docker Desktop on Windows and macOS when needed.
+
+The real S3, WebDAV, SFTP, FTP, and SMB integration tests use `task test:connections`; `task test:integration` remains an alias. The command prepares the ephemeral SFTP key, starts all Docker services, runs every provider contract, and removes the containers and volumes even if a test fails. If the default ports are already in use, set `MINIO_API_PORT`, `MINIO_CONSOLE_PORT`, `WEBDAV_PORT`, `SFTP_PORT`, `FTP_PORT`, and `SMB_PORT`, for example `MINIO_API_PORT=19000 MINIO_CONSOLE_PORT=19001 WEBDAV_PORT=18080 SFTP_PORT=2223 FTP_PORT=2122 SMB_PORT=1446 task test:connections`.
 
 The root `package.json` declares npm as the package manager. `npm ci` is used in CI from the committed `package-lock.json`; use `npm install` when dependency manifests change.
 

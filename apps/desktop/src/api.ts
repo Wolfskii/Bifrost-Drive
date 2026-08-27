@@ -18,6 +18,13 @@ export interface ConnectionSummary {
     endpoint: string;
 }
 
+export interface CredentialStoreStatus {
+    available: boolean;
+    platform: string;
+    provider: string;
+    message: string | null;
+}
+
 export interface ConnectionDetails {
     summary: ConnectionSummary;
     configuration: Record<string, unknown>;
@@ -212,6 +219,23 @@ export async function getStartMinimized(): Promise<boolean> {
         return false;
     }
     return invoke<boolean>("app_start_minimized_get");
+}
+
+export async function getCredentialStoreStatus(): Promise<CredentialStoreStatus> {
+    if (!tauriAvailable()) {
+        return {
+            available: true,
+            platform: "browser",
+            provider: "Browser preview",
+            message: null,
+        };
+    }
+    return invoke<CredentialStoreStatus>("credential_store_check");
+}
+
+export async function restartApp(): Promise<void> {
+    if (!tauriAvailable()) return;
+    await relaunch();
 }
 
 export async function setStartMinimized(enabled: boolean): Promise<void> {
