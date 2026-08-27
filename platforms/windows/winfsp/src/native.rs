@@ -35,7 +35,7 @@ use crate::{
     WinFspFilesystemError,
 };
 
-const UNKNOWN_VOLUME_SIZE: u64 = 1 << 50;
+const UNKNOWN_VOLUME_SIZE: u64 = 0;
 static NEXT_MOUNT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct MountHandle {

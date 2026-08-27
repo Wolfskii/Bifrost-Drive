@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use bifrost_common::{Capability, CapabilitySet, ProviderKind, RemoteMetadata, RemotePath};
 use bifrost_storage::{
-    ByteStream, LockToken, Page, ReadRequest, RemoteEntry, StorageError, StorageProvider,
-    WriteRequest,
+    ByteStream, LockToken, Page, ReadRequest, RemoteEntry, StorageCapacity, StorageError,
+    StorageProvider, WriteRequest,
 };
 use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
@@ -170,6 +170,70 @@ impl WebDavProvider {
             buffer.clear();
         }
         Ok(entries)
+    }
+
+    fn parse_capacity(xml: &[u8]) -> Result<Option<StorageCapacity>, StorageError> {
+        let mut reader = Reader::from_reader(xml);
+        reader.config_mut().trim_text(true);
+        let mut buffer = Vec::new();
+        let mut field: Option<Vec<u8>> = None;
+        let mut used_bytes = None;
+        let mut available_bytes = None;
+
+        loop {
+            match reader.read_event_into(&mut buffer) {
+                Ok(Event::Start(event)) => {
+                    let name = event.local_name().as_ref().to_vec();
+                    if matches!(
+                        name.as_slice(),
+                        b"quota-used-bytes" | b"quota-available-bytes"
+                    ) {
+                        field = Some(name);
+                    }
+                }
+                Ok(Event::Text(text)) => {
+                    if let Some(field_name) = field.as_deref() {
+                        let value = text.decode().map_err(|error| StorageError::Provider {
+                            provider: ProviderKind::WebDav,
+                            message: error.to_string(),
+                        })?;
+                        let value =
+                            value
+                                .parse::<u64>()
+                                .map_err(|error| StorageError::Provider {
+                                    provider: ProviderKind::WebDav,
+                                    message: format!("invalid WebDAV quota value: {error}"),
+                                })?;
+                        match field_name {
+                            b"quota-used-bytes" => used_bytes = Some(value),
+                            b"quota-available-bytes" => available_bytes = Some(value),
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(Event::End(event)) => {
+                    if field.as_deref() == Some(event.local_name().as_ref()) {
+                        field = None;
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(error) => {
+                    return Err(StorageError::Provider {
+                        provider: ProviderKind::WebDav,
+                        message: error.to_string(),
+                    })
+                }
+                _ => {}
+            }
+            buffer.clear();
+        }
+
+        Ok(used_bytes
+            .zip(available_bytes)
+            .map(|(used, available)| StorageCapacity {
+                total_bytes: used.saturating_add(available),
+                available_bytes: available,
+            }))
     }
 }
 
@@ -376,6 +440,35 @@ impl StorageProvider for WebDavProvider {
         .map(|_| ())
     }
 
+    async fn capacity(&self) -> Result<Option<StorageCapacity>, StorageError> {
+        let body = br#"<?xml version="1.0" encoding="utf-8" ?><d:propfind xmlns:d="DAV:"><d:prop><d:quota-used-bytes/><d:quota-available-bytes/></d:prop></d:propfind>"#;
+        let response = self
+            .send(
+                self.request(
+                    Method::from_bytes(b"PROPFIND").unwrap(),
+                    self.endpoint.clone(),
+                )
+                .header("Depth", "0")
+                .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
+                .body(body.as_slice())
+                .send()
+                .await
+                .map_err(|error| StorageError::Network {
+                    provider: ProviderKind::WebDav,
+                    message: error.to_string(),
+                })?,
+            )
+            .await?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| StorageError::Network {
+                provider: ProviderKind::WebDav,
+                message: error.to_string(),
+            })?;
+        Self::parse_capacity(&bytes)
+    }
+
     async fn create_directory(&self, path: &RemotePath) -> Result<(), StorageError> {
         self.send(
             self.request(Method::from_bytes(b"MKCOL").unwrap(), self.url_for(path)?)
@@ -492,6 +585,20 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].metadata.path.as_str(), "report.txt");
         assert_eq!(entries[0].metadata.size_bytes, Some(12));
+    }
+
+    #[test]
+    fn parses_dav_quota_capacity() {
+        let xml = br#"<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop><d:quota-used-bytes>100</d:quota-used-bytes><d:quota-available-bytes>900</d:quota-available-bytes></d:prop></d:propstat></d:response></d:multistatus>"#;
+        let capacity = WebDavProvider::parse_capacity(xml).unwrap().unwrap();
+        assert_eq!(capacity.total_bytes, 1_000);
+        assert_eq!(capacity.available_bytes, 900);
+    }
+
+    #[test]
+    fn leaves_dav_capacity_unknown_without_both_quota_properties() {
+        let xml = br#"<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop><d:quota-available-bytes>900</d:quota-available-bytes></d:prop></d:propstat></d:response></d:multistatus>"#;
+        assert_eq!(WebDavProvider::parse_capacity(xml).unwrap(), None);
     }
 
     #[test]
