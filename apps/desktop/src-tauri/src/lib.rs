@@ -18,6 +18,8 @@ use bifrost_db::{ConflictRecord, ConnectionRecord, Database, SyncEntryRecord};
 use bifrost_ftp::{FtpConfig, FtpProvider};
 #[cfg(target_os = "linux")]
 use bifrost_linux_credentials::LinuxCredentialStore as WindowsCredentialStore;
+#[cfg(target_os = "linux")]
+use bifrost_linux_fuse::{FuseConfig, MountHandle};
 #[cfg(target_os = "macos")]
 use bifrost_macos_credentials::MacosCredentialStore as WindowsCredentialStore;
 use bifrost_s3::{S3Config, S3Provider};
@@ -37,9 +39,9 @@ use bifrost_windows_winfsp::{MountConfig, MountHandle};
 #[cfg(target_os = "windows")]
 use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::collections::HashMap;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::sync::MutexGuard;
 use std::{
     fs,
@@ -56,10 +58,10 @@ use tauri::{
 #[cfg(target_os = "windows")]
 struct SyncRootRegistry(Mutex<HashMap<String, SyncRoot>>);
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 struct DriveMountRegistry(Mutex<HashMap<String, MountHandle>>);
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 struct DriveMountRegistry;
 
 #[cfg(not(target_os = "windows"))]
@@ -88,7 +90,7 @@ impl SyncRootRegistry {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl DriveMountRegistry {
     fn new() -> Self {
         Self(Mutex::new(HashMap::new()))
@@ -115,7 +117,7 @@ impl DriveMountRegistry {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 impl DriveMountRegistry {
     fn new() -> Self {
         Self
@@ -288,6 +290,42 @@ fn credential_store_check() -> CredentialStoreStatus {
 #[tauri::command]
 fn sync_root_supported() -> bool {
     cfg!(target_os = "windows")
+}
+
+#[tauri::command]
+fn filesystem_integration_kind() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "none"
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_mount_directory_name(connection_name: &str) -> Result<String, String> {
+    let directory_name = connection_name
+        .trim()
+        .chars()
+        .map(|character| {
+            if character == '/' || character == '\0' {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    if directory_name.is_empty() || matches!(directory_name.as_str(), "." | "..") {
+        return Err("Connection name cannot be used as a Linux mount location".to_owned());
+    }
+    Ok(directory_name)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_mount_path(connection_name: &str) -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME").ok_or_else(|| "HOME is unavailable".to_owned())?;
+    Ok(PathBuf::from(home).join(linux_mount_directory_name(connection_name)?))
 }
 
 #[async_trait::async_trait]
@@ -1205,8 +1243,14 @@ async fn connections_update(
     }
     record_connection_activity(&database, "connection_updated", &updated).await;
     let _ = credentials.delete(&old_credential).await;
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     drop(mounts.take(&updated.id.to_string()));
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(path) = linux_mount_path(&existing.name) {
+            let _ = fs::remove_dir(path);
+        }
+    }
     #[cfg(target_os = "windows")]
     if !configured_drive_type(&updated.configuration_json)? {
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -1214,7 +1258,7 @@ async fn connections_update(
             tracing::warn!(%error, "could not remove stale network metadata after local conversion");
         }
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     let _ = mounts;
     Ok(ConnectionSummary {
         id: updated.id,
@@ -1330,16 +1374,27 @@ async fn connections_remove(
         .find_connection(request.id)
         .await
         .map_err(|error| error.to_string())?;
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         drop(mounts.take(&request.id.to_string()));
+    }
+    #[cfg(target_os = "windows")]
+    {
         drop(registry.take(&request.id.to_string()));
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     let _ = (&registry, &mounts);
+    #[cfg(target_os = "linux")]
+    let _ = &registry;
     let Some(connection) = connection else {
         return Ok(());
     };
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(path) = linux_mount_path(&connection.name) {
+            let _ = fs::remove_dir(path);
+        }
+    }
     let credential: CredentialRef = serde_json::from_str(&connection.credential_ref)
         .map_err(|_| "Connection credential reference is invalid".to_owned())?;
     database
@@ -2607,10 +2662,55 @@ async fn drive_mount_register(
     credentials: State<'_, WindowsCredentialStore>,
     request: DriveMountRegisterRequest,
 ) -> Result<DriveMountRegisterResponse, String> {
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let _ = (app, registry, database, credentials, request);
-        Err("Windows drive mounting is available only on Windows".to_owned())
+        Err("Native filesystem mounting is unavailable on this platform".to_owned())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = app;
+        let connection = database
+            .find_connection(request.connection_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Connection was not found".to_owned())?;
+        let key = connection.id.to_string();
+        let mountpoint = linux_mount_path(&connection.name)?;
+        if registry.contains(&key) {
+            return Ok(DriveMountRegisterResponse {
+                location: mountpoint.to_string_lossy().into_owned(),
+                drive_letter: None,
+            });
+        }
+        if mountpoint.is_dir()
+            && fs::read_dir(&mountpoint)
+                .map_err(|error| error.to_string())?
+                .next()
+                .is_some()
+        {
+            return Err(format!(
+                "Linux mount location is not empty: {}",
+                mountpoint.display()
+            ));
+        }
+        fs::create_dir_all(&mountpoint).map_err(|error| error.to_string())?;
+        let provider = provider_for_connection(&connection, &credentials).await?;
+        let handle = bifrost_linux_fuse::mount_read_only(
+            Arc::from(provider),
+            FuseConfig {
+                mountpoint: mountpoint.clone(),
+                filesystem_name: connection.name.clone(),
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        let previous = registry.insert(key, handle);
+        drop(previous);
+        record_connection_activity(&database, "drive_mounted", &connection).await;
+        Ok(DriveMountRegisterResponse {
+            location: mountpoint.to_string_lossy().into_owned(),
+            drive_letter: None,
+        })
     }
     #[cfg(target_os = "windows")]
     {
@@ -2625,7 +2725,8 @@ async fn drive_mount_register(
         let key = connection.id.to_string();
         if registry.contains(&key) {
             return Ok(DriveMountRegisterResponse {
-                drive_letter: format!("{drive_letter}:"),
+                location: format!("{drive_letter}:\\"),
+                drive_letter: Some(format!("{drive_letter}:")),
             });
         }
         let provider = provider_for_connection(&connection, &credentials).await?;
@@ -2649,7 +2750,8 @@ async fn drive_mount_register(
         drop(previous);
         record_connection_activity(&database, "drive_mounted", &connection).await;
         Ok(DriveMountRegisterResponse {
-            drive_letter: format!("{drive_letter}:"),
+            location: format!("{drive_letter}:\\"),
+            drive_letter: Some(format!("{drive_letter}:")),
         })
     }
 }
@@ -2660,10 +2762,27 @@ async fn drive_mount_unregister(
     database: State<'_, Database>,
     request: ConnectionIdRequest,
 ) -> Result<(), String> {
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let _ = (registry, database, request);
-        Err("Windows drive mounting is available only on Windows".to_owned())
+        Err("Native filesystem mounting is unavailable on this platform".to_owned())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let connection = database
+            .find_connection(request.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Connection was not found".to_owned())?;
+        let removed = registry.take(&request.id.to_string());
+        let was_mounted = removed.is_some();
+        drop(removed);
+        if was_mounted {
+            let mountpoint = linux_mount_path(&connection.name)?;
+            let _ = fs::remove_dir(&mountpoint);
+            record_connection_activity(&database, "drive_unmounted", &connection).await;
+        }
+        Ok(())
     }
     #[cfg(target_os = "windows")]
     {
@@ -2720,10 +2839,28 @@ async fn connection_location_open(
     database: State<'_, Database>,
     request: ConnectionIdRequest,
 ) -> Result<(), String> {
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let _ = (registry, database, request);
-        Err("Opening connection locations is available only on Windows".to_owned())
+        Err("Opening connection locations is unavailable on this platform".to_owned())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let connection = database
+            .find_connection(request.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Connection was not found".to_owned())?;
+        if !registry.contains(&connection.id.to_string()) {
+            return Err("The connection is not mounted".to_owned());
+        }
+        let path = linux_mount_path(&connection.name)?;
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        record_connection_activity(&database, "explorer_opened", &connection).await;
+        Ok(())
     }
     #[cfg(target_os = "windows")]
     {
@@ -2844,6 +2981,7 @@ pub fn run() {
             app_start_minimized_set,
             credential_store_check,
             sync_root_supported,
+            filesystem_integration_kind,
             connections_list,
             connections_details,
             connections_update,
@@ -3094,6 +3232,21 @@ mod registry_tests {
         assert!(icons
             .iter()
             .all(|icon| icon.preview.starts_with("data:image/png;base64,")));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_mount_tests {
+    use super::linux_mount_directory_name;
+
+    #[test]
+    fn mount_directory_names_use_the_chosen_connection_name_safely() {
+        assert_eq!(
+            linux_mount_directory_name("Team/Files").unwrap(),
+            "Team_Files"
+        );
+        assert_eq!(linux_mount_directory_name(" Team ").unwrap(), "Team");
+        assert!(linux_mount_directory_name("..").is_err());
     }
 }
 

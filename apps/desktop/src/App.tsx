@@ -74,6 +74,7 @@ import {
     getStartMinimized,
     getConnectionDetails,
     getDriveIconPreview,
+    getFilesystemIntegration,
     getAvailableDriveLetters,
     getStockDriveIcons,
     installUpdate,
@@ -91,6 +92,7 @@ import {
     setStartMinimized,
     supportsSyncRoots,
     S3ConnectionForm,
+    FilesystemIntegration,
     StockDriveIcon,
     updateConnection,
     unregisterDriveMount,
@@ -103,7 +105,7 @@ type AppView = "connections" | "activity" | "settings" | "add";
 type FormDefaults = Record<string, boolean | number | string>;
 
 interface DrivePreference {
-    driveLetter: string;
+    location: string;
     mountOnStartup: boolean;
     iconPreview: string | null;
 }
@@ -445,6 +447,8 @@ export function App() {
     const [providerSelection, setProviderSelection] = useState("s3-1");
     const [driveLetter, setDriveLetter] = useState("");
     const [syncRootsSupported, setSyncRootsSupported] = useState(false);
+    const [filesystemIntegration, setFilesystemIntegration] =
+        useState<FilesystemIntegration>("none");
 
     async function checkCredentialStore() {
         try {
@@ -469,102 +473,118 @@ export function App() {
     }, []);
 
     useEffect(() => {
-        Promise.all([listConnections(), supportsSyncRoots()])
-            .then(async ([loadedConnections, supportsRoots]) => {
-                setSyncRootsSupported(supportsRoots);
-                setConnections(loadedConnections);
-                const details = await Promise.all(
-                    loadedConnections.map(async (connection) => {
-                        try {
-                            return [
-                                connection.id,
-                                await getConnectionDetails(connection.id),
-                            ] as const;
-                        } catch {
-                            return null;
-                        }
-                    }),
-                );
-                const driveConnections = new Set(
-                    details.flatMap((entry) =>
-                        entry?.[1].configuration.drive_letter ? [entry[0]] : [],
-                    ),
-                );
-                const preferences = Object.fromEntries(
-                    details.flatMap((entry) => {
-                        const driveLetter =
-                            entry?.[1].configuration.drive_letter;
-                        return entry && driveLetter
-                            ? [
-                                  [
-                                      entry[0],
-                                      {
-                                          driveLetter: `${String(driveLetter)}:`,
-                                          mountOnStartup:
-                                              entry[1].configuration
-                                                  .mount_on_startup !== false,
-                                          iconPreview:
-                                              entry[1].drive_icon_preview,
-                                      },
-                                  ],
-                              ]
-                            : [];
-                    }),
-                );
-                setDrivePreferences(preferences);
-                const registeredRoots = supportsRoots
-                    ? await Promise.all(
-                          loadedConnections.map(async (connection) => {
-                              if (driveConnections.has(connection.id)) {
-                                  await unregisterSyncRoot(connection.id).catch(
-                                      () => undefined,
-                                  );
-                                  return null;
-                              }
-                              try {
-                                  const root = await registerSyncRoot(
-                                      connection.id,
-                                  );
-                                  return [connection.id, root] as const;
-                              } catch {
-                                  return null;
-                              }
-                          }),
-                      )
-                    : [];
-                setExplorerPaths(
-                    Object.fromEntries(
-                        registeredRoots.flatMap((root) =>
-                            root ? [[root[0], root[1].path]] : [],
+        Promise.all([
+            listConnections(),
+            supportsSyncRoots(),
+            getFilesystemIntegration(),
+        ])
+            .then(
+                async ([loadedConnections, supportsRoots, filesystemKind]) => {
+                    setSyncRootsSupported(supportsRoots);
+                    setFilesystemIntegration(filesystemKind);
+                    setConnections(loadedConnections);
+                    const details = await Promise.all(
+                        loadedConnections.map(async (connection) => {
+                            try {
+                                return [
+                                    connection.id,
+                                    await getConnectionDetails(connection.id),
+                                ] as const;
+                            } catch {
+                                return null;
+                            }
+                        }),
+                    );
+                    const driveConnections = new Set(
+                        details.flatMap((entry) =>
+                            filesystemKind === "linux" ||
+                            entry?.[1].configuration.drive_letter
+                                ? [entry?.[0]].filter((id): id is string =>
+                                      Boolean(id),
+                                  )
+                                : [],
                         ),
-                    ),
-                );
-                const mounted = await Promise.all(
-                    loadedConnections.map(async (connection) => {
-                        if (!driveConnections.has(connection.id)) {
-                            return null;
-                        }
-                        if (!preferences[connection.id].mountOnStartup) {
-                            return null;
-                        }
-                        try {
-                            const mount = await registerDriveMount(
-                                connection.id,
-                            );
-                            return [connection.id, mount.drive_letter] as const;
-                        } catch {
-                            return null;
-                        }
-                    }),
-                );
-                setMountedDrives(
-                    Object.fromEntries(
-                        mounted.flatMap((mount) =>
-                            mount ? [[mount[0], mount[1]]] : [],
+                    );
+                    const preferences = Object.fromEntries(
+                        details.flatMap((entry) => {
+                            const driveLetter =
+                                entry?.[1].configuration.drive_letter;
+                            return entry &&
+                                (driveLetter || filesystemKind === "linux")
+                                ? [
+                                      [
+                                          entry[0],
+                                          {
+                                              location: driveLetter
+                                                  ? `${String(driveLetter)}:`
+                                                  : "Bifrost Drive folder",
+                                              mountOnStartup:
+                                                  entry[1].configuration
+                                                      .mount_on_startup !==
+                                                  false,
+                                              iconPreview:
+                                                  entry[1].drive_icon_preview,
+                                          },
+                                      ],
+                                  ]
+                                : [];
+                        }),
+                    );
+                    setDrivePreferences(preferences);
+                    const registeredRoots = supportsRoots
+                        ? await Promise.all(
+                              loadedConnections.map(async (connection) => {
+                                  if (driveConnections.has(connection.id)) {
+                                      await unregisterSyncRoot(
+                                          connection.id,
+                                      ).catch(() => undefined);
+                                      return null;
+                                  }
+                                  try {
+                                      const root = await registerSyncRoot(
+                                          connection.id,
+                                      );
+                                      return [connection.id, root] as const;
+                                  } catch {
+                                      return null;
+                                  }
+                              }),
+                          )
+                        : [];
+                    setExplorerPaths(
+                        Object.fromEntries(
+                            registeredRoots.flatMap((root) =>
+                                root ? [[root[0], root[1].path]] : [],
+                            ),
                         ),
-                    ),
-                );
-            })
+                    );
+                    const mounted = await Promise.all(
+                        loadedConnections.map(async (connection) => {
+                            if (!driveConnections.has(connection.id)) {
+                                return null;
+                            }
+                            if (!preferences[connection.id].mountOnStartup) {
+                                return null;
+                            }
+                            try {
+                                const mount = await registerDriveMount(
+                                    connection.id,
+                                );
+                                return [connection.id, mount.location] as const;
+                            } catch {
+                                return null;
+                            }
+                        }),
+                    );
+                    setMountedDrives(
+                        Object.fromEntries(
+                            mounted.flatMap((mount) =>
+                                mount ? [[mount[0], mount[1]]] : [],
+                            ),
+                        ),
+                    );
+                },
+            )
             .catch(() => {
                 setError("Unable to load saved connections.");
             });
@@ -670,7 +690,7 @@ export function App() {
                 const mount = await registerDriveMount(connection.id);
                 setMountedDrives((current) => ({
                     ...current,
-                    [connection.id]: mount.drive_letter,
+                    [connection.id]: mount.location,
                 }));
             }
         } catch (cause) {
@@ -709,7 +729,7 @@ export function App() {
         try {
             await openConnectionLocation(connection.id);
         } catch (cause) {
-            setError(errorMessage(cause, "Unable to open Windows Explorer."));
+            setError(errorMessage(cause, "Unable to open this location."));
         }
     }
 
@@ -996,7 +1016,7 @@ export function App() {
         setError(null);
         try {
             const connection = await connectionOperation;
-            if (editingConnection) {
+            if (editingConnection && mountedDrives[connection.id]) {
                 await unregisterDriveMount(connection.id);
             }
             setConnections((current) => [
@@ -1030,9 +1050,12 @@ export function App() {
             });
             setDrivePreferences((current) => {
                 const next = { ...current };
-                if (driveLetter) {
+                if (driveLetter || filesystemIntegration === "linux") {
                     next[connection.id] = {
-                        driveLetter,
+                        location:
+                            filesystemIntegration === "linux"
+                                ? "Bifrost Drive folder"
+                                : driveLetter,
                         mountOnStartup,
                         iconPreview:
                             customDriveIconPreview ||
@@ -1047,15 +1070,20 @@ export function App() {
                 return next;
             });
             try {
+                if (filesystemIntegration === "none") {
+                    throw new Error(
+                        "Native filesystem integration is unavailable",
+                    );
+                }
                 const mount = await registerDriveMount(connection.id);
                 setMountedDrives((current) => ({
                     ...current,
-                    [connection.id]: mount.drive_letter,
+                    [connection.id]: mount.location,
                 }));
             } catch (cause) {
-                if (driveLetter) {
+                if (driveLetter || filesystemIntegration === "linux") {
                     setError(
-                        `Connection saved, but ${driveLetter} could not be mounted: ${errorMessage(cause, "unknown error")}`,
+                        `Connection saved, but its filesystem location could not be mounted: ${errorMessage(cause, "unknown error")}`,
                     );
                 }
             }
@@ -1384,7 +1412,10 @@ export function App() {
                                                         connection.id
                                                     ] && (
                                                         <p className="explorer-location">
-                                                            Drive:{" "}
+                                                            {filesystemIntegration ===
+                                                            "linux"
+                                                                ? "Folder: "
+                                                                : "Drive: "}
                                                             {
                                                                 mountedDrives[
                                                                     connection
@@ -1400,13 +1431,15 @@ export function App() {
                                                             connection.id
                                                         ] && (
                                                             <p className="explorer-location">
-                                                                Drive:{" "}
+                                                                {filesystemIntegration ===
+                                                                "linux"
+                                                                    ? "Folder: "
+                                                                    : "Drive: "}
                                                                 {
                                                                     drivePreferences[
                                                                         connection
                                                                             .id
-                                                                    ]
-                                                                        .driveLetter
+                                                                    ].location
                                                                 }{" "}
                                                                 (not mounted)
                                                             </p>
@@ -1486,7 +1519,10 @@ export function App() {
                                                                 connection.id
                                                             ]
                                                                 ? "Unmount drive"
-                                                                : "Mount drive"
+                                                                : filesystemIntegration ===
+                                                                    "linux"
+                                                                  ? "Mount folder"
+                                                                  : "Mount drive"
                                                         }
                                                         disabled={
                                                             updatingDrive ===
@@ -1504,8 +1540,8 @@ export function App() {
                                                 <button
                                                     className="icon-button"
                                                     type="button"
-                                                    aria-label={`Open ${connection.name} in Explorer`}
-                                                    title="Open in Explorer"
+                                                    aria-label={`Open ${connection.name} location`}
+                                                    title="Open location"
                                                     disabled={
                                                         Boolean(
                                                             drivePreferences[
@@ -1690,8 +1726,8 @@ export function App() {
                             </button>
                         </div>
                         <p className="wizard-copy">
-                            Credentials are stored in Windows Credential Manager
-                            and never in the app database.
+                            Credentials are stored in the native credential
+                            service and never in the app database.
                         </p>
                         {error && (
                             <p
@@ -1723,263 +1759,279 @@ export function App() {
                                     placeholder="Production S3"
                                 />
                             </label>
-                            <CustomSelect
-                                label="Windows drive"
-                                name="driveLetter"
-                                value={driveLetter}
-                                options={driveLetterOptions}
-                                onChange={setDriveLetter}
-                            />
-                            <div className="form-grid">
+                            <div
+                                className="windows-mount-options"
+                                hidden={filesystemIntegration !== "windows"}
+                            >
                                 <CustomSelect
-                                    label="Drive type"
-                                    name="driveType"
-                                    value={driveType}
-                                    options={[
-                                        {
-                                            value: "network",
-                                            label: "Network location",
-                                            icon: <Network size={18} />,
-                                        },
-                                        {
-                                            value: "local",
-                                            label: "Local drive",
-                                            icon: <HardDrive size={18} />,
-                                        },
-                                    ]}
-                                    onChange={setDriveType}
+                                    label="Windows drive"
+                                    name="driveLetter"
+                                    value={driveLetter}
+                                    options={driveLetterOptions}
+                                    onChange={setDriveLetter}
                                 />
-                                <div
-                                    className="drive-icon-field"
-                                    ref={iconPickerRef}
-                                >
-                                    <span>Drive icon</span>
-                                    <input
-                                        name="driveIcon"
-                                        type="hidden"
-                                        value={driveIcon}
+                                <div className="form-grid">
+                                    <CustomSelect
+                                        label="Drive type"
+                                        name="driveType"
+                                        value={driveType}
+                                        options={[
+                                            {
+                                                value: "network",
+                                                label: "Network location",
+                                                icon: <Network size={18} />,
+                                            },
+                                            {
+                                                value: "local",
+                                                label: "Local drive",
+                                                icon: <HardDrive size={18} />,
+                                            },
+                                        ]}
+                                        onChange={setDriveType}
                                     />
-                                    <button
-                                        className="icon-picker-trigger"
-                                        type="button"
-                                        aria-haspopup="dialog"
-                                        aria-expanded={iconPickerOpen}
-                                        onClick={() =>
-                                            setIconPickerOpen((open) => !open)
-                                        }
+                                    <div
+                                        className="drive-icon-field"
+                                        ref={iconPickerRef}
                                     >
-                                        {selectedStockIcon ? (
-                                            <img
-                                                src={selectedStockIcon.preview}
-                                                alt=""
-                                            />
-                                        ) : driveIcon === "custom" &&
-                                          customDriveIconPreview ? (
-                                            <img
-                                                src={customDriveIconPreview}
-                                                alt=""
-                                            />
-                                        ) : driveIcon === "bifrost" ? (
-                                            <Cloud size={25} />
-                                        ) : (
-                                            <HardDrive size={25} />
-                                        )}
-                                        <span>{selectedDriveIconLabel}</span>
-                                    </button>
-                                    {iconPickerOpen && (
-                                        <div
-                                            className="icon-picker-popover"
-                                            role="dialog"
-                                            aria-label="Choose drive icon"
+                                        <span>Drive icon</span>
+                                        <input
+                                            name="driveIcon"
+                                            type="hidden"
+                                            value={driveIcon}
+                                        />
+                                        <button
+                                            className="icon-picker-trigger"
+                                            type="button"
+                                            aria-haspopup="dialog"
+                                            aria-expanded={iconPickerOpen}
+                                            onClick={() =>
+                                                setIconPickerOpen(
+                                                    (open) => !open,
+                                                )
+                                            }
                                         >
-                                            <div className="icon-picker-tabs">
-                                                <button
-                                                    type="button"
-                                                    className={
-                                                        iconPickerTab ===
-                                                        "windows"
-                                                            ? "active"
-                                                            : ""
+                                            {selectedStockIcon ? (
+                                                <img
+                                                    src={
+                                                        selectedStockIcon.preview
                                                     }
-                                                    onClick={() =>
-                                                        setIconPickerTab(
-                                                            "windows",
-                                                        )
-                                                    }
-                                                >
-                                                    Windows
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className={
-                                                        iconPickerTab ===
-                                                        "bifrost"
-                                                            ? "active"
-                                                            : ""
-                                                    }
-                                                    onClick={() =>
-                                                        setIconPickerTab(
-                                                            "bifrost",
-                                                        )
-                                                    }
-                                                >
-                                                    Bifrost
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className={
-                                                        iconPickerTab ===
-                                                        "custom"
-                                                            ? "active"
-                                                            : ""
-                                                    }
-                                                    onClick={() =>
-                                                        setIconPickerTab(
-                                                            "custom",
-                                                        )
-                                                    }
-                                                >
-                                                    Custom
-                                                </button>
-                                            </div>
-                                            <div className="icon-picker-grid">
-                                                {iconPickerTab ===
-                                                    "windows" && (
-                                                    <>
+                                                    alt=""
+                                                />
+                                            ) : driveIcon === "custom" &&
+                                              customDriveIconPreview ? (
+                                                <img
+                                                    src={customDriveIconPreview}
+                                                    alt=""
+                                                />
+                                            ) : driveIcon === "bifrost" ? (
+                                                <Cloud size={25} />
+                                            ) : (
+                                                <HardDrive size={25} />
+                                            )}
+                                            <span>
+                                                {selectedDriveIconLabel}
+                                            </span>
+                                        </button>
+                                        {iconPickerOpen && (
+                                            <div
+                                                className="icon-picker-popover"
+                                                role="dialog"
+                                                aria-label="Choose drive icon"
+                                            >
+                                                <div className="icon-picker-tabs">
+                                                    <button
+                                                        type="button"
+                                                        className={
+                                                            iconPickerTab ===
+                                                            "windows"
+                                                                ? "active"
+                                                                : ""
+                                                        }
+                                                        onClick={() =>
+                                                            setIconPickerTab(
+                                                                "windows",
+                                                            )
+                                                        }
+                                                    >
+                                                        Windows
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className={
+                                                            iconPickerTab ===
+                                                            "bifrost"
+                                                                ? "active"
+                                                                : ""
+                                                        }
+                                                        onClick={() =>
+                                                            setIconPickerTab(
+                                                                "bifrost",
+                                                            )
+                                                        }
+                                                    >
+                                                        Bifrost
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className={
+                                                            iconPickerTab ===
+                                                            "custom"
+                                                                ? "active"
+                                                                : ""
+                                                        }
+                                                        onClick={() =>
+                                                            setIconPickerTab(
+                                                                "custom",
+                                                            )
+                                                        }
+                                                    >
+                                                        Custom
+                                                    </button>
+                                                </div>
+                                                <div className="icon-picker-grid">
+                                                    {iconPickerTab ===
+                                                        "windows" && (
+                                                        <>
+                                                            <button
+                                                                className={`icon-choice ${driveIcon === "system" ? "selected" : ""}`}
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    setDriveIcon(
+                                                                        "system",
+                                                                    );
+                                                                    setIconPickerOpen(
+                                                                        false,
+                                                                    );
+                                                                }}
+                                                            >
+                                                                <HardDrive
+                                                                    size={32}
+                                                                />
+                                                                <span>
+                                                                    System
+                                                                    default
+                                                                </span>
+                                                            </button>
+                                                            {stockDriveIcons.map(
+                                                                (icon) => (
+                                                                    <button
+                                                                        className={`icon-choice ${selectedStockIcon?.value === icon.value ? "selected" : ""}`}
+                                                                        type="button"
+                                                                        key={
+                                                                            icon.value
+                                                                        }
+                                                                        onClick={() => {
+                                                                            setDriveIcon(
+                                                                                icon.value,
+                                                                            );
+                                                                            setIconPickerOpen(
+                                                                                false,
+                                                                            );
+                                                                        }}
+                                                                    >
+                                                                        <img
+                                                                            src={
+                                                                                icon.preview
+                                                                            }
+                                                                            alt=""
+                                                                        />
+                                                                        <span>
+                                                                            {
+                                                                                icon.label
+                                                                            }
+                                                                        </span>
+                                                                    </button>
+                                                                ),
+                                                            )}
+                                                        </>
+                                                    )}
+                                                    {iconPickerTab ===
+                                                        "bifrost" && (
                                                         <button
-                                                            className={`icon-choice ${driveIcon === "system" ? "selected" : ""}`}
+                                                            className={`icon-choice ${driveIcon === "bifrost" ? "selected" : ""}`}
                                                             type="button"
                                                             onClick={() => {
                                                                 setDriveIcon(
-                                                                    "system",
+                                                                    "bifrost",
                                                                 );
                                                                 setIconPickerOpen(
                                                                     false,
                                                                 );
                                                             }}
                                                         >
-                                                            <HardDrive
-                                                                size={32}
-                                                            />
+                                                            <Cloud size={32} />
+                                                            <span>Bifrost</span>
+                                                        </button>
+                                                    )}
+                                                    {iconPickerTab ===
+                                                        "custom" && (
+                                                        <button
+                                                            className={`icon-choice ${driveIcon === "custom" ? "selected" : ""}`}
+                                                            type="button"
+                                                            onClick={async () => {
+                                                                await handleBrowseDriveIcon();
+                                                                setIconPickerOpen(
+                                                                    false,
+                                                                );
+                                                            }}
+                                                        >
+                                                            {customDriveIconPreview ? (
+                                                                <img
+                                                                    src={
+                                                                        customDriveIconPreview
+                                                                    }
+                                                                    alt=""
+                                                                />
+                                                            ) : (
+                                                                <FolderOpen
+                                                                    size={32}
+                                                                />
+                                                            )}
                                                             <span>
-                                                                System default
+                                                                Browse custom
                                                             </span>
                                                         </button>
-                                                        {stockDriveIcons.map(
-                                                            (icon) => (
-                                                                <button
-                                                                    className={`icon-choice ${selectedStockIcon?.value === icon.value ? "selected" : ""}`}
-                                                                    type="button"
-                                                                    key={
-                                                                        icon.value
-                                                                    }
-                                                                    onClick={() => {
-                                                                        setDriveIcon(
-                                                                            icon.value,
-                                                                        );
-                                                                        setIconPickerOpen(
-                                                                            false,
-                                                                        );
-                                                                    }}
-                                                                >
-                                                                    <img
-                                                                        src={
-                                                                            icon.preview
-                                                                        }
-                                                                        alt=""
-                                                                    />
-                                                                    <span>
-                                                                        {
-                                                                            icon.label
-                                                                        }
-                                                                    </span>
-                                                                </button>
-                                                            ),
-                                                        )}
-                                                    </>
-                                                )}
-                                                {iconPickerTab ===
-                                                    "bifrost" && (
-                                                    <button
-                                                        className={`icon-choice ${driveIcon === "bifrost" ? "selected" : ""}`}
-                                                        type="button"
-                                                        onClick={() => {
-                                                            setDriveIcon(
-                                                                "bifrost",
-                                                            );
-                                                            setIconPickerOpen(
-                                                                false,
-                                                            );
-                                                        }}
-                                                    >
-                                                        <Cloud size={32} />
-                                                        <span>Bifrost</span>
-                                                    </button>
-                                                )}
-                                                {iconPickerTab === "custom" && (
-                                                    <button
-                                                        className={`icon-choice ${driveIcon === "custom" ? "selected" : ""}`}
-                                                        type="button"
-                                                        onClick={async () => {
-                                                            await handleBrowseDriveIcon();
-                                                            setIconPickerOpen(
-                                                                false,
-                                                            );
-                                                        }}
-                                                    >
-                                                        {customDriveIconPreview ? (
-                                                            <img
-                                                                src={
-                                                                    customDriveIconPreview
-                                                                }
-                                                                alt=""
-                                                            />
-                                                        ) : (
-                                                            <FolderOpen
-                                                                size={32}
-                                                            />
-                                                        )}
-                                                        <span>
-                                                            Browse custom
-                                                        </span>
-                                                    </button>
-                                                )}
+                                                    )}
+                                                </div>
                                             </div>
-                                        </div>
-                                    )}
+                                        )}
+                                    </div>
                                 </div>
+                                {driveIcon === "custom" && (
+                                    <div className="icon-source-field">
+                                        <label>
+                                            Custom icon source
+                                            <input
+                                                value={customDriveIcon}
+                                                readOnly
+                                                required
+                                                placeholder="Choose an image or Windows icon source"
+                                            />
+                                        </label>
+                                        <button
+                                            className="secondary-button"
+                                            type="button"
+                                            onClick={handleBrowseDriveIcon}
+                                        >
+                                            Browse
+                                        </button>
+                                    </div>
+                                )}
                             </div>
-                            {driveIcon === "custom" && (
-                                <div className="icon-source-field">
-                                    <label>
-                                        Custom icon source
-                                        <input
-                                            value={customDriveIcon}
-                                            readOnly
-                                            required
-                                            placeholder="Choose an image or Windows icon source"
-                                        />
-                                    </label>
-                                    <button
-                                        className="secondary-button"
-                                        type="button"
-                                        onClick={handleBrowseDriveIcon}
-                                    >
-                                        Browse
-                                    </button>
+                            {filesystemIntegration !== "none" && (
+                                <div className="checkbox-row">
+                                    <input
+                                        name="mountOnStartup"
+                                        type="checkbox"
+                                        aria-label="Mount this location when Bifrost starts"
+                                        defaultChecked={
+                                            formDefaults.mountOnStartup !==
+                                            false
+                                        }
+                                    />
+                                    Mount this location when Bifrost starts
                                 </div>
                             )}
-                            <div className="checkbox-row">
-                                <input
-                                    name="mountOnStartup"
-                                    type="checkbox"
-                                    aria-label="Mount this drive when Bifrost starts"
-                                    defaultChecked={
-                                        formDefaults.mountOnStartup !== false
-                                    }
-                                />
-                                Mount this drive when Bifrost starts
-                            </div>
                             {providerChoice !== "SFTP" && (
                                 <label>
                                     Endpoint
@@ -2260,7 +2312,7 @@ function activityTitle(kind: string): string {
         drive_unmounted: "Drive unmounted",
         startup_mount_enabled: "Startup mount enabled",
         startup_mount_disabled: "Startup mount disabled",
-        explorer_opened: "Opened in Explorer",
+        explorer_opened: "Opened filesystem location",
         hydrate: "File downloaded",
         sync: "File synchronized",
         conflict: "Conflict resolved",

@@ -876,6 +876,12 @@ h1 {
 .wizard form > .checkbox-row {
     grid-column: 1 / -1;
 }
+.windows-mount-options {
+    display: contents;
+}
+.windows-mount-options[hidden] {
+    display: none;
+}
 input[type="checkbox"],
 input[type="radio"] {
     display: inline-grid;

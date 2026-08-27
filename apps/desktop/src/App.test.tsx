@@ -16,7 +16,7 @@ describe("App", () => {
         ).toBeTruthy();
     });
 
-    it("opens the S3 connection as a full view", () => {
+    it("hides native mount controls when no filesystem integration is available", () => {
         render(<App />);
 
         fireEvent.click(
@@ -28,28 +28,17 @@ describe("App", () => {
         ).toBeTruthy();
         expect(screen.queryByRole("dialog")).toBeNull();
         expect(
-            screen.getByRole("combobox", { name: "Drive type" }),
-        ).toBeTruthy();
-        expect(
-            screen.getByRole("button", { name: "System default" }),
-        ).toBeTruthy();
-        fireEvent.click(screen.getByRole("button", { name: "System default" }));
-        expect(
-            screen.getByRole("dialog", { name: "Choose drive icon" }),
-        ).toBeTruthy();
-        fireEvent.click(screen.getByRole("button", { name: "Custom" }));
-        expect(
-            screen.getByRole("button", { name: "Browse custom" }),
-        ).toBeTruthy();
-        fireEvent.pointerDown(
-            screen.getByRole("heading", { name: "Connect to Amazon S3" }),
-        );
-        expect(
-            screen.queryByRole("dialog", { name: "Choose drive icon" }),
+            screen.queryByRole("combobox", { name: "Drive type" }),
         ).toBeNull();
         expect(
-            screen.getByLabelText("Mount this drive when Bifrost starts"),
-        ).toBeTruthy();
+            screen.queryByRole("combobox", { name: "Windows drive" }),
+        ).toBeNull();
+        expect(
+            screen.queryByRole("button", { name: "System default" }),
+        ).toBeNull();
+        expect(
+            screen.queryByLabelText("Mount this location when Bifrost starts"),
+        ).toBeNull();
     });
 
     it("shows provider-specific fields when the storage type changes", () => {

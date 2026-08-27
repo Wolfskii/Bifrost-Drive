@@ -2,7 +2,7 @@
 
 Development releases run from `develop` in one GitHub Actions workflow. Frontend and Rust checks run first. After both pass, one release version is selected and Windows, Linux, and macOS packages build in parallel. The final job downloads those exact artifacts and publishes them together; it does not rebuild them.
 
-By default, the workflow increments the patch component of the latest published GitHub release. A manually dispatched run can provide an explicit semantic version in the `version` input. CI applies the selected version to each isolated build checkout without creating an automated version-bump commit.
+The workflow selects `0.2.0` while the latest published release is older than `0.2.0`, then increments the latest release's patch component for subsequent automatic releases. A manually dispatched run can provide an explicit semantic version in the `version` input. CI applies the selected version to each isolated build checkout without creating an automated version-bump commit.
 
 ## Required repository secrets
 
@@ -16,7 +16,7 @@ Provision the updater key without printing it to logs:
 gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.bifrost-drive/tauri-updater.key
 ```
 
-The workflow signs Windows/Linux/macOS updater artifacts with the Tauri updater key. The macOS application bundle is additionally ad-hoc code signed and verified by CI; this satisfies Apple Silicon's executable-signing requirement but does not replace Developer ID signing or notarization. The Windows installer is Authenticode-signed first and then re-signed for the updater so its detached signature covers the final executable bytes. Linux additionally publishes RPM and Flatpak packages; AppImage remains the Linux updater target. The release job publishes a normal GitHub Release, `latest.json`, and checksums only after all three package jobs pass. A normal release is required because the configured `/releases/latest/download/latest.json` endpoint excludes prereleases. The updater key never belongs in the repository.
+The workflow signs Windows/Linux/macOS updater artifacts with the Tauri updater key. The macOS application bundle is additionally ad-hoc code signed and verified by CI; this satisfies Apple Silicon's executable-signing requirement but does not replace Developer ID signing or notarization. The Windows installer is Authenticode-signed first and then re-signed for the updater so its detached signature covers the final executable bytes. Linux additionally publishes an RPM package; AppImage remains the Linux updater target. The release job publishes a normal GitHub Release, `latest.json`, and checksums only after all three package jobs pass. A normal release is required because the configured `/releases/latest/download/latest.json` endpoint excludes prereleases. The updater key never belongs in the repository.
 
 ## Local verification
 

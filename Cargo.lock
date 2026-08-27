@@ -923,6 +923,7 @@ dependencies = [
  "bifrost-db",
  "bifrost-ftp",
  "bifrost-linux-credentials",
+ "bifrost-linux-fuse",
  "bifrost-macos-credentials",
  "bifrost-s3",
  "bifrost-sftp",

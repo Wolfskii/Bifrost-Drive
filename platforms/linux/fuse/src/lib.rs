@@ -120,8 +120,8 @@ mod linux {
                 },
                 perm: if metadata.is_directory { 0o555 } else { 0o444 },
                 nlink: 1,
-                uid: 0,
-                gid: 0,
+                uid: unsafe { libc::getuid() },
+                gid: unsafe { libc::getgid() },
                 rdev: 0,
                 blksize: 4096,
                 flags: 0,
@@ -191,8 +191,20 @@ mod linux {
                 reply.error(libc::ENOENT);
                 return;
             };
-            let page = match self.runtime.block_on(self.provider.list(&path, None)) {
-                Ok(page) => page,
+            let remote_entries = match self.runtime.block_on(async {
+                let mut entries = Vec::new();
+                let mut cursor = None;
+                loop {
+                    let page = self.provider.list(&path, cursor.as_deref()).await?;
+                    entries.extend(page.entries);
+                    cursor = page.next_cursor;
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
+                Ok::<_, StorageError>(entries)
+            }) {
+                Ok(entries) => entries,
                 Err(error) => {
                     reply.error(Self::error_code(&error));
                     return;
@@ -214,7 +226,7 @@ mod linux {
                     .unwrap_or(ROOT_INODE)
             };
             entries.push((parent_inode, FileType::Directory, "..".to_owned()));
-            for entry in page.entries {
+            for entry in remote_entries {
                 let entry_inode = self.inode_for(entry.metadata.path.clone());
                 let kind = if entry.metadata.is_directory {
                     FileType::Directory

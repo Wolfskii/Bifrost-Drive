@@ -138,8 +138,11 @@ export interface SyncRootRegisterResponse {
 }
 
 export interface DriveMountRegisterResponse {
-    drive_letter: string;
+    location: string;
+    drive_letter: string | null;
 }
+
+export type FilesystemIntegration = "windows" | "linux" | "none";
 
 export interface StockDriveIcon {
     value: string;
@@ -170,6 +173,13 @@ export async function supportsSyncRoots(): Promise<boolean> {
         return false;
     }
     return invoke<boolean>("sync_root_supported");
+}
+
+export async function getFilesystemIntegration(): Promise<FilesystemIntegration> {
+    if (!tauriAvailable()) {
+        return "none";
+    }
+    return invoke<FilesystemIntegration>("filesystem_integration_kind");
 }
 
 export async function getConnectionDetails(

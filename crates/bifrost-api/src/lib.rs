@@ -149,7 +149,8 @@ pub struct DriveMountRegisterRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriveMountRegisterResponse {
-    pub drive_letter: String,
+    pub location: String,
+    pub drive_letter: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -4,7 +4,7 @@
     "createUpdaterArtifacts": false,
     "linux": {
       "rpm": {
-        "depends": ["gnome-keyring"]
+        "depends": ["fuse3", "gnome-keyring"]
       }
     }
   }
