@@ -187,6 +187,23 @@ fn app_start_minimized_set(app: tauri::AppHandle, enabled: bool) -> Result<(), S
     save_preferences(&path, &preferences)
 }
 
+#[cfg(target_os = "linux")]
+fn linux_desktop_environment() -> Option<String> {
+    std::env::var("XDG_CURRENT_DESKTOP")
+        .or_else(|_| std::env::var("DESKTOP_SESSION"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_distribution() -> Option<String> {
+    fs::read_to_string("/etc/os-release")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("ID="))
+        .map(|value| value.trim_matches('"').to_lowercase())
+}
+
 #[tauri::command]
 fn credential_store_check() -> CredentialStoreStatus {
     #[cfg(target_os = "windows")]
@@ -197,12 +214,16 @@ fn credential_store_check() -> CredentialStoreStatus {
                 platform: "windows".to_owned(),
                 provider: "Windows Credential Manager".to_owned(),
                 message: None,
+                desktop_environment: None,
+                linux_distribution: None,
             },
             Err(error) => CredentialStoreStatus {
                 available: false,
                 platform: "windows".to_owned(),
                 provider: "Windows Credential Manager".to_owned(),
                 message: Some(error.to_string()),
+                desktop_environment: None,
+                linux_distribution: None,
             },
         }
     }
@@ -215,30 +236,40 @@ fn credential_store_check() -> CredentialStoreStatus {
                 platform: "macos".to_owned(),
                 provider: "macOS Keychain".to_owned(),
                 message: None,
+                desktop_environment: None,
+                linux_distribution: None,
             },
             Err(error) => CredentialStoreStatus {
                 available: false,
                 platform: "macos".to_owned(),
                 provider: "macOS Keychain".to_owned(),
                 message: Some(error.to_string()),
+                desktop_environment: None,
+                linux_distribution: None,
             },
         }
     }
 
     #[cfg(target_os = "linux")]
     {
+        let desktop_environment = linux_desktop_environment();
+        let linux_distribution = linux_distribution();
         match bifrost_linux_credentials::LinuxCredentialStore::status() {
             Ok(()) => CredentialStoreStatus {
                 available: true,
                 platform: "linux".to_owned(),
                 provider: "Secret Service".to_owned(),
                 message: None,
+                desktop_environment,
+                linux_distribution,
             },
             Err(error) => CredentialStoreStatus {
                 available: false,
                 platform: "linux".to_owned(),
                 provider: "Secret Service".to_owned(),
                 message: Some(error.to_string()),
+                desktop_environment,
+                linux_distribution,
             },
         }
     }
@@ -249,6 +280,8 @@ fn credential_store_check() -> CredentialStoreStatus {
         platform: std::env::consts::OS.to_owned(),
         provider: "Native credential store".to_owned(),
         message: None,
+        desktop_environment: None,
+        linux_distribution: None,
     }
 }
 

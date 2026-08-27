@@ -150,6 +150,30 @@ function CredentialStoreBanner({
     onRestart: () => void;
 }) {
     if (!status || status.available) return null;
+        const desktop = status.desktop_environment?.toLowerCase() ?? "";
+        const isKde = desktop.includes("kde") || desktop.includes("plasma");
+        const distribution = status.linux_distribution;
+        const installCommand = distribution
+                ? ["fedora", "rhel", "centos", "rocky", "almalinux"].includes(
+                            distribution,
+                    )
+                        ? {
+                                    label: "Fedora / RHEL",
+                                    command: "sudo dnf install gnome-keyring libsecret",
+                            }
+                        : ["ubuntu", "debian", "linuxmint", "pop"].includes(distribution)
+                            ? {
+                                        label: "Ubuntu / Debian",
+                                        command:
+                                                "sudo apt install gnome-keyring libsecret-1-0",
+                                }
+                            : ["arch", "manjaro", "endeavouros"].includes(distribution)
+                                ? {
+                                            label: "Arch",
+                                            command: "sudo pacman -S gnome-keyring libsecret",
+                                    }
+                                : null
+                : null;
 
     return (
         <section className="system-check" role="alert">
@@ -158,26 +182,41 @@ function CredentialStoreBanner({
                 <p>{status.message}</p>
                 {status.platform === "linux" && (
                     <>
-                        <p>
-                            Linux: install and start a Secret Service provider
-                            such as GNOME Keyring, or enable the Secret Service
-                            API in KDE Wallet. Unlock the default wallet, then
-                            restart Bifrost.
-                        </p>
-                        <div className="system-commands">
-                            <CommandBox
-                                label="Fedora"
-                                command="sudo dnf install gnome-keyring libsecret"
-                            />
-                            <CommandBox
-                                label="Ubuntu / Debian"
-                                command="sudo apt install gnome-keyring libsecret-1-0"
-                            />
-                            <CommandBox
-                                label="Arch"
-                                command="sudo pacman -S gnome-keyring libsecret"
-                            />
-                        </div>
+                        {isKde ? (
+                            <>
+                                <p>
+                                    KDE Wallet is installed; no package command
+                                    is needed. Enable its Secret Service
+                                    interface:
+                                </p>
+                                <ol className="system-steps">
+                                    <li>
+                                        Open System Settings, then KDE Wallet.
+                                    </li>
+                                    <li>
+                                        Check <strong>Use KWallet for the Secret Service interface</strong> and apply the change.
+                                    </li>
+                                    <li>
+                                        Unlock the default wallet, then restart
+                                        Bifrost. If it still fails, sign out and
+                                        back in once.
+                                    </li>
+                                </ol>
+                            </>
+                        ) : (
+                            <>
+                                <p>
+                                    Install and start a Secret Service provider,
+                                    unlock its default wallet, then restart
+                                    Bifrost.
+                                </p>
+                                {installCommand && (
+                                    <div className="system-commands">
+                                        <CommandBox {...installCommand} />
+                                    </div>
+                                )}
+                            </>
+                        )}
                     </>
                 )}
                 {status.platform === "windows" && (
@@ -1031,6 +1070,10 @@ export function App() {
                     platform: current?.platform ?? "unknown",
                     provider: current?.provider ?? "Native credential store",
                     message,
+                    desktop_environment:
+                        current?.desktop_environment ?? null,
+                    linux_distribution:
+                        current?.linux_distribution ?? null,
                 }));
             }
         } finally {

@@ -23,6 +23,8 @@ export interface CredentialStoreStatus {
     platform: string;
     provider: string;
     message: string | null;
+    desktop_environment: string | null;
+    linux_distribution: string | null;
 }
 
 export interface ConnectionDetails {
@@ -228,6 +230,8 @@ export async function getCredentialStoreStatus(): Promise<CredentialStoreStatus>
             platform: "browser",
             provider: "Browser preview",
             message: null,
+            desktop_environment: null,
+            linux_distribution: null,
         };
     }
     return invoke<CredentialStoreStatus>("credential_store_check");

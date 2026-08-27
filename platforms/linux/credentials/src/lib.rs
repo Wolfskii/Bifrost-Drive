@@ -8,10 +8,17 @@ const SERVICE_NAME: &str = "com.bifrost.drive";
 
 #[cfg(target_os = "linux")]
 fn map_keyring_error(error: keyring::Error) -> CredentialError {
+    map_keyring_error_ref(&error)
+}
+
+#[cfg(target_os = "linux")]
+fn map_keyring_error_ref(error: &keyring::Error) -> CredentialError {
     match error {
-        keyring::Error::NoDefaultStore => CredentialError::Unavailable(
-            "Linux Secret Service is unavailable. Install and start a provider such as gnome-keyring, then unlock its default collection".to_owned(),
-        ),
+        keyring::Error::NoDefaultStore | keyring::Error::NoStorageAccess(_) => {
+            CredentialError::Unavailable(
+                "Linux Secret Service could not access an active, unlocked wallet".to_owned(),
+            )
+        }
         other => CredentialError::Store(other.to_string()),
     }
 }
@@ -32,10 +39,7 @@ impl LinuxCredentialStore {
     pub fn status() -> Result<(), CredentialError> {
         match keyring::Entry::store_status() {
             Ok(()) => Ok(()),
-            Err(keyring::Error::NoDefaultStore) => Err(CredentialError::Unavailable(
-                "Linux Secret Service is unavailable. Install and start a provider such as gnome-keyring, then unlock its default collection".to_owned(),
-            )),
-            Err(error) => Err(CredentialError::Store(error.to_string())),
+            Err(error) => Err(map_keyring_error_ref(error)),
         }
     }
 
@@ -67,7 +71,7 @@ impl CredentialStore for LinuxCredentialStore {
             let entry = entry(id)?;
             entry
                 .set_password(secret.expose())
-                .map_err(|error| CredentialError::Store(error.to_string()))?;
+                .map_err(map_keyring_error)?;
             Ok(CredentialRef { id, kind, label })
         })
         .await
@@ -83,7 +87,7 @@ impl CredentialStore for LinuxCredentialStore {
                 .map(SecretString::new)
                 .map_err(|error| match error {
                     keyring::Error::NoEntry => CredentialError::NotFound,
-                    other => CredentialError::Store(other.to_string()),
+                    other => map_keyring_error(other),
                 })
         })
         .await
@@ -96,7 +100,7 @@ impl CredentialStore for LinuxCredentialStore {
             let entry = entry(id)?;
             entry.delete_credential().map_err(|error| match error {
                 keyring::Error::NoEntry => CredentialError::NotFound,
-                other => CredentialError::Store(other.to_string()),
+                other => map_keyring_error(other),
             })
         })
         .await

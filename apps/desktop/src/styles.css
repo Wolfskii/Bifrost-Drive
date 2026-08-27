@@ -343,6 +343,17 @@ h1 {
 .system-check p:last-child {
     margin-bottom: 0;
 }
+.system-steps {
+    display: grid;
+    gap: 6px;
+    max-width: 740px;
+    margin: 10px 0 0;
+    padding-left: 21px;
+    font:
+        12px/1.45 ui-sans-serif,
+        system-ui,
+        sans-serif;
+}
 .system-check code {
     padding: 1px 4px;
     color: #5b4127;

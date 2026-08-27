@@ -2,7 +2,7 @@
 
 Linux support includes a read-only FUSE adapter backed by the shared `StorageProvider` contract and a Secret Service credential adapter using keyring. Install `libfuse3-dev` and ensure `/dev/fuse` is available before mounting. The FUSE mount deliberately advertises read-only permissions until local mutation semantics and Linux-native acceptance tests are complete. Mount permissions, file watching, cache paths, and disconnect behavior remain Linux-native acceptance concerns.
 
-The credential adapter requires a Secret Service provider. On Arch Linux, install `gnome-keyring` and `libsecret`, ensure the keyring starts in the user desktop session, and unlock the default collection. RPM is intended for RPM-based distributions; Arch users should prefer the AppImage or Flatpak, but either still requires a Secret Service provider in the host session.
+The credential adapter requires a Secret Service provider. On KDE Plasma, enable **Use KWallet for the Secret Service interface** in KDE Wallet settings, apply the change, and unlock the default wallet; installing GNOME Keyring is not required when using KWallet. On other desktops, install and start a provider such as `gnome-keyring` and unlock its default collection. Bifrost detects the current Linux desktop and distribution so recovery guidance prioritizes the active wallet and only offers a matching package command when appropriate. RPM is intended for RPM-based distributions; Arch users should prefer the AppImage or Flatpak, but either still requires a Secret Service provider in the host session.
 
 No Linux filesystem mount support is claimed by the current build.
 

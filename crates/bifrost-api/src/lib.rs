@@ -19,6 +19,8 @@ pub struct CredentialStoreStatus {
     pub platform: String,
     pub provider: String,
     pub message: Option<String>,
+    pub desktop_environment: Option<String>,
+    pub linux_distribution: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
