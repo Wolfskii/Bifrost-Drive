@@ -171,7 +171,7 @@ public final class BifrostFileProviderExtension: NSObject, NSFileProviderReplica
                     identifier: itemTemplate.itemIdentifier.rawValue,
                     parentIdentifier: itemTemplate.parentItemIdentifier.rawValue,
                     filename: itemTemplate.filename,
-                    isDirectory: itemTemplate.contentType.conforms(to: .folder),
+                    isDirectory: itemTemplate.contentType?.conforms(to: .folder) ?? false,
                     contents: url
                 )
                 completionHandler(BifrostFileProviderItem(remote: remote), [], false, nil)
