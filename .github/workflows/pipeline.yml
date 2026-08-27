@@ -13,6 +13,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: read
 
 env:
@@ -168,6 +169,12 @@ jobs:
             target/release/bundle/rpm/*.rpm
             target/release/bundle/flatpak/*.flatpak
           if-no-files-found: error
+      - name: Cancel sibling package builds
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
 
   macos:
     name: Build macOS package
@@ -212,6 +219,12 @@ jobs:
             target/release/bundle/macos/*.app.tar.gz
             target/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: error
+      - name: Cancel sibling package builds
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
 
   windows:
     name: Build Windows package
@@ -300,6 +313,12 @@ jobs:
             target/x86_64-pc-windows-msvc/release/bundle/nsis/Bifrost-Drive-Setup-x64.exe
             target/x86_64-pc-windows-msvc/release/bundle/nsis/Bifrost-Drive-Setup-x64.exe.sig
           if-no-files-found: error
+      - name: Cancel sibling package builds
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
 
   release:
     name: Publish GitHub release
