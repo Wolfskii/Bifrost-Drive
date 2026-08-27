@@ -33,6 +33,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.bifrost.drive.file-provider-host-bridge
         PRODUCT_NAME: BifrostFileProviderHostBridge
+        EXECUTABLE_PREFIX: lib
         SKIP_INSTALL: YES
 schemes:
   BifrostFileProvider:
