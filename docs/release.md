@@ -16,7 +16,7 @@ Provision the updater key without printing it to logs:
 gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.bifrost-drive/tauri-updater.key
 ```
 
-The workflow signs Windows/Linux/macOS updater artifacts with the Tauri updater key. The Windows installer is Authenticode-signed first and then re-signed for the updater so its detached signature covers the final executable bytes. Linux additionally publishes RPM and Flatpak packages; AppImage remains the Linux updater target. The release job publishes a normal GitHub Release, `latest.json`, and checksums only after all three package jobs pass. A normal release is required because the configured `/releases/latest/download/latest.json` endpoint excludes prereleases. The updater key never belongs in the repository.
+The workflow signs Windows/Linux/macOS updater artifacts with the Tauri updater key. The macOS application bundle is additionally ad-hoc code signed and verified by CI; this satisfies Apple Silicon's executable-signing requirement but does not replace Developer ID signing or notarization. The Windows installer is Authenticode-signed first and then re-signed for the updater so its detached signature covers the final executable bytes. Linux additionally publishes RPM and Flatpak packages; AppImage remains the Linux updater target. The release job publishes a normal GitHub Release, `latest.json`, and checksums only after all three package jobs pass. A normal release is required because the configured `/releases/latest/download/latest.json` endpoint excludes prereleases. The updater key never belongs in the repository.
 
 ## Local verification
 

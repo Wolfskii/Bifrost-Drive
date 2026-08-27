@@ -211,6 +211,21 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm --prefix apps/desktop run tauri -- build --bundles app,dmg --config src-tauri/tauri.release.conf.json
+      - name: Verify ad-hoc macOS signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find target/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          if [[ -z "$app" ]]; then
+            echo "macOS application bundle was not produced" >&2
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 "$app"
+          identity="$(codesign -dvv "$app" 2>&1 | sed -n 's/^Signature=//p')"
+          if [[ "$identity" != "adhoc" ]]; then
+            echo "Expected an ad-hoc macOS signature, found: ${identity:-none}" >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@v6
         with:
           name: bifrost-drive-macos-${{ needs.version.outputs.version }}
