@@ -209,7 +209,7 @@ fn credential_store_check() -> CredentialStoreStatus {
 
     #[cfg(target_os = "macos")]
     {
-        match MacosCredentialStore::status() {
+        match WindowsCredentialStore::status() {
             Ok(()) => CredentialStoreStatus {
                 available: true,
                 platform: "macos".to_owned(),
