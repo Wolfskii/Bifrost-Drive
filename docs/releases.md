@@ -4,4 +4,4 @@ Development releases currently run from `develop` in a single dependency-ordered
 
 Release CI runs checks, builds Windows/Linux/macOS artifacts, generates checksums and release notes from actual changes, then creates a normal GitHub Release from `develop`. A failed build must create neither tag nor release. Development Authenticode signing is self-signed; only the Tauri updater key is required as a GitHub secret.
 
-The required Windows artifact name is `Bifrost-Drive-Setup-x64.exe`; Linux AppImage and macOS update artifacts are published alongside it. The self-signed development installer is for testing and is not trusted by Windows by default.
+The required Windows artifact name is `Bifrost-Drive-Setup-x64.exe`; Linux AppImage, RPM, Flatpak, and macOS artifacts are published alongside it. AppImage is the signed Linux updater artifact, while RPM and Flatpak are additional installation formats. The self-signed development installer is for testing and is not trusted by Windows by default.

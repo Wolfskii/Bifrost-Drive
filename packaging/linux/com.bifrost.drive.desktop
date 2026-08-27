@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Bifrost Drive
+Comment=One gateway. Every storage.
+Exec=bifrost-drive
+Icon=com.bifrost.drive
+Terminal=false
+Categories=Network;FileTransfer;Utility;
+StartupWMClass=Bifrost Drive
