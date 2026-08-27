@@ -296,7 +296,10 @@ mod linux {
         let options = [
             MountOption::RO,
             MountOption::FSName(config.filesystem_name),
+            MountOption::Subtype("bifrost".to_owned()),
             MountOption::DefaultPermissions,
+            MountOption::NoDev,
+            MountOption::NoSuid,
         ];
         let session = fuser::spawn_mount2(filesystem, config.mountpoint, &options)?;
         Ok(MountHandle { session })

@@ -1,3 +1,6 @@
+#[cfg(any(target_os = "macos", test))]
+mod macos_file_provider;
+
 #[cfg(target_os = "windows")]
 use base64::Engine;
 use bifrost_api::{
@@ -298,9 +301,21 @@ fn filesystem_integration_kind() -> &'static str {
         "windows"
     } else if cfg!(target_os = "linux") {
         "linux"
+    } else if cfg!(target_os = "macos") {
+        "macos"
     } else {
         "none"
     }
+}
+
+#[tauri::command]
+fn filesystem_default_mount_root() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        return Some(linux_default_mount_root().to_string_lossy().into_owned());
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -323,9 +338,38 @@ fn linux_mount_directory_name(connection_name: &str) -> Result<String, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_mount_path(connection_name: &str) -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME").ok_or_else(|| "HOME is unavailable".to_owned())?;
-    Ok(PathBuf::from(home).join(linux_mount_directory_name(connection_name)?))
+fn linux_default_mount_root() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let user = std::env::var("USER").unwrap_or_else(|_| "user".to_owned());
+            std::env::temp_dir().join(format!("bifrost-drive-{user}"))
+        })
+        .join("bifrost-drive")
+}
+
+#[cfg(target_os = "linux")]
+fn configured_linux_mount_root(configuration_json: &str) -> Result<PathBuf, String> {
+    let configuration: serde_json::Value = serde_json::from_str(configuration_json)
+        .map_err(|_| "Connection configuration is invalid".to_owned())?;
+    let configured = configuration
+        .get("mount_root")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let root = configured
+        .map(PathBuf::from)
+        .unwrap_or_else(linux_default_mount_root);
+    if !root.is_absolute() {
+        return Err("Linux mount parent folder must be an absolute path".to_owned());
+    }
+    Ok(root)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_mount_path(connection: &ConnectionRecord) -> Result<PathBuf, String> {
+    Ok(configured_linux_mount_root(&connection.configuration_json)?
+        .join(linux_mount_directory_name(&connection.name)?))
 }
 
 #[async_trait::async_trait]
@@ -559,6 +603,31 @@ fn set_mount_on_startup(
             "mount_on_startup".to_owned(),
             serde_json::Value::Bool(enabled),
         );
+    Ok(())
+}
+
+fn set_linux_mount_root(
+    configuration: &mut serde_json::Value,
+    mount_root: Option<&str>,
+) -> Result<(), String> {
+    let object = configuration
+        .as_object_mut()
+        .ok_or_else(|| "Connection configuration must be an object".to_owned())?;
+    match mount_root.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => {
+            let path = PathBuf::from(value);
+            if !path.is_absolute() {
+                return Err("Linux mount parent folder must be an absolute path".to_owned());
+            }
+            object.insert(
+                "mount_root".to_owned(),
+                serde_json::Value::String(value.to_owned()),
+            );
+        }
+        None => {
+            object.remove("mount_root");
+        }
+    }
     Ok(())
 }
 
@@ -1182,6 +1251,12 @@ async fn connections_update(
     ensure_drive_letter_unassigned(&database, requested_drive.as_deref(), Some(existing.id))
         .await?;
     set_drive_letter(&mut request.configuration, requested_drive.as_deref())?;
+    let requested_mount_root = request
+        .configuration
+        .get("mount_root")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    set_linux_mount_root(&mut request.configuration, requested_mount_root.as_deref())?;
     let drive_type = request
         .configuration
         .get("drive_type")
@@ -1247,7 +1322,7 @@ async fn connections_update(
     drop(mounts.take(&updated.id.to_string()));
     #[cfg(target_os = "linux")]
     {
-        if let Ok(path) = linux_mount_path(&existing.name) {
+        if let Ok(path) = linux_mount_path(&existing) {
             let _ = fs::remove_dir(path);
         }
     }
@@ -1386,12 +1461,16 @@ async fn connections_remove(
     let _ = (&registry, &mounts);
     #[cfg(target_os = "linux")]
     let _ = &registry;
+    #[cfg(target_os = "macos")]
+    if let Err(error) = macos_file_provider::remove_domain(request.id).await {
+        tracing::warn!(%error, "could not remove macOS File Provider domain");
+    }
     let Some(connection) = connection else {
         return Ok(());
     };
     #[cfg(target_os = "linux")]
     {
-        if let Ok(path) = linux_mount_path(&connection.name) {
+        if let Ok(path) = linux_mount_path(&connection) {
             let _ = fs::remove_dir(path);
         }
     }
@@ -1470,6 +1549,7 @@ async fn connections_create_s3(
     });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
     set_drive_presentation(
         &mut configuration,
         &request.drive_type,
@@ -1766,9 +1846,9 @@ async fn create_tested_connection(
     })
 }
 
-async fn provider_for_connection(
+async fn provider_for_connection<C: CredentialStore>(
     connection: &ConnectionRecord,
-    credentials: &WindowsCredentialStore,
+    credentials: &C,
 ) -> Result<Box<dyn StorageProvider>, String> {
     let credential: CredentialRef = serde_json::from_str(&connection.credential_ref)
         .map_err(|_| "Connection credential reference is invalid".to_owned())?;
@@ -1903,6 +1983,7 @@ async fn connections_create_webdav(
     let mut configuration = serde_json::json!({});
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
     set_drive_presentation(
         &mut configuration,
         &request.drive_type,
@@ -1941,6 +2022,7 @@ async fn connections_create_ftp(
     let mut configuration = serde_json::json!({});
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
     set_drive_presentation(
         &mut configuration,
         &request.drive_type,
@@ -1976,6 +2058,7 @@ async fn connections_create_smb(
     let mut configuration = serde_json::json!({ "domain": request.domain });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
     set_drive_presentation(
         &mut configuration,
         &request.drive_type,
@@ -2026,6 +2109,7 @@ async fn connections_create_sftp(
     let mut configuration = serde_json::json!({ "host": request.host, "port": request.port, "root_path": root_path, "username": request.username, "known_hosts": known_hosts, "trust_on_first_use": request.trust_on_first_use, "authentication": authentication, "private_key_path": request.private_key_path });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
     set_drive_presentation(
         &mut configuration,
         &request.drive_type,
@@ -2062,7 +2146,7 @@ async fn files_list(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Connection was not found".to_owned())?;
-    let provider = provider_for_connection(&connection, &credentials).await?;
+    let provider = provider_for_connection(&connection, credentials.inner()).await?;
     let path = request.path;
     let page = provider
         .list(&path, request.cursor.as_deref())
@@ -2095,7 +2179,7 @@ async fn files_hydrate(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Connection was not found".to_owned())?;
-    let provider = provider_for_connection(&connection, &credentials).await?;
+    let provider = provider_for_connection(&connection, credentials.inner()).await?;
     let metadata = provider
         .stat(&request.path)
         .await
@@ -2586,7 +2670,7 @@ async fn sync_root_register(
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Connection was not found".to_owned())?;
-        let provider = provider_for_connection(&connection, &credentials).await?;
+        let provider = provider_for_connection(&connection, credentials.inner()).await?;
         let path = request
             .path
             .map(PathBuf::from)
@@ -2662,10 +2746,26 @@ async fn drive_mount_register(
     credentials: State<'_, WindowsCredentialStore>,
     request: DriveMountRegisterRequest,
 ) -> Result<DriveMountRegisterResponse, String> {
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         let _ = (app, registry, database, credentials, request);
         Err("Native filesystem mounting is unavailable on this platform".to_owned())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (app, registry, credentials);
+        let location =
+            macos_file_provider::register_domain(&database, request.connection_id).await?;
+        let connection = database
+            .find_connection(request.connection_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Connection was not found".to_owned())?;
+        record_connection_activity(&database, "drive_mounted", &connection).await;
+        Ok(DriveMountRegisterResponse {
+            location,
+            drive_letter: None,
+        })
     }
     #[cfg(target_os = "linux")]
     {
@@ -2676,7 +2776,7 @@ async fn drive_mount_register(
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Connection was not found".to_owned())?;
         let key = connection.id.to_string();
-        let mountpoint = linux_mount_path(&connection.name)?;
+        let mountpoint = linux_mount_path(&connection)?;
         if registry.contains(&key) {
             return Ok(DriveMountRegisterResponse {
                 location: mountpoint.to_string_lossy().into_owned(),
@@ -2695,7 +2795,7 @@ async fn drive_mount_register(
             ));
         }
         fs::create_dir_all(&mountpoint).map_err(|error| error.to_string())?;
-        let provider = provider_for_connection(&connection, &credentials).await?;
+        let provider = provider_for_connection(&connection, credentials.inner()).await?;
         let handle = bifrost_linux_fuse::mount_read_only(
             Arc::from(provider),
             FuseConfig {
@@ -2729,7 +2829,7 @@ async fn drive_mount_register(
                 drive_letter: Some(format!("{drive_letter}:")),
             });
         }
-        let provider = provider_for_connection(&connection, &credentials).await?;
+        let provider = provider_for_connection(&connection, credentials.inner()).await?;
         let data_dir = app
             .path()
             .app_data_dir()
@@ -2762,10 +2862,23 @@ async fn drive_mount_unregister(
     database: State<'_, Database>,
     request: ConnectionIdRequest,
 ) -> Result<(), String> {
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         let _ = (registry, database, request);
         Err("Native filesystem mounting is unavailable on this platform".to_owned())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = registry;
+        macos_file_provider::remove_domain(request.id).await?;
+        if let Some(connection) = database
+            .find_connection(request.id)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            record_connection_activity(&database, "drive_unmounted", &connection).await;
+        }
+        Ok(())
     }
     #[cfg(target_os = "linux")]
     {
@@ -2778,7 +2891,7 @@ async fn drive_mount_unregister(
         let was_mounted = removed.is_some();
         drop(removed);
         if was_mounted {
-            let mountpoint = linux_mount_path(&connection.name)?;
+            let mountpoint = linux_mount_path(&connection)?;
             let _ = fs::remove_dir(&mountpoint);
             record_connection_activity(&database, "drive_unmounted", &connection).await;
         }
@@ -2839,10 +2952,22 @@ async fn connection_location_open(
     database: State<'_, Database>,
     request: ConnectionIdRequest,
 ) -> Result<(), String> {
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         let _ = (registry, database, request);
         Err("Opening connection locations is unavailable on this platform".to_owned())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = registry;
+        let connection = database
+            .find_connection(request.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Connection was not found".to_owned())?;
+        macos_file_provider::open_domain(connection.id).await?;
+        record_connection_activity(&database, "explorer_opened", &connection).await;
+        Ok(())
     }
     #[cfg(target_os = "linux")]
     {
@@ -2854,7 +2979,7 @@ async fn connection_location_open(
         if !registry.contains(&connection.id.to_string()) {
             return Err("The connection is not mounted".to_owned());
         }
-        let path = linux_mount_path(&connection.name)?;
+        let path = linux_mount_path(&connection)?;
         std::process::Command::new("xdg-open")
             .arg(&path)
             .spawn()
@@ -2935,6 +3060,10 @@ pub fn run() {
             tauri::async_runtime::block_on(transfers.recover())?;
             let transfers = Arc::new(transfers);
             start_sync_scheduler(database.clone(), Arc::clone(&transfers));
+            #[cfg(target_os = "macos")]
+            if let Err(error) = macos_file_provider::start(database.clone()) {
+                tracing::warn!(%error, "macOS File Provider broker is unavailable");
+            }
             app.manage(database);
             app.manage(transfers);
             let open = MenuItemBuilder::with_id("open", "Open Bifrost Drive").build(app)?;
@@ -2982,6 +3111,7 @@ pub fn run() {
             credential_store_check,
             sync_root_supported,
             filesystem_integration_kind,
+            filesystem_default_mount_root,
             connections_list,
             connections_details,
             connections_update,
@@ -3237,7 +3367,9 @@ mod registry_tests {
 
 #[cfg(all(test, target_os = "linux"))]
 mod linux_mount_tests {
-    use super::linux_mount_directory_name;
+    use super::{configured_linux_mount_root, linux_mount_directory_name, linux_mount_path};
+    use bifrost_common::{ConnectionId, ProviderKind};
+    use bifrost_db::ConnectionRecord;
 
     #[test]
     fn mount_directory_names_use_the_chosen_connection_name_safely() {
@@ -3247,6 +3379,24 @@ mod linux_mount_tests {
         );
         assert_eq!(linux_mount_directory_name(" Team ").unwrap(), "Team");
         assert!(linux_mount_directory_name("..").is_err());
+    }
+
+    #[test]
+    fn mount_paths_append_the_connection_name_to_an_absolute_parent() {
+        let connection = ConnectionRecord {
+            id: ConnectionId::new(),
+            name: "Team Files".to_owned(),
+            kind: ProviderKind::Sftp,
+            endpoint: "sftp://example.test".to_owned(),
+            credential_ref: "{}".to_owned(),
+            configuration_json: r#"{"mount_root":"/mnt/bifrost"}"#.to_owned(),
+        };
+
+        assert_eq!(
+            linux_mount_path(&connection).unwrap(),
+            std::path::PathBuf::from("/mnt/bifrost/Team Files")
+        );
+        assert!(configured_linux_mount_root(r#"{"mount_root":"relative"}"#).is_err());
     }
 }
 

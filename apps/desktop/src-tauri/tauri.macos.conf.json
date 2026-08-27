@@ -3,7 +3,15 @@
   "bundle": {
     "createUpdaterArtifacts": false,
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "entitlements": "../../../platforms/macos/file-provider/BifrostHost.entitlements",
+      "frameworks": [
+        "../../../target/macos-file-provider/libBifrostFileProviderHostBridge.dylib"
+      ],
+      "files": {
+        "PlugIns/BifrostFileProvider.appex": "../../../target/macos-file-provider/BifrostFileProvider.appex"
+      },
+      "infoPlist": "Info.macos.plist"
     }
   }
 }

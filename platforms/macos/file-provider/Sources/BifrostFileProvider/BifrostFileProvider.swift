@@ -1,19 +1,21 @@
 import FileProvider
 import Foundation
 import os
+import UniformTypeIdentifiers
 
 public enum BifrostFileProviderError: Error {
     case unavailable
     case invalidIdentifier
 }
 
-public struct BifrostRemoteItem: Sendable {
+public struct BifrostRemoteItem: Codable, Sendable {
     public let identifier: String
     public let parentIdentifier: String
     public let filename: String
     public let isDirectory: Bool
     public let size: Int64?
     public let modifiedAt: Date?
+    public let capabilities: [String]?
 
     public init(
         identifier: String,
@@ -21,7 +23,8 @@ public struct BifrostRemoteItem: Sendable {
         filename: String,
         isDirectory: Bool,
         size: Int64?,
-        modifiedAt: Date?
+        modifiedAt: Date?,
+        capabilities: [String]? = nil
     ) {
         self.identifier = identifier
         self.parentIdentifier = parentIdentifier
@@ -29,6 +32,7 @@ public struct BifrostRemoteItem: Sendable {
         self.isDirectory = isDirectory
         self.size = size
         self.modifiedAt = modifiedAt
+        self.capabilities = capabilities
     }
 }
 
@@ -36,8 +40,8 @@ public protocol BifrostFileProviderTransport: Sendable {
     func item(identifier: String) async throws -> BifrostRemoteItem
     func contents(identifier: String, destination: URL) async throws -> BifrostRemoteItem
     func enumerate(parentIdentifier: String, pageToken: String?) async throws -> ([BifrostRemoteItem], String?)
-    func create(identifier: String, parentIdentifier: String, filename: String, contents: URL?) async throws -> BifrostRemoteItem
-    func modify(identifier: String, contents: URL?) async throws -> BifrostRemoteItem
+    func create(identifier: String, parentIdentifier: String, filename: String, isDirectory: Bool, contents: URL?) async throws -> BifrostRemoteItem
+    func modify(identifier: String, parentIdentifier: String, filename: String, contents: URL?) async throws -> BifrostRemoteItem
     func delete(identifier: String) async throws
 }
 
@@ -52,15 +56,31 @@ public final class BifrostFileProviderItem: NSObject, NSFileProviderItem {
     public let childItemCount: NSNumber?
 
     public init(remote: BifrostRemoteItem) {
-        self.itemIdentifier = NSFileProviderItemIdentifier(remote.identifier)
-        self.parentItemIdentifier = NSFileProviderItemIdentifier(remote.parentIdentifier)
+        self.itemIdentifier = remote.identifier.isEmpty
+            ? .rootContainer
+            : NSFileProviderItemIdentifier(remote.identifier)
+        self.parentItemIdentifier = remote.parentIdentifier.isEmpty
+            ? .rootContainer
+            : NSFileProviderItemIdentifier(remote.parentIdentifier)
         self.filename = remote.filename
         self.typeIdentifier = remote.isDirectory ? "public.folder" : "public.data"
         self.documentSize = remote.size.map(NSNumber.init(value:))
         self.contentModificationDate = remote.modifiedAt
-        self.capabilities = remote.isDirectory
-            ? [.allowsContentEnumerating, .allowsAddingSubItems]
-            : [.allowsReading]
+        let supported = Set(remote.capabilities ?? ["read"])
+        var itemCapabilities: NSFileProviderItemCapabilities = remote.isDirectory
+            ? [.allowsContentEnumerating]
+            : []
+        if supported.contains("read") { itemCapabilities.insert(.allowsReading) }
+        if supported.contains("write") {
+            itemCapabilities.insert(.allowsWriting)
+            if remote.isDirectory { itemCapabilities.insert(.allowsAddingSubItems) }
+        }
+        if supported.contains("create_directory") && remote.isDirectory {
+            itemCapabilities.insert(.allowsAddingSubItems)
+        }
+        if supported.contains("rename") { itemCapabilities.insert(.allowsRenaming) }
+        if supported.contains("delete") { itemCapabilities.insert(.allowsDeleting) }
+        self.capabilities = itemCapabilities
         self.childItemCount = remote.isDirectory ? nil : 0
         super.init()
     }
@@ -78,7 +98,10 @@ public final class BifrostFileProviderExtension: NSObject, NSFileProviderReplica
     }
 
     public required convenience init(domain: NSFileProviderDomain) {
-        self.init(domain: domain, transport: UnavailableTransport())
+        self.init(
+            domain: domain,
+            transport: AppGroupTransport(connectionId: domain.identifier.rawValue)
+        )
     }
 
     public func invalidate() {
@@ -92,6 +115,7 @@ public final class BifrostFileProviderExtension: NSObject, NSFileProviderReplica
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
         Task {
+            defer { progress.completedUnitCount = 1 }
             do {
                 let item = try await transport.item(identifier: identifier.rawValue)
                 completionHandler(BifrostFileProviderItem(remote: item), nil)
@@ -112,6 +136,7 @@ public final class BifrostFileProviderExtension: NSObject, NSFileProviderReplica
             .appendingPathComponent(UUID().uuidString, isDirectory: false)
         let progress = Progress(totalUnitCount: 1)
         Task {
+            defer { progress.completedUnitCount = 1 }
             do {
                 let item = try await transport.contents(identifier: itemIdentifier.rawValue, destination: destination)
                 completionHandler(destination, BifrostFileProviderItem(remote: item), nil)
@@ -139,11 +164,13 @@ public final class BifrostFileProviderExtension: NSObject, NSFileProviderReplica
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
         Task {
+            defer { progress.completedUnitCount = 1 }
             do {
                 let remote = try await transport.create(
                     identifier: itemTemplate.itemIdentifier.rawValue,
                     parentIdentifier: itemTemplate.parentItemIdentifier.rawValue,
                     filename: itemTemplate.filename,
+                    isDirectory: itemTemplate.contentType.conforms(to: .folder),
                     contents: url
                 )
                 completionHandler(BifrostFileProviderItem(remote: remote), [], false, nil)
@@ -165,9 +192,12 @@ public final class BifrostFileProviderExtension: NSObject, NSFileProviderReplica
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
         Task {
+            defer { progress.completedUnitCount = 1 }
             do {
                 let remote = try await transport.modify(
                     identifier: item.itemIdentifier.rawValue,
+                    parentIdentifier: item.parentItemIdentifier.rawValue,
+                    filename: item.filename,
                     contents: newContents
                 )
                 completionHandler(BifrostFileProviderItem(remote: remote), [], false, nil)
@@ -187,6 +217,7 @@ public final class BifrostFileProviderExtension: NSObject, NSFileProviderReplica
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
         Task {
+            defer { progress.completedUnitCount = 1 }
             do {
                 try await transport.delete(identifier: identifier.rawValue)
                 completionHandler(nil)
@@ -207,32 +238,6 @@ public final class BifrostFileProviderExtension: NSObject, NSFileProviderReplica
 
     public func importDidFinish(completionHandler: @escaping () -> Void) {
         completionHandler()
-    }
-}
-
-private struct UnavailableTransport: BifrostFileProviderTransport {
-    func item(identifier: String) async throws -> BifrostRemoteItem {
-        throw BifrostFileProviderError.unavailable
-    }
-
-    func contents(identifier: String, destination: URL) async throws -> BifrostRemoteItem {
-        throw BifrostFileProviderError.unavailable
-    }
-
-    func enumerate(parentIdentifier: String, pageToken: String?) async throws -> ([BifrostRemoteItem], String?) {
-        throw BifrostFileProviderError.unavailable
-    }
-
-    func create(identifier: String, parentIdentifier: String, filename: String, contents: URL?) async throws -> BifrostRemoteItem {
-        throw BifrostFileProviderError.unavailable
-    }
-
-    func modify(identifier: String, contents: URL?) async throws -> BifrostRemoteItem {
-        throw BifrostFileProviderError.unavailable
-    }
-
-    func delete(identifier: String) async throws {
-        throw BifrostFileProviderError.unavailable
     }
 }
 
@@ -257,8 +262,8 @@ private final class BifrostEnumerator: NSObject, NSFileProviderEnumerator {
             do {
                 let (items, nextToken) = try await transport.enumerate(parentIdentifier: parentIdentifier, pageToken: token)
                 observer.didEnumerate(items.map(BifrostFileProviderItem.init))
-                if let nextToken {
-                    observer.finishEnumerating(upTo: NSFileProviderPage(nextToken.data(using: .utf8)!))
+                if let nextToken, let data = nextToken.data(using: .utf8) {
+                    observer.finishEnumerating(upTo: NSFileProviderPage(data))
                 } else {
                     observer.finishEnumerating(upTo: nil)
                 }

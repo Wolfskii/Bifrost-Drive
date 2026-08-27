@@ -66,6 +66,8 @@ pub struct CreateS3ConnectionRequest {
     pub drive_letter: Option<String>,
     pub mount_on_startup: bool,
     #[serde(default)]
+    pub mount_root: Option<String>,
+    #[serde(default)]
     pub drive_type: String,
     #[serde(default)]
     pub drive_icon: Option<String>,
@@ -79,6 +81,8 @@ pub struct CreateWebDavConnectionRequest {
     pub password: String,
     pub drive_letter: Option<String>,
     pub mount_on_startup: bool,
+    #[serde(default)]
+    pub mount_root: Option<String>,
     #[serde(default)]
     pub drive_type: String,
     #[serde(default)]
@@ -94,6 +98,8 @@ pub struct CreateFtpConnectionRequest {
     pub drive_letter: Option<String>,
     pub mount_on_startup: bool,
     #[serde(default)]
+    pub mount_root: Option<String>,
+    #[serde(default)]
     pub drive_type: String,
     #[serde(default)]
     pub drive_icon: Option<String>,
@@ -108,6 +114,8 @@ pub struct CreateSmbConnectionRequest {
     pub domain: String,
     pub drive_letter: Option<String>,
     pub mount_on_startup: bool,
+    #[serde(default)]
+    pub mount_root: Option<String>,
     #[serde(default)]
     pub drive_type: String,
     #[serde(default)]
@@ -131,6 +139,8 @@ pub struct CreateSftpConnectionRequest {
     pub passphrase: Option<String>,
     pub drive_letter: Option<String>,
     pub mount_on_startup: bool,
+    #[serde(default)]
+    pub mount_root: Option<String>,
     #[serde(default)]
     pub drive_type: String,
     #[serde(default)]

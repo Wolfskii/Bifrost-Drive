@@ -11,7 +11,7 @@ Early foundation. The repository currently contains shared Rust contracts, SQLit
 ## Supported Targets
 
 - Windows 11 22H2+ is the first-release target. The CFAPI adapter provides sync roots and hydration, while the WinFsp adapter provides writable drive-letter mounts. Windows VM acceptance against live providers is still required.
-- macOS Keychain and File Provider package support are available; signed extension transport wiring remains platform-specific.
+- macOS Keychain and File Provider packaging are implemented; signed Finder acceptance requires Apple File Provider and application-group provisioning.
 - Linux Secret Service and read-only FUSE integration are available; writable FUSE mutation semantics remain in progress.
 
 ## Development

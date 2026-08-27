@@ -4,6 +4,8 @@
 <dict>
     <key>NSExtension</key>
     <dict>
+        <key>NSExtensionFileProviderDocumentGroup</key>
+        <string>group.com.bifrost.drive</string>
         <key>NSExtensionPointIdentifier</key>
         <string>com.apple.fileprovider-nonui</string>
         <key>NSExtensionPrincipalClass</key>

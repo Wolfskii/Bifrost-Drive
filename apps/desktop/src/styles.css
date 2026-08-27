@@ -776,6 +776,25 @@ h1 {
 .icon-source-field .secondary-button {
     min-height: 40px;
 }
+.mount-root-field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 8px 10px;
+    grid-column: 1 / -1;
+}
+.mount-root-field .secondary-button {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    gap: 7px;
+}
+.mount-root-field small {
+    grid-column: 1 / -1;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.4;
+}
 .drive-icon-field {
     position: relative;
     display: grid;
@@ -1024,6 +1043,12 @@ input[type="radio"]:disabled {
     }
     .icon-source-field {
         grid-template-columns: 1fr;
+    }
+    .mount-root-field {
+        grid-template-columns: 1fr;
+    }
+    .mount-root-field .secondary-button {
+        justify-content: center;
     }
     .system-check {
         flex-direction: column;

@@ -63,10 +63,25 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  macos-file-provider:
+    name: macOS File Provider checks
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Install extension build tools
+        run: brew install xcodegen
+      - name: Test File Provider transport
+        run: swift test --package-path platforms/macos/file-provider
+      - name: Build File Provider extension
+        run: platforms/macos/file-provider/build.sh
+
   version:
     name: Plan release version
     if: github.event_name != 'pull_request'
-    needs: [frontend, rust]
+    needs: [frontend, rust, macos-file-provider]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -138,6 +153,8 @@ jobs:
         with:
           workspaces: . -> target
       - run: npm ci
+      - name: Install macOS extension build tools
+        run: brew install xcodegen
       - name: Apply release version
         env:
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
@@ -202,6 +219,8 @@ jobs:
           else
             echo "updater_platform=darwin-x86_64" >> "$GITHUB_OUTPUT"
           fi
+      - name: Build macOS File Provider extension
+        run: platforms/macos/file-provider/build.sh
       - name: Build macOS updater package
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -216,7 +235,18 @@ jobs:
             echo "macOS application bundle was not produced" >&2
             exit 1
           fi
+          test -d "$app/Contents/PlugIns/BifrostFileProvider.appex"
+          test -f "$app/Contents/Frameworks/libBifrostFileProviderHostBridge.dylib"
+          extension_point="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$app/Contents/PlugIns/BifrostFileProvider.appex/Contents/Info.plist")"
+          if [[ "$extension_point" != "com.apple.fileprovider-nonui" ]]; then
+            echo "Unexpected File Provider extension point: $extension_point" >&2
+            exit 1
+          fi
+          codesign --verify --strict --verbose=2 "$app/Contents/PlugIns/BifrostFileProvider.appex"
+          codesign --verify --strict --verbose=2 "$app/Contents/Frameworks/libBifrostFileProviderHostBridge.dylib"
           codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -d --entitlements :- "$app" 2>&1 | grep -q 'group.com.bifrost.drive'
+          codesign -d --entitlements :- "$app/Contents/PlugIns/BifrostFileProvider.appex" 2>&1 | grep -q 'group.com.bifrost.drive'
           identity="$(codesign -dvv "$app" 2>&1 | sed -n 's/^Signature=//p')"
           if [[ "$identity" != "adhoc" ]]; then
             echo "Expected an ad-hoc macOS signature, found: ${identity:-none}" >&2

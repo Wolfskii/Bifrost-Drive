@@ -16,7 +16,7 @@ flowchart TD
   PLATFORM[platforms/windows, macos, linux] --> API
 ```
 
-The shared crates do not import Tauri or operating-system APIs. Provider implementations are isolated in their own crates and expose only verified capabilities. The desktop host persists transfers, hydrates all current providers, runs scheduled synchronization, routes local CFAPI mutations, and owns native WinFsp mount handles; live-provider native acceptance remains a separate concern.
+The shared crates do not import Tauri or operating-system APIs. Provider implementations are isolated in their own crates and expose only verified capabilities. The desktop host persists transfers, hydrates all current providers, runs scheduled synchronization, routes local CFAPI mutations, owns native WinFsp/FUSE mount handles, and brokers macOS File Provider requests through an application-group boundary; live-provider native acceptance remains a separate concern.
 
 ## Database
 
@@ -24,4 +24,4 @@ SQLite stores connections, metadata, cache state, transfers, activity, history, 
 
 ## Native boundaries
 
-Windows CFAPI, WinFsp, Credential Manager, Explorer services, and installer integration belong under `platforms/windows/`. macOS File Provider/Keychain and Linux FUSE/Secret Service integrations belong under their platform adapters. CFAPI provides sync-root placeholders and hydration. WinFsp provides independent writable drive letters through provider-backed callbacks and disk-staged writes. The official unmodified WinFsp runtime is installed by the Bifrost installer. Windows VM acceptance remains required.
+Windows CFAPI, WinFsp, Credential Manager, Explorer services, and installer integration belong under `platforms/windows/`. macOS File Provider/Keychain and Linux FUSE/Secret Service integrations belong under their platform adapters. CFAPI provides sync-root placeholders and hydration. WinFsp provides independent writable drive letters through provider-backed callbacks and disk-staged writes. Linux FUSE provides chosen-name mounts. The embedded macOS `.appex` registers one Finder domain per connection and delegates storage operations to the Rust host. The official unmodified WinFsp runtime is installed by the Bifrost installer. Native signed acceptance remains required.

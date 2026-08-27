@@ -1,7 +1,7 @@
 # macOS File Provider
 
-This directory contains the native `NSFileProviderReplicatedExtension` target boundary for macOS 11 and later. The Swift package maps provider-neutral remote metadata into Finder items, enumerates remote directories, and delegates content downloads through `BifrostFileProviderTransport`.
+This directory contains the native `NSFileProviderReplicatedExtension` for macOS 13 and later. The Swift package maps provider-neutral remote metadata into Finder items and uses an application-group request broker to route enumeration, hydration, upload, rename, directory creation, and deletion through the Rust `StorageProvider` implementations in the running Bifrost host.
 
-The app target must inject a transport backed by the Bifrost local service and include `Info.plist` and `BifrostFileProvider.entitlements` in the File Provider extension target. The application-group identifier must match the signed host app. Run `swift test --package-path platforms/macos/file-provider` on macOS before packaging.
+`project.yml` generates the Xcode extension and host-bridge targets. `build.sh` stages `BifrostFileProvider.appex` and the bridge dylib before Tauri embeds and signs them. Run `swift test --package-path platforms/macos/file-provider` and `platforms/macos/file-provider/build.sh` on macOS before packaging.
 
-Mutation callbacks forward create, modify, and delete operations to the injected transport. The default transport returns an explicit unavailable error until the host app supplies conflict-safe Rust service operations; Finder changes are never silently discarded.
+The host app and extension must be signed by the same Apple team with the `group.com.bifrost.drive` application group. The extension bundle identifier is `com.bifrost.drive.file-provider`. Ad-hoc signing can verify bundle structure but cannot provide production File Provider or application-group authorization; configure the Apple App IDs, profiles, Developer ID identity, and notarization before distributing Finder integration.

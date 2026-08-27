@@ -8,6 +8,7 @@ apps/desktop/dist/
 
 # Tauri
 apps/desktop/src-tauri/gen/
+platforms/macos/file-provider/BifrostFileProvider.xcodeproj/
 
 # Local development
 .env

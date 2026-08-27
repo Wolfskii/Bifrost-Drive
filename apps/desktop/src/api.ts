@@ -51,6 +51,7 @@ export interface S3ConnectionForm {
     secretAccessKey: string;
     driveLetter: string;
     mountOnStartup: boolean;
+    mountRoot: string;
     driveType: "network" | "local";
     driveIcon: string;
 }
@@ -62,6 +63,7 @@ export interface WebDavConnectionForm {
     password: string;
     driveLetter: string;
     mountOnStartup: boolean;
+    mountRoot: string;
     driveType: "network" | "local";
     driveIcon: string;
 }
@@ -73,6 +75,7 @@ export interface FtpConnectionForm {
     password: string;
     driveLetter: string;
     mountOnStartup: boolean;
+    mountRoot: string;
     driveType: "network" | "local";
     driveIcon: string;
 }
@@ -85,6 +88,7 @@ export interface SmbConnectionForm {
     domain: string;
     driveLetter: string;
     mountOnStartup: boolean;
+    mountRoot: string;
     driveType: "network" | "local";
     driveIcon: string;
 }
@@ -102,6 +106,7 @@ export interface SftpConnectionForm {
     passphrase: string;
     driveLetter: string;
     mountOnStartup: boolean;
+    mountRoot: string;
     driveType: "network" | "local";
     driveIcon: string;
 }
@@ -142,7 +147,7 @@ export interface DriveMountRegisterResponse {
     drive_letter: string | null;
 }
 
-export type FilesystemIntegration = "windows" | "linux" | "none";
+export type FilesystemIntegration = "windows" | "linux" | "macos" | "none";
 
 export interface StockDriveIcon {
     value: string;
@@ -180,6 +185,13 @@ export async function getFilesystemIntegration(): Promise<FilesystemIntegration>
         return "none";
     }
     return invoke<FilesystemIntegration>("filesystem_integration_kind");
+}
+
+export async function getFilesystemDefaultMountRoot(): Promise<string> {
+    if (!tauriAvailable()) {
+        return "";
+    }
+    return (await invoke<string | null>("filesystem_default_mount_root")) ?? "";
 }
 
 export async function getConnectionDetails(
@@ -302,6 +314,7 @@ export async function createS3Connection(
             secret_access_key: form.secretAccessKey,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
+            mount_root: form.mountRoot || null,
             drive_type: form.driveType,
             drive_icon: form.driveIcon || null,
         },
@@ -319,6 +332,7 @@ export async function createWebDavConnection(
             ...form,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
+            mount_root: form.mountRoot || null,
             drive_type: form.driveType,
             drive_icon: form.driveIcon || null,
         },
@@ -336,6 +350,7 @@ export async function createFtpConnection(
             ...form,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
+            mount_root: form.mountRoot || null,
             drive_type: form.driveType,
             drive_icon: form.driveIcon || null,
         },
@@ -353,6 +368,7 @@ export async function createSmbConnection(
             ...form,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
+            mount_root: form.mountRoot || null,
             drive_type: form.driveType,
             drive_icon: form.driveIcon || null,
         },
@@ -372,6 +388,7 @@ export async function createSftpConnection(
             trust_on_first_use: form.trustOnFirstUse,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
+            mount_root: form.mountRoot || null,
             drive_type: form.driveType,
             drive_icon: form.driveIcon || null,
         },

@@ -1,0 +1,42 @@
+name: BifrostFileProvider
+options:
+  minimumXcodeGenVersion: 2.38.0
+  deploymentTarget:
+    macOS: "13.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+targets:
+  BifrostFileProvider:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Sources/BifrostFileProvider
+    info:
+      path: Info.plist
+    entitlements:
+      path: BifrostFileProvider.entitlements
+    settings:
+      base:
+        APPLICATION_EXTENSION_API_ONLY: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.bifrost.drive.file-provider
+        PRODUCT_NAME: BifrostFileProvider
+        PRODUCT_MODULE_NAME: BifrostFileProvider
+        SKIP_INSTALL: YES
+  BifrostFileProviderHostBridge:
+    type: library.dynamic
+    platform: macOS
+    sources:
+      - path: Sources/BifrostFileProviderHostBridge
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bifrost.drive.file-provider-host-bridge
+        PRODUCT_NAME: BifrostFileProviderHostBridge
+        SKIP_INSTALL: YES
+schemes:
+  BifrostFileProvider:
+    build:
+      targets:
+        BifrostFileProvider: all
+        BifrostFileProviderHostBridge: all

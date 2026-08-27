@@ -75,6 +75,7 @@ import {
     getConnectionDetails,
     getDriveIconPreview,
     getFilesystemIntegration,
+    getFilesystemDefaultMountRoot,
     getAvailableDriveLetters,
     getStockDriveIcons,
     installUpdate,
@@ -446,6 +447,8 @@ export function App() {
     const [providerChoice, setProviderChoice] = useState<ProviderChoice>("S3");
     const [providerSelection, setProviderSelection] = useState("s3-1");
     const [driveLetter, setDriveLetter] = useState("");
+    const [defaultMountRoot, setDefaultMountRoot] = useState("");
+    const [mountRoot, setMountRoot] = useState("");
     const [syncRootsSupported, setSyncRootsSupported] = useState(false);
     const [filesystemIntegration, setFilesystemIntegration] =
         useState<FilesystemIntegration>("none");
@@ -477,11 +480,19 @@ export function App() {
             listConnections(),
             supportsSyncRoots(),
             getFilesystemIntegration(),
+            getFilesystemDefaultMountRoot(),
         ])
             .then(
-                async ([loadedConnections, supportsRoots, filesystemKind]) => {
+                async ([
+                    loadedConnections,
+                    supportsRoots,
+                    filesystemKind,
+                    defaultRoot,
+                ]) => {
                     setSyncRootsSupported(supportsRoots);
                     setFilesystemIntegration(filesystemKind);
+                    setDefaultMountRoot(defaultRoot);
+                    setMountRoot(defaultRoot);
                     setConnections(loadedConnections);
                     const details = await Promise.all(
                         loadedConnections.map(async (connection) => {
@@ -498,6 +509,7 @@ export function App() {
                     const driveConnections = new Set(
                         details.flatMap((entry) =>
                             filesystemKind === "linux" ||
+                            filesystemKind === "macos" ||
                             entry?.[1].configuration.drive_letter
                                 ? [entry?.[0]].filter((id): id is string =>
                                       Boolean(id),
@@ -510,14 +522,18 @@ export function App() {
                             const driveLetter =
                                 entry?.[1].configuration.drive_letter;
                             return entry &&
-                                (driveLetter || filesystemKind === "linux")
+                                (driveLetter ||
+                                    filesystemKind === "linux" ||
+                                    filesystemKind === "macos")
                                 ? [
                                       [
                                           entry[0],
                                           {
                                               location: driveLetter
                                                   ? `${String(driveLetter)}:`
-                                                  : "Bifrost Drive folder",
+                                                  : filesystemKind === "macos"
+                                                    ? `Finder > Locations > ${entry[1].summary.name}`
+                                                    : `${String(entry[1].configuration.mount_root ?? defaultRoot).replace(/\/$/, "")}/${entry[1].summary.name}`,
                                               mountOnStartup:
                                                   entry[1].configuration
                                                       .mount_on_startup !==
@@ -761,6 +777,17 @@ export function App() {
         }
     }
 
+    async function handleBrowseMountRoot() {
+        const selected = await openFileDialog({
+            multiple: false,
+            directory: true,
+            defaultPath: mountRoot || defaultMountRoot || undefined,
+        });
+        if (typeof selected === "string") {
+            setMountRoot(selected);
+        }
+    }
+
     async function handleEdit(connection: ConnectionSummary) {
         setError(null);
         try {
@@ -787,6 +814,7 @@ export function App() {
                     ? `${String(configuration.drive_letter)}:`
                     : "",
                 mountOnStartup: configuration.mount_on_startup !== false,
+                mountRoot: String(configuration.mount_root ?? defaultMountRoot),
             });
             const configuredIcon = String(configuration.drive_icon ?? "system");
             const builtInIcon =
@@ -817,6 +845,7 @@ export function App() {
                     ? `${String(configuration.drive_letter)}:`
                     : "",
             );
+            setMountRoot(String(configuration.mount_root ?? defaultMountRoot));
             setSftpAuthentication(
                 configuration.authentication === "private_key"
                     ? "private_key"
@@ -866,6 +895,9 @@ export function App() {
         const values = new FormData(form);
         const name = String(values.get("name") ?? "").trim();
         const driveLetter = String(values.get("driveLetter") ?? "").trim();
+        const selectedMountRoot = String(
+            values.get("mountRoot") ?? mountRoot,
+        ).trim();
         const mountOnStartup = values.get("mountOnStartup") === "on";
         const selectedDriveType = String(
             values.get("driveType") ?? "network",
@@ -879,6 +911,7 @@ export function App() {
             username: String(values.get("username") ?? "").trim(),
             password: String(values.get("password") ?? ""),
             mountOnStartup,
+            mountRoot: selectedMountRoot,
             driveType: selectedDriveType,
             driveIcon: selectedDriveIcon,
         };
@@ -952,6 +985,9 @@ export function App() {
                 configuration.drive_letter = driveLetter;
             }
             configuration.mount_on_startup = mountOnStartup;
+            if (filesystemIntegration === "linux") {
+                configuration.mount_root = selectedMountRoot;
+            }
             configuration.drive_type = selectedDriveType;
             configuration.drive_icon = selectedDriveIcon;
             connectionOperation = updateConnection({
@@ -1007,6 +1043,7 @@ export function App() {
                 secretAccessKey: String(values.get("secretAccessKey") ?? ""),
                 driveLetter,
                 mountOnStartup,
+                mountRoot: selectedMountRoot,
                 driveType: selectedDriveType,
                 driveIcon: selectedDriveIcon,
             };
@@ -1050,12 +1087,18 @@ export function App() {
             });
             setDrivePreferences((current) => {
                 const next = { ...current };
-                if (driveLetter || filesystemIntegration === "linux") {
+                if (
+                    driveLetter ||
+                    filesystemIntegration === "linux" ||
+                    filesystemIntegration === "macos"
+                ) {
                     next[connection.id] = {
                         location:
                             filesystemIntegration === "linux"
-                                ? "Bifrost Drive folder"
-                                : driveLetter,
+                                ? `${selectedMountRoot.replace(/\/$/, "")}/${name}`
+                                : filesystemIntegration === "macos"
+                                  ? `Finder > Locations > ${name}`
+                                  : driveLetter,
                         mountOnStartup,
                         iconPreview:
                             customDriveIconPreview ||
@@ -1081,7 +1124,11 @@ export function App() {
                     [connection.id]: mount.location,
                 }));
             } catch (cause) {
-                if (driveLetter || filesystemIntegration === "linux") {
+                if (
+                    driveLetter ||
+                    filesystemIntegration === "linux" ||
+                    filesystemIntegration === "macos"
+                ) {
                     setError(
                         `Connection saved, but its filesystem location could not be mounted: ${errorMessage(cause, "unknown error")}`,
                     );
@@ -1099,6 +1146,7 @@ export function App() {
             setCustomDriveIconPreview("");
             setProviderSelection("s3-1");
             setDriveLetter("");
+            setMountRoot(defaultMountRoot);
         } catch (cause) {
             const message = errorMessage(cause, "Unable to save connection.");
             setError(message);
@@ -1245,6 +1293,7 @@ export function App() {
                                         setCustomDriveIconPreview("");
                                         setProviderSelection("s3-1");
                                         setDriveLetter("");
+                                        setMountRoot(defaultMountRoot);
                                         setWizardOpen(true);
                                         setActiveView("add");
                                     }}
@@ -1413,9 +1462,12 @@ export function App() {
                                                     ] && (
                                                         <p className="explorer-location">
                                                             {filesystemIntegration ===
-                                                            "linux"
-                                                                ? "Folder: "
-                                                                : "Drive: "}
+                                                            "windows"
+                                                                ? "Drive: "
+                                                                : filesystemIntegration ===
+                                                                    "macos"
+                                                                  ? "Finder: "
+                                                                  : "Folder: "}
                                                             {
                                                                 mountedDrives[
                                                                     connection
@@ -1432,9 +1484,12 @@ export function App() {
                                                         ] && (
                                                             <p className="explorer-location">
                                                                 {filesystemIntegration ===
-                                                                "linux"
-                                                                    ? "Folder: "
-                                                                    : "Drive: "}
+                                                                "windows"
+                                                                    ? "Drive: "
+                                                                    : filesystemIntegration ===
+                                                                        "macos"
+                                                                      ? "Finder: "
+                                                                      : "Folder: "}
                                                                 {
                                                                     drivePreferences[
                                                                         connection
@@ -1520,9 +1575,12 @@ export function App() {
                                                             ]
                                                                 ? "Unmount drive"
                                                                 : filesystemIntegration ===
-                                                                    "linux"
-                                                                  ? "Mount folder"
-                                                                  : "Mount drive"
+                                                                    "windows"
+                                                                  ? "Mount drive"
+                                                                  : filesystemIntegration ===
+                                                                      "macos"
+                                                                    ? "Add to Finder"
+                                                                    : "Mount folder"
                                                         }
                                                         disabled={
                                                             updatingDrive ===
@@ -2018,6 +2076,33 @@ export function App() {
                                     </div>
                                 )}
                             </div>
+                            {filesystemIntegration === "linux" && (
+                                <div className="mount-root-field">
+                                    <label>
+                                        Mount parent folder
+                                        <input
+                                            name="mountRoot"
+                                            value={mountRoot}
+                                            onChange={(event) =>
+                                                setMountRoot(event.target.value)
+                                            }
+                                            required
+                                        />
+                                    </label>
+                                    <button
+                                        className="secondary-button"
+                                        type="button"
+                                        onClick={handleBrowseMountRoot}
+                                    >
+                                        <FolderOpen size={15} /> Browse
+                                    </button>
+                                    <small>
+                                        Bifrost appends the chosen connection
+                                        name. The default is outside Home so
+                                        Home snapshots do not include the mount.
+                                    </small>
+                                </div>
+                            )}
                             {filesystemIntegration !== "none" && (
                                 <div className="checkbox-row">
                                     <input
