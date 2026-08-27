@@ -76,7 +76,7 @@ jobs:
       - name: Test File Provider transport
         run: swift test --package-path platforms/macos/file-provider
       - name: Build File Provider extension
-        run: platforms/macos/file-provider/build.sh
+        run: bash platforms/macos/file-provider/build.sh
 
   version:
     name: Plan release version
