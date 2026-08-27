@@ -312,7 +312,7 @@ fn filesystem_integration_kind() -> &'static str {
 fn filesystem_default_mount_root() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
-        return Some(linux_default_mount_root().to_string_lossy().into_owned());
+        Some(linux_default_mount_root().to_string_lossy().into_owned())
     }
     #[cfg(not(target_os = "linux"))]
     None

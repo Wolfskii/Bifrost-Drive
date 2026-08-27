@@ -49,7 +49,7 @@ public final class BifrostFileProviderItem: NSObject, NSFileProviderItem {
     public let itemIdentifier: NSFileProviderItemIdentifier
     public let parentItemIdentifier: NSFileProviderItemIdentifier
     public let filename: String
-    public let typeIdentifier: String
+    public let contentType: UTType?
     public let documentSize: NSNumber?
     public let contentModificationDate: Date?
     public let capabilities: NSFileProviderItemCapabilities
@@ -63,7 +63,7 @@ public final class BifrostFileProviderItem: NSObject, NSFileProviderItem {
             ? .rootContainer
             : NSFileProviderItemIdentifier(remote.parentIdentifier)
         self.filename = remote.filename
-        self.typeIdentifier = remote.isDirectory ? "public.folder" : "public.data"
+        self.contentType = remote.isDirectory ? .folder : .data
         self.documentSize = remote.size.map(NSNumber.init(value:))
         self.contentModificationDate = remote.modifiedAt
         let supported = Set(remote.capabilities ?? ["read"])
@@ -149,7 +149,8 @@ public final class BifrostFileProviderExtension: NSObject, NSFileProviderReplica
     }
 
     public func enumerator(
-        for containerItemIdentifier: NSFileProviderItemIdentifier
+        for containerItemIdentifier: NSFileProviderItemIdentifier,
+        request: NSFileProviderRequest
     ) throws -> NSFileProviderEnumerator {
         BifrostEnumerator(parentIdentifier: containerItemIdentifier.rawValue, transport: transport)
     }
@@ -170,7 +171,7 @@ public final class BifrostFileProviderExtension: NSObject, NSFileProviderReplica
                     identifier: itemTemplate.itemIdentifier.rawValue,
                     parentIdentifier: itemTemplate.parentItemIdentifier.rawValue,
                     filename: itemTemplate.filename,
-                    isDirectory: itemTemplate.contentType.conforms(to: .folder),
+                    isDirectory: itemTemplate.contentType?.conforms(to: .folder) ?? false,
                     contents: url
                 )
                 completionHandler(BifrostFileProviderItem(remote: remote), [], false, nil)
@@ -257,7 +258,7 @@ private final class BifrostEnumerator: NSObject, NSFileProviderEnumerator {
         for observer: NSFileProviderEnumerationObserver,
         startingAt page: NSFileProviderPage
     ) {
-        let token = page == NSFileProviderPage.initialPage ? nil : String(data: page.rawValue, encoding: .utf8)
+        let token = page.rawValue.isEmpty ? nil : String(data: page.rawValue, encoding: .utf8)
         Task {
             do {
                 let (items, nextToken) = try await transport.enumerate(parentIdentifier: parentIdentifier, pageToken: token)
