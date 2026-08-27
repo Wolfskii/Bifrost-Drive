@@ -258,7 +258,10 @@ private final class BifrostEnumerator: NSObject, NSFileProviderEnumerator {
         for observer: NSFileProviderEnumerationObserver,
         startingAt page: NSFileProviderPage
     ) {
-        let token = page.rawValue.isEmpty ? nil : String(data: page.rawValue, encoding: .utf8)
+        let isInitialPage = page.rawValue.isEmpty
+            || page == NSFileProviderPage.initialPageSortedByName as NSFileProviderPage
+            || page == NSFileProviderPage.initialPageSortedByDate as NSFileProviderPage
+        let token = isInitialPage ? nil : String(data: page.rawValue, encoding: .utf8)
         Task {
             do {
                 let (items, nextToken) = try await transport.enumerate(parentIdentifier: parentIdentifier, pageToken: token)
