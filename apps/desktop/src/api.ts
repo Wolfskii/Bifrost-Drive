@@ -165,6 +165,13 @@ export async function listConnections(): Promise<ConnectionSummary[]> {
     return invoke<ConnectionSummary[]>("connections_list");
 }
 
+export async function supportsSyncRoots(): Promise<boolean> {
+    if (!tauriAvailable()) {
+        return false;
+    }
+    return invoke<boolean>("sync_root_supported");
+}
+
 export async function getConnectionDetails(
     connectionId: string,
 ): Promise<ConnectionDetails> {

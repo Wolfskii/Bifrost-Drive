@@ -89,6 +89,7 @@ import {
     setDriveMountStartup,
     setAutostartEnabled,
     setStartMinimized,
+    supportsSyncRoots,
     S3ConnectionForm,
     StockDriveIcon,
     updateConnection,
@@ -150,30 +151,29 @@ function CredentialStoreBanner({
     onRestart: () => void;
 }) {
     if (!status || status.available) return null;
-        const desktop = status.desktop_environment?.toLowerCase() ?? "";
-        const isKde = desktop.includes("kde") || desktop.includes("plasma");
-        const distribution = status.linux_distribution;
-        const installCommand = distribution
-                ? ["fedora", "rhel", "centos", "rocky", "almalinux"].includes(
-                            distribution,
-                    )
-                        ? {
-                                    label: "Fedora / RHEL",
-                                    command: "sudo dnf install gnome-keyring libsecret",
-                            }
-                        : ["ubuntu", "debian", "linuxmint", "pop"].includes(distribution)
-                            ? {
-                                        label: "Ubuntu / Debian",
-                                        command:
-                                                "sudo apt install gnome-keyring libsecret-1-0",
-                                }
-                            : ["arch", "manjaro", "endeavouros"].includes(distribution)
-                                ? {
-                                            label: "Arch",
-                                            command: "sudo pacman -S gnome-keyring libsecret",
-                                    }
-                                : null
-                : null;
+    const desktop = status.desktop_environment?.toLowerCase() ?? "";
+    const isKde = desktop.includes("kde") || desktop.includes("plasma");
+    const distribution = status.linux_distribution;
+    const installCommand = distribution
+        ? ["fedora", "rhel", "centos", "rocky", "almalinux"].includes(
+              distribution,
+          )
+            ? {
+                  label: "Fedora / RHEL",
+                  command: "sudo dnf install gnome-keyring libsecret",
+              }
+            : ["ubuntu", "debian", "linuxmint", "pop"].includes(distribution)
+              ? {
+                    label: "Ubuntu / Debian",
+                    command: "sudo apt install gnome-keyring libsecret-1-0",
+                }
+              : ["arch", "manjaro", "endeavouros"].includes(distribution)
+                ? {
+                      label: "Arch",
+                      command: "sudo pacman -S gnome-keyring libsecret",
+                  }
+                : null
+        : null;
 
     return (
         <section className="system-check" role="alert">
@@ -194,7 +194,12 @@ function CredentialStoreBanner({
                                         Open System Settings, then KDE Wallet.
                                     </li>
                                     <li>
-                                        Check <strong>Use KWallet for the Secret Service interface</strong> and apply the change.
+                                        Check{" "}
+                                        <strong>
+                                            Use KWallet for the Secret Service
+                                            interface
+                                        </strong>{" "}
+                                        and apply the change.
                                     </li>
                                     <li>
                                         Unlock the default wallet, then restart
@@ -397,8 +402,7 @@ export function App() {
     const [error, setError] = useState<string | null>(null);
     const [credentialStoreStatus, setCredentialStoreStatus] =
         useState<CredentialStoreStatus | null>(null);
-    const [restartingApp, setRestartingApp] =
-        useState(false);
+    const [restartingApp, setRestartingApp] = useState(false);
     const [saving, setSaving] = useState(false);
     const [updateVersion, setUpdateVersion] = useState<string | null>(null);
     const [installingUpdate, setInstallingUpdate] = useState(false);
@@ -440,6 +444,7 @@ export function App() {
     const [providerChoice, setProviderChoice] = useState<ProviderChoice>("S3");
     const [providerSelection, setProviderSelection] = useState("s3-1");
     const [driveLetter, setDriveLetter] = useState("");
+    const [syncRootsSupported, setSyncRootsSupported] = useState(false);
 
     async function checkCredentialStore() {
         try {
@@ -464,8 +469,9 @@ export function App() {
     }, []);
 
     useEffect(() => {
-        listConnections()
-            .then(async (loadedConnections) => {
+        Promise.all([listConnections(), supportsSyncRoots()])
+            .then(async ([loadedConnections, supportsRoots]) => {
+                setSyncRootsSupported(supportsRoots);
                 setConnections(loadedConnections);
                 const details = await Promise.all(
                     loadedConnections.map(async (connection) => {
@@ -506,22 +512,26 @@ export function App() {
                     }),
                 );
                 setDrivePreferences(preferences);
-                const registeredRoots = await Promise.all(
-                    loadedConnections.map(async (connection) => {
-                        if (driveConnections.has(connection.id)) {
-                            await unregisterSyncRoot(connection.id).catch(
-                                () => undefined,
-                            );
-                            return null;
-                        }
-                        try {
-                            const root = await registerSyncRoot(connection.id);
-                            return [connection.id, root] as const;
-                        } catch {
-                            return null;
-                        }
-                    }),
-                );
+                const registeredRoots = supportsRoots
+                    ? await Promise.all(
+                          loadedConnections.map(async (connection) => {
+                              if (driveConnections.has(connection.id)) {
+                                  await unregisterSyncRoot(connection.id).catch(
+                                      () => undefined,
+                                  );
+                                  return null;
+                              }
+                              try {
+                                  const root = await registerSyncRoot(
+                                      connection.id,
+                                  );
+                                  return [connection.id, root] as const;
+                              } catch {
+                                  return null;
+                              }
+                          }),
+                      )
+                    : [];
                 setExplorerPaths(
                     Object.fromEntries(
                         registeredRoots.flatMap((root) =>
@@ -993,14 +1003,14 @@ export function App() {
                 ...current.filter((item) => item.id !== editingConnection?.id),
                 connection,
             ]);
-            if (driveLetter) {
+            if (driveLetter && syncRootsSupported) {
                 await unregisterSyncRoot(connection.id).catch(() => undefined);
                 setExplorerPaths((current) => {
                     const next = { ...current };
                     delete next[connection.id];
                     return next;
                 });
-            } else {
+            } else if (syncRootsSupported) {
                 try {
                     const root = await registerSyncRoot(connection.id);
                     setExplorerPaths((current) => ({
@@ -1070,10 +1080,8 @@ export function App() {
                     platform: current?.platform ?? "unknown",
                     provider: current?.provider ?? "Native credential store",
                     message,
-                    desktop_environment:
-                        current?.desktop_environment ?? null,
-                    linux_distribution:
-                        current?.linux_distribution ?? null,
+                    desktop_environment: current?.desktop_environment ?? null,
+                    linux_distribution: current?.linux_distribution ?? null,
                 }));
             }
         } finally {

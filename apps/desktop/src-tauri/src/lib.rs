@@ -285,6 +285,11 @@ fn credential_store_check() -> CredentialStoreStatus {
     }
 }
 
+#[tauri::command]
+fn sync_root_supported() -> bool {
+    cfg!(target_os = "windows")
+}
+
 #[async_trait::async_trait]
 impl TransferStore for SqliteTransferStore {
     async fn save(&self, transfer: TransferSnapshot) -> Result<(), String> {
@@ -2838,6 +2843,7 @@ pub fn run() {
             app_start_minimized_get,
             app_start_minimized_set,
             credential_store_check,
+            sync_root_supported,
             connections_list,
             connections_details,
             connections_update,
