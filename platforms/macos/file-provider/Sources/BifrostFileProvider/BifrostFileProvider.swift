@@ -49,7 +49,7 @@ public final class BifrostFileProviderItem: NSObject, NSFileProviderItem {
     public let itemIdentifier: NSFileProviderItemIdentifier
     public let parentItemIdentifier: NSFileProviderItemIdentifier
     public let filename: String
-    public let contentType: UTType?
+    public let contentType: UTType
     public let documentSize: NSNumber?
     public let contentModificationDate: Date?
     public let capabilities: NSFileProviderItemCapabilities
@@ -171,7 +171,7 @@ public final class BifrostFileProviderExtension: NSObject, NSFileProviderReplica
                     identifier: itemTemplate.itemIdentifier.rawValue,
                     parentIdentifier: itemTemplate.parentItemIdentifier.rawValue,
                     filename: itemTemplate.filename,
-                    isDirectory: itemTemplate.contentType?.conforms(to: .folder) ?? false,
+                    isDirectory: itemTemplate.contentType.conforms(to: .folder),
                     contents: url
                 )
                 completionHandler(BifrostFileProviderItem(remote: remote), [], false, nil)
