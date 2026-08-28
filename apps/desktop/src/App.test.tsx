@@ -100,8 +100,14 @@ describe("App", () => {
         expect(
             screen.getByRole("button", { name: "Sign in with Google" }),
         ).toBeTruthy();
+        expect(
+            (
+                screen.getByRole("button", { name: "Mount drive" }) as HTMLButtonElement
+            ).disabled,
+        ).toBe(true);
         expect(screen.queryByLabelText("Endpoint")).toBeNull();
         expect(screen.queryByLabelText("Google OAuth client ID")).toBeNull();
+        expect(screen.queryByLabelText("Shared Drive ID (optional)")).toBeNull();
 
         fireEvent.click(
             screen.getByRole("combobox", { name: /storage type/i }),

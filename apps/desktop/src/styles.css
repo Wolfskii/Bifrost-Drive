@@ -69,8 +69,12 @@ nav {
     width: 34px;
     height: 34px;
     border-radius: 8px;
-    color: #fff;
-    background: var(--accent);
+    overflow: hidden;
+    background: #17191c;
+}
+.brand-mark img {
+    width: 34px;
+    height: 34px;
 }
 .brand-lockup strong,
 .brand-lockup span {

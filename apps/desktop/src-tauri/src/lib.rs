@@ -1757,8 +1757,13 @@ async fn connections_create_google_drive(
     request: CreateGoogleDriveConnectionRequest,
 ) -> Result<ConnectionSummary, String> {
     ensure_drive_letter_unassigned(&database, request.drive_letter.as_deref(), None).await?;
-    if request.name.trim().is_empty() || request.access_token.trim().is_empty() {
-        return Err("Google Drive connection name and access token are required".to_owned());
+    if request.name.trim().is_empty() {
+        return Err("Google Drive connection name is required".to_owned());
+    }
+    if request.access_token.trim().is_empty()
+        || request.refresh_token.as_deref().is_none_or(str::is_empty)
+    {
+        return Err("Sign in with Google before mounting this connection".to_owned());
     }
     let endpoint = url::Url::parse(GOOGLE_DRIVE_ENDPOINT).expect("Google Drive endpoint is valid");
     let mut configuration = serde_json::json!({});

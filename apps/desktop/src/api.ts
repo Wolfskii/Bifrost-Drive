@@ -66,7 +66,6 @@ export interface GoogleDriveConnectionForm {
     accessToken: string;
     refreshToken: string | null;
     expiresAt: number | null;
-    sharedDriveId: string;
     driveLetter: string;
     mountOnStartup: boolean;
     mountRoot: string;
@@ -371,7 +370,7 @@ export async function createGoogleDriveConnection(
             access_token: form.accessToken,
             refresh_token: form.refreshToken,
             expires_at: form.expiresAt,
-            shared_drive_id: form.sharedDriveId || null,
+            shared_drive_id: null,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
             mount_root: form.mountRoot || null,

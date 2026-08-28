@@ -466,7 +466,6 @@ export function App() {
     const [googleAuthorization, setGoogleAuthorization] =
         useState<GoogleDriveAuthorization | null>(null);
     const [googleSigningIn, setGoogleSigningIn] = useState(false);
-    const [sharedDriveId, setSharedDriveId] = useState("");
     const [driveLetter, setDriveLetter] = useState("");
     const [defaultMountRoot, setDefaultMountRoot] = useState("");
     const [mountRoot, setMountRoot] = useState("");
@@ -502,6 +501,12 @@ export function App() {
         } finally {
             setGoogleSigningIn(false);
         }
+    }
+
+    function closeWizard() {
+        setWizardOpen(false);
+        setActiveView("connections");
+        setError(null);
     }
 
     useEffect(() => {
@@ -888,7 +893,6 @@ export function App() {
                 domain: String(configuration.domain ?? ""),
                 bucket: String(configuration.bucket ?? ""),
                 accessToken: "",
-                sharedDriveId: String(configuration.shared_drive_id ?? ""),
                 pathStyle: Boolean(configuration.path_style),
                 privateKeyPath: String(configuration.private_key_path ?? ""),
                 trustOnFirstUse: Boolean(configuration.trust_on_first_use),
@@ -918,7 +922,6 @@ export function App() {
                 builtInIcon ? "" : (details.drive_icon_preview ?? ""),
             );
             setProviderChoice(providerChoiceFor(connection.kind));
-            setSharedDriveId(String(configuration.shared_drive_id ?? ""));
             setGoogleAuthorization(null);
             setProviderSelection(
                 connection.kind === "S3"
@@ -1000,6 +1003,10 @@ export function App() {
             driveType: selectedDriveType,
             driveIcon: selectedDriveIcon,
         };
+        if (providerChoice === "GoogleDrive" && !googleAuthorization) {
+            setError("Sign in with Google before mounting this connection.");
+            return;
+        }
         let connectionOperation: Promise<ConnectionSummary>;
         const endpoint = String(values.get("endpoint") ?? "").trim();
         if (editingConnection) {
@@ -1053,9 +1060,7 @@ export function App() {
                 };
             } else if (providerChoice === "GoogleDrive") {
                 updateEndpoint = "https://www.googleapis.com/drive/v3";
-                configuration = {
-                    shared_drive_id: sharedDriveId.trim(),
-                };
+                configuration = {};
                 credentials = {
                     access_token:
                         googleAuthorization?.access_token ??
@@ -1137,7 +1142,6 @@ export function App() {
                     String(values.get("accessToken") ?? ""),
                 refreshToken: googleAuthorization?.refresh_token ?? null,
                 expiresAt: googleAuthorization?.expires_at ?? null,
-                sharedDriveId: sharedDriveId.trim(),
                 driveLetter,
                 mountOnStartup,
                 mountRoot: selectedMountRoot,
@@ -1252,7 +1256,6 @@ export function App() {
             form.reset();
             setEditingConnection(null);
             setFormDefaults({});
-            setSharedDriveId("");
             setGoogleAuthorization(null);
             setSftpAuthentication("password");
             setDriveType("network");
@@ -1337,7 +1340,7 @@ export function App() {
             <aside className="sidebar">
                 <div className="brand-lockup">
                     <div className="brand-mark" aria-hidden="true">
-                        <Cloud size={18} strokeWidth={2.5} />
+                        <img src="/bifrost-dark.svg" alt="" />
                     </div>
                     <div>
                         <strong>Bifrost Drive</strong>
@@ -1348,7 +1351,7 @@ export function App() {
                     <button
                         className={`nav-item ${activeView === "connections" ? "active" : ""}`}
                         type="button"
-                        onClick={() => setActiveView("connections")}
+                        onClick={closeWizard}
                     >
                         <HardDrive size={17} /> Connections
                     </button>
@@ -1402,7 +1405,6 @@ export function App() {
                                         setEditingConnection(null);
                                         setFormDefaults({});
                                         setProviderChoice("S3");
-                                        setSharedDriveId("");
                                         setGoogleAuthorization(null);
                                         setSftpAuthentication("password");
                                         setDriveType("network");
@@ -1931,10 +1933,7 @@ export function App() {
                                 className="icon-button"
                                 type="button"
                                 aria-label="Close"
-                                onClick={() => {
-                                    setWizardOpen(false);
-                                    setActiveView("connections");
-                                }}
+                                onClick={closeWizard}
                             >
                                 ×
                             </button>
@@ -2450,20 +2449,6 @@ export function App() {
                                             save this connection.
                                         </p>
                                     )}
-                                    <label>
-                                        Shared Drive ID (optional)
-                                        <input
-                                            name="sharedDriveId"
-                                            value={sharedDriveId}
-                                            onChange={(event) =>
-                                                setSharedDriveId(
-                                                    event.target.value,
-                                                )
-                                            }
-                                            placeholder="Leave blank for My Drive"
-                                            autoComplete="off"
-                                        />
-                                    </label>
                                 </>
                             )}
                             {providerChoice === "S3" && (
@@ -2535,23 +2520,24 @@ export function App() {
                                 <button
                                     className="secondary-button"
                                     type="button"
-                                    onClick={() => {
-                                        setWizardOpen(false);
-                                        setActiveView("connections");
-                                    }}
+                                    onClick={closeWizard}
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     className="primary-button"
-                                    disabled={saving}
+                                    disabled={
+                                        saving ||
+                                        (providerChoice === "GoogleDrive" &&
+                                            !googleAuthorization)
+                                    }
                                     type="submit"
                                 >
                                     {saving
                                         ? "Connecting..."
                                         : editingConnection
-                                          ? "Test and save changes"
-                                          : "Test and save"}
+                                          ? "Mount drive changes"
+                                          : "Mount drive"}
                                 </button>
                             </div>
                         </form>
