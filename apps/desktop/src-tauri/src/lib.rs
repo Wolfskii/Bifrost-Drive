@@ -3281,7 +3281,7 @@ async fn connection_location_open(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter("info")
         .with_target(false)
@@ -3412,8 +3412,8 @@ pub fn run() {
             drive_mount_startup_set,
             connection_location_open
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Bifrost Drive");
+        .run(tauri::generate_context!())?;
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]

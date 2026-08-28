@@ -140,7 +140,7 @@ jobs:
 
   linux:
     name: Build Linux package
-    needs: version
+    needs: [version, rust]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -274,7 +274,7 @@ jobs:
 
   windows:
     name: Build Windows package
-    needs: version
+    needs: [version, rust]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5

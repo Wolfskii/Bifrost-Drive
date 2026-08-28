@@ -45,7 +45,7 @@
     "copyright": "Bifrost Drive contributors",
     "license": "Apache-2.0",
     "windows": {
-      "webviewInstallMode": { "type": "downloadBootstrapper" },
+      "webviewInstallMode": { "type": "embedBootstrapper" },
       "nsis": { "installMode": "perMachine" }
     }
   }

@@ -13,5 +13,33 @@ fn main() {
         }
         return;
     }
-    bifrost_drive_lib::run();
+    if let Err(error) = bifrost_drive_lib::run() {
+        #[cfg(target_os = "windows")]
+        show_startup_error(&error.to_string());
+        #[cfg(not(target_os = "windows"))]
+        eprintln!("Bifrost Drive could not start: {error}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_startup_error(error: &str) {
+    use windows::{
+        core::PCWSTR,
+        Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK},
+    };
+
+    let message = format!(
+        "Bifrost Drive could not start.\n\n{error}\n\nIf this mentions WebView2, install the Microsoft Edge WebView2 Runtime and start Bifrost again."
+    );
+    let title: Vec<u16> = "Bifrost Drive".encode_utf16().chain(Some(0)).collect();
+    let message: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(message.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_ICONERROR | MB_OK,
+        );
+    }
 }
