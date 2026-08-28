@@ -98,10 +98,15 @@ jobs:
         run: |
           set -euo pipefail
           version="${MANUAL_VERSION#v}"
+          workspace_version="$(cargo metadata --no-deps --format-version 1 | jq -r '[.packages[] | select(.name == "bifrost-drive")][0].version')"
+          if [[ ! "$workspace_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Workspace version '$workspace_version' is not valid semantic versioning" >&2
+            exit 1
+          fi
           if [[ -z "$version" ]]; then
             latest_tag="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft --jq '[.[] | select(.isDraft == false)][0].tagName // ""')"
             if [[ -z "$latest_tag" ]]; then
-              version="0.2.0"
+              version="$workspace_version"
             else
               latest="${latest_tag#v}"
               if [[ ! "$latest" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
@@ -111,7 +116,9 @@ jobs:
               latest_major="${BASH_REMATCH[1]}"
               latest_minor="${BASH_REMATCH[2]}"
               latest_patch="${BASH_REMATCH[3]}"
-              if (( 10#$latest_major == 0 && 10#$latest_minor < 2 )); then
+              if [[ "$(printf '%s\n' "$latest" "$workspace_version" | sort -V | tail -n 1)" == "$workspace_version" && "$workspace_version" != "$latest" ]]; then
+                version="$workspace_version"
+              elif (( 10#$latest_major == 0 && 10#$latest_minor < 2 )); then
                 version="0.2.0"
               else
                 version="$latest_major.$latest_minor.$((10#$latest_patch + 1))"
