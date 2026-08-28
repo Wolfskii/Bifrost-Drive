@@ -156,8 +156,8 @@ struct GoogleOAuthTokenResponse {
 fn open_external_url(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
+        std::process::Command::new("explorer.exe")
+            .arg(url)
             .spawn()
             .map(|_| ())
             .map_err(|error| error.to_string())
