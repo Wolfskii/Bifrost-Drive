@@ -30,13 +30,19 @@ npm --prefix website test
 
 ## Docker and Dokploy
 
-Build and run locally:
+Build the image locally:
 
 ```bash
 docker compose -f website/docker-compose.yml up --build
 ```
 
-Open <http://localhost:8080/> and verify:
+The Compose service exposes internal container port `8080` for Dokploy and does not publish a host port. For a local browser preview, use the Python preview command above, or run the image with an explicit temporary host mapping:
+
+```bash
+docker run --rm -p 8080:8080 bifrost-website
+```
+
+Then verify:
 
 ```bash
 curl --fail http://localhost:8080/healthz
