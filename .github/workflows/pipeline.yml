@@ -164,6 +164,7 @@ jobs:
         run: cargo run -p xtask -- version-set "$RELEASE_VERSION"
       - name: Build AppImage and RPM packages
         env:
+          BIFROST_GOOGLE_OAUTH_CLIENT_ID: ${{ vars.BIFROST_GOOGLE_OAUTH_CLIENT_ID }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm --prefix apps/desktop run tauri -- build --bundles appimage,rpm --config src-tauri/tauri.release.conf.json
@@ -310,6 +311,7 @@ jobs:
         run: cargo run -p xtask -- version-set $env:RELEASE_VERSION
       - name: Build Windows updater package
         env:
+          BIFROST_GOOGLE_OAUTH_CLIENT_ID: ${{ vars.BIFROST_GOOGLE_OAUTH_CLIENT_ID }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm --prefix apps/desktop run tauri -- build --target x86_64-pc-windows-msvc --config src-tauri/tauri.release.conf.json

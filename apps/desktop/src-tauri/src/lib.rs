@@ -8,9 +8,9 @@ use bifrost_api::{
     CreateSftpConnectionRequest, CreateSmbConnectionRequest, CreateWebDavConnectionRequest,
     CredentialStoreStatus, CredentialSummary, DriveIconPreviewRequest, DriveMountRegisterRequest,
     DriveMountRegisterResponse, DriveMountStartupRequest, FilePage, FileSummary,
-    GoogleDriveAuthorization, GoogleDriveAuthorizeRequest, HydrateFileRequest, HydrateFileResponse,
-    ListFilesRequest, StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse,
-    SyncRunRequest, SyncRunResponse, TestConnectionRequest,
+    GoogleDriveAuthorization, HydrateFileRequest, HydrateFileResponse, ListFilesRequest,
+    StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse, SyncRunRequest,
+    SyncRunResponse, TestConnectionRequest,
 };
 use bifrost_cache::{CacheManager, CacheRecord};
 use bifrost_common::{ConnectionState, ProviderKind};
@@ -64,6 +64,7 @@ use uuid::Uuid;
 const GOOGLE_AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
+const GOOGLE_DRIVE_ENDPOINT: &str = "https://www.googleapis.com/drive/v3";
 
 #[cfg(target_os = "windows")]
 struct SyncRootRegistry(Mutex<HashMap<String, SyncRoot>>);
@@ -180,13 +181,8 @@ fn open_external_url(url: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn connections_google_drive_authorize(
-    request: GoogleDriveAuthorizeRequest,
-) -> Result<GoogleDriveAuthorization, String> {
-    let client_id = request.client_id.trim();
-    if client_id.is_empty() {
-        return Err("Google OAuth client ID is required".to_owned());
-    }
+async fn connections_google_drive_authorize() -> Result<GoogleDriveAuthorization, String> {
+    let client_id = google_oauth_client_id()?;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .map_err(|error| format!("Could not start the Google sign-in callback: {error}"))?;
@@ -282,6 +278,16 @@ async fn connections_google_drive_authorize(
         refresh_token,
         expires_at: chrono::Utc::now().timestamp() + token.expires_in,
     })
+}
+
+fn google_oauth_client_id() -> Result<&'static str, String> {
+    option_env!("BIFROST_GOOGLE_OAUTH_CLIENT_ID")
+        .map(str::trim)
+        .filter(|client_id| !client_id.is_empty())
+        .ok_or_else(|| {
+            "Google sign-in is not configured in this Bifrost build. Set BIFROST_GOOGLE_OAUTH_CLIENT_ID when building the application."
+                .to_owned()
+        })
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -1757,19 +1763,8 @@ async fn connections_create_google_drive(
     if request.name.trim().is_empty() || request.access_token.trim().is_empty() {
         return Err("Google Drive connection name and access token are required".to_owned());
     }
-    let endpoint = url::Url::parse(&request.endpoint)
-        .map_err(|_| "Google Drive endpoint must be a valid URL".to_owned())?;
-    if endpoint.scheme() != "https" {
-        return Err("Google Drive endpoint must use HTTPS".to_owned());
-    }
+    let endpoint = url::Url::parse(GOOGLE_DRIVE_ENDPOINT).expect("Google Drive endpoint is valid");
     let mut configuration = serde_json::json!({});
-    if let Some(client_id) = request
-        .client_id
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        configuration["client_id"] = serde_json::json!(client_id);
-    }
     if let Some(shared_drive_id) = request
         .shared_drive_id
         .as_deref()
@@ -1796,7 +1791,7 @@ async fn connections_create_google_drive(
             "access_token": request.access_token,
             "refresh_token": request.refresh_token,
             "expires_at": request.expires_at,
-            "client_id": request.client_id,
+            "client_id": google_oauth_client_id()?,
         }),
     )
     .await

@@ -8,13 +8,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 
 export type ProviderKind =
-    | "S3"
-    | "Sftp"
-    | "WebDav"
-    | "Nextcloud"
-    | "GoogleDrive"
-    | "Ftp"
-    | "Smb";
+    "S3" | "Sftp" | "WebDav" | "Nextcloud" | "GoogleDrive" | "Ftp" | "Smb";
 
 export interface ConnectionSummary {
     id: string;
@@ -64,11 +58,9 @@ export interface S3ConnectionForm {
 
 export interface GoogleDriveConnectionForm {
     name: string;
-    endpoint: string;
     accessToken: string;
     refreshToken: string | null;
     expiresAt: number | null;
-    clientId: string | null;
     sharedDriveId: string;
     driveLetter: string;
     mountOnStartup: boolean;
@@ -357,11 +349,9 @@ export async function createGoogleDriveConnection(
     return invoke<ConnectionSummary>("connections_create_google_drive", {
         request: {
             name: form.name,
-            endpoint: form.endpoint,
             access_token: form.accessToken,
             refresh_token: form.refreshToken,
             expires_at: form.expiresAt,
-            client_id: form.clientId,
             shared_drive_id: form.sharedDriveId || null,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
@@ -372,15 +362,13 @@ export async function createGoogleDriveConnection(
     });
 }
 
-export async function authorizeGoogleDrive(
-    clientId: string,
-): Promise<GoogleDriveAuthorization> {
+export async function authorizeGoogleDrive(): Promise<GoogleDriveAuthorization> {
     if (!tauriAvailable()) {
         throw new Error("The desktop service is not available in this window");
     }
-    return invoke<GoogleDriveAuthorization>("connections_google_drive_authorize", {
-        request: { client_id: clientId },
-    });
+    return invoke<GoogleDriveAuthorization>(
+        "connections_google_drive_authorize",
+    );
 }
 
 export async function createWebDavConnection(

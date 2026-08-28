@@ -456,7 +456,6 @@ export function App() {
     const [formDefaults, setFormDefaults] = useState<FormDefaults>({});
     const [providerChoice, setProviderChoice] = useState<ProviderChoice>("S3");
     const [providerSelection, setProviderSelection] = useState("s3-1");
-    const [googleClientId, setGoogleClientId] = useState("");
     const [googleAuthorization, setGoogleAuthorization] =
         useState<GoogleDriveAuthorization | null>(null);
     const [googleSigningIn, setGoogleSigningIn] = useState(false);
@@ -487,15 +486,10 @@ export function App() {
     }
 
     async function handleGoogleSignIn() {
-        const clientId = googleClientId.trim();
-        if (!clientId) {
-            setError("Google OAuth client ID is required");
-            return;
-        }
         setGoogleSigningIn(true);
         setError(null);
         try {
-            setGoogleAuthorization(await authorizeGoogleDrive(clientId));
+            setGoogleAuthorization(await authorizeGoogleDrive());
         } catch (cause) {
             setError(errorMessage(cause, "Google sign-in failed."));
         } finally {
@@ -839,7 +833,6 @@ export function App() {
                 domain: String(configuration.domain ?? ""),
                 bucket: String(configuration.bucket ?? ""),
                 accessToken: "",
-                clientId: String(configuration.client_id ?? ""),
                 sharedDriveId: String(configuration.shared_drive_id ?? ""),
                 pathStyle: Boolean(configuration.path_style),
                 privateKeyPath: String(configuration.private_key_path ?? ""),
@@ -870,7 +863,6 @@ export function App() {
                 builtInIcon ? "" : (details.drive_icon_preview ?? ""),
             );
             setProviderChoice(providerChoiceFor(connection.kind));
-            setGoogleClientId(String(configuration.client_id ?? ""));
             setSharedDriveId(String(configuration.shared_drive_id ?? ""));
             setGoogleAuthorization(null);
             setProviderSelection(
@@ -1005,8 +997,8 @@ export function App() {
                     passphrase: String(values.get("passphrase") ?? ""),
                 };
             } else if (providerChoice === "GoogleDrive") {
+                updateEndpoint = "https://www.googleapis.com/drive/v3";
                 configuration = {
-                    client_id: googleClientId.trim(),
                     shared_drive_id: sharedDriveId.trim(),
                 };
                 credentials = {
@@ -1015,7 +1007,6 @@ export function App() {
                         String(values.get("accessToken") ?? ""),
                     refresh_token: googleAuthorization?.refresh_token ?? "",
                     expires_at: googleAuthorization?.expires_at ?? null,
-                    client_id: googleClientId.trim(),
                 };
             } else {
                 configuration = {
@@ -1086,13 +1077,11 @@ export function App() {
         } else if (providerChoice === "GoogleDrive") {
             const form: GoogleDriveConnectionForm = {
                 name,
-                endpoint,
                 accessToken:
                     googleAuthorization?.access_token ??
                     String(values.get("accessToken") ?? ""),
                 refreshToken: googleAuthorization?.refresh_token ?? null,
                 expiresAt: googleAuthorization?.expires_at ?? null,
-                clientId: googleClientId.trim() || null,
                 sharedDriveId: sharedDriveId.trim(),
                 driveLetter,
                 mountOnStartup,
@@ -1208,7 +1197,6 @@ export function App() {
             form.reset();
             setEditingConnection(null);
             setFormDefaults({});
-            setGoogleClientId("");
             setSharedDriveId("");
             setGoogleAuthorization(null);
             setSftpAuthentication("password");
@@ -1359,7 +1347,6 @@ export function App() {
                                         setEditingConnection(null);
                                         setFormDefaults({});
                                         setProviderChoice("S3");
-                                        setGoogleClientId("");
                                         setSharedDriveId("");
                                         setGoogleAuthorization(null);
                                         setSftpAuthentication("password");
@@ -2188,22 +2175,21 @@ export function App() {
                                     Mount this location when Bifrost starts
                                 </div>
                             )}
-                            {providerChoice !== "SFTP" && (
-                                <label>
-                                    Endpoint
-                                    <input
-                                        name="endpoint"
-                                        type="url"
-                                        required
-                                        defaultValue={
-                                            (formDefaults.endpoint as string) ??
-                                            (providerChoice === "GoogleDrive"
-                                                ? "https://www.googleapis.com/drive/v3"
-                                                : "https://s3.amazonaws.com")
-                                        }
-                                    />
-                                </label>
-                            )}
+                            {providerChoice !== "SFTP" &&
+                                providerChoice !== "GoogleDrive" && (
+                                    <label>
+                                        Endpoint
+                                        <input
+                                            name="endpoint"
+                                            type="url"
+                                            required
+                                            defaultValue={
+                                                (formDefaults.endpoint as string) ??
+                                                "https://s3.amazonaws.com"
+                                            }
+                                        />
+                                    </label>
+                                )}
                             {providerChoice === "SFTP" && (
                                 <label>
                                     Host
@@ -2353,20 +2339,6 @@ export function App() {
                                 )}
                             {providerChoice === "GoogleDrive" && (
                                 <>
-                                    <label>
-                                        Google OAuth client ID
-                                        <input
-                                            name="clientId"
-                                            value={googleClientId}
-                                            onChange={(event) =>
-                                                setGoogleClientId(
-                                                    event.target.value,
-                                                )
-                                            }
-                                            placeholder="1234567890.apps.googleusercontent.com"
-                                            autoComplete="off"
-                                        />
-                                    </label>
                                     <button
                                         className="secondary-button"
                                         type="button"
@@ -2385,23 +2357,6 @@ export function App() {
                                             save this connection.
                                         </p>
                                     )}
-                                    <label>
-                                        Access token
-                                        <input
-                                            name="accessToken"
-                                            type="password"
-                                            required={
-                                                !editingConnection &&
-                                                !googleAuthorization
-                                            }
-                                            placeholder={
-                                                editingConnection
-                                                    ? "Leave blank to keep current token"
-                                                    : "Optional manual token fallback"
-                                            }
-                                            autoComplete="new-password"
-                                        />
-                                    </label>
                                     <label>
                                         Shared Drive ID (optional)
                                         <input

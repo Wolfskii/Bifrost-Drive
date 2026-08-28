@@ -76,11 +76,9 @@ pub struct CreateS3ConnectionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateGoogleDriveConnectionRequest {
     pub name: String,
-    pub endpoint: String,
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub expires_at: Option<i64>,
-    pub client_id: Option<String>,
     pub shared_drive_id: Option<String>,
     pub drive_letter: Option<String>,
     pub mount_on_startup: bool,
@@ -90,11 +88,6 @@ pub struct CreateGoogleDriveConnectionRequest {
     pub drive_type: String,
     #[serde(default)]
     pub drive_icon: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GoogleDriveAuthorizeRequest {
-    pub client_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

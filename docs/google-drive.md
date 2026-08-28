@@ -9,23 +9,25 @@
 5. Choose **External** for personal accounts, or **Internal** for a Google Workspace organization.
 6. Add the users who will test the app if Google shows a **Test users** section.
 7. Open **APIs & Services > Credentials > Create credentials > OAuth client ID**.
-8. Choose **Desktop app**, create it, and copy the client ID. The client ID is not a password.
+8. Choose **Desktop app**, create it, and copy the client ID.
+9. In the GitHub repository, open **Settings > Secrets and variables > Actions > Variables** and add `BIFROST_GOOGLE_OAUTH_CLIENT_ID` with that client ID.
+10. Build and publish Bifrost again. The client ID is compiled into the app so users do not need to enter it.
 
 ## Connect Bifrost
 
 1. Open Bifrost and click **Add connection**.
 2. Select **Google Drive**.
-3. Leave the endpoint as `https://www.googleapis.com/drive/v3`.
-4. Paste the OAuth client ID from Google Cloud.
-5. Click **Sign in with Google** and finish the browser consent screen.
-6. Return to Bifrost and click **Test and save**.
-7. To use a Shared Drive, paste its ID into **Shared Drive ID**. Leave it blank for My Drive.
+3. Click **Sign in with Google** and finish the browser consent screen.
+4. Return to Bifrost and click **Test and save**.
+5. To use a Shared Drive, paste its ID into **Shared Drive ID**. Leave it blank for My Drive.
 
 Bifrost opens a temporary localhost callback for the sign-in. The authorization code is protected with PKCE and the state value is checked before tokens are accepted.
 
 ## What Bifrost stores
 
-The access token and refresh token are stored in the native Windows Credential Manager, macOS Keychain, or Linux Secret Service. SQLite stores only the connection configuration, client ID, and optional Shared Drive ID.
+The access token and refresh token are stored in the native Windows Credential Manager, macOS Keychain, or Linux Secret Service. SQLite stores only the connection configuration and optional Shared Drive ID. User tokens never pass through GitHub Actions.
+
+The OAuth client ID is public by design: every installed desktop app must send it to Google during sign-in. Store it as the GitHub Actions repository variable `BIFROST_GOOGLE_OAUTH_CLIENT_ID`, not as a GitHub secret. Never store a user access token, refresh token, or OAuth client secret in GitHub.
 
 Bifrost refreshes the access token automatically when it expires. The refresh token normally remains valid until the user revokes access or the Google Cloud OAuth client is changed.
 

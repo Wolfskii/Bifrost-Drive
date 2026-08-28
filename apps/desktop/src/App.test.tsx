@@ -97,7 +97,11 @@ describe("App", () => {
         expect(
             screen.getByRole("heading", { name: "Connect to Google Drive" }),
         ).toBeTruthy();
-        expect(screen.getByLabelText("Access token")).toBeTruthy();
+        expect(
+            screen.getByRole("button", { name: "Sign in with Google" }),
+        ).toBeTruthy();
+        expect(screen.queryByLabelText("Endpoint")).toBeNull();
+        expect(screen.queryByLabelText("Google OAuth client ID")).toBeNull();
 
         fireEvent.click(
             screen.getByRole("combobox", { name: /storage type/i }),
