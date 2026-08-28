@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { App } from "./App";
+import { App, parseReleaseNotes } from "./App";
 
 describe("App", () => {
     afterEach(() => cleanup());
@@ -102,12 +102,16 @@ describe("App", () => {
         ).toBeTruthy();
         expect(
             (
-                screen.getByRole("button", { name: "Mount drive" }) as HTMLButtonElement
+                screen.getByRole("button", {
+                    name: "Mount drive",
+                }) as HTMLButtonElement
             ).disabled,
         ).toBe(true);
         expect(screen.queryByLabelText("Endpoint")).toBeNull();
         expect(screen.queryByLabelText("Google OAuth client ID")).toBeNull();
-        expect(screen.queryByLabelText("Shared Drive ID (optional)")).toBeNull();
+        expect(
+            screen.queryByLabelText("Shared Drive ID (optional)"),
+        ).toBeNull();
 
         fireEvent.click(
             screen.getByRole("combobox", { name: /storage type/i }),
@@ -146,5 +150,22 @@ describe("App", () => {
         expect(
             screen.getByText("No update is currently available."),
         ).toBeTruthy();
+    });
+
+    it("parses release-note markdown into presentable blocks", () => {
+        expect(
+            parseReleaseNotes(
+                "## Changes\n\n- feat: add Google Drive (abc1234)\n- fix: mount flow (def5678)",
+            ),
+        ).toEqual([
+            { kind: "heading", text: "Changes" },
+            {
+                kind: "list",
+                items: [
+                    "feat: add Google Drive (abc1234)",
+                    "fix: mount flow (def5678)",
+                ],
+            },
+        ]);
     });
 });

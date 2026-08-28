@@ -118,6 +118,66 @@ interface DrivePreference {
     iconPreview: string | null;
 }
 
+type ReleaseNoteBlock =
+    | { kind: "heading"; text: string }
+    | { kind: "list"; items: string[] }
+    | { kind: "paragraph"; text: string };
+
+export function parseReleaseNotes(body: string): ReleaseNoteBlock[] {
+    const blocks: ReleaseNoteBlock[] = [];
+    for (const rawLine of body.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const heading = line.match(/^#{1,6}\s+(.+)$/);
+        if (heading) {
+            blocks.push({ kind: "heading", text: heading[1] });
+            continue;
+        }
+        const listItem = line.match(/^[-*]\s+(.+)$/);
+        if (listItem) {
+            const previous = blocks.at(-1);
+            if (previous?.kind === "list") {
+                previous.items.push(listItem[1]);
+            } else {
+                blocks.push({ kind: "list", items: [listItem[1]] });
+            }
+            continue;
+        }
+        blocks.push({ kind: "paragraph", text: line });
+    }
+    return blocks;
+}
+
+function ReleaseNotes({ body }: { body: string }) {
+    const blocks = parseReleaseNotes(body);
+    if (blocks.length === 0) {
+        return (
+            <p className="update-notes-empty">
+                No release notes were provided.
+            </p>
+        );
+    }
+    return (
+        <div className="update-notes">
+            {blocks.map((block, index) => {
+                if (block.kind === "heading") {
+                    return <h4 key={`${block.kind}-${index}`}>{block.text}</h4>;
+                }
+                if (block.kind === "list") {
+                    return (
+                        <ul key={`${block.kind}-${index}`}>
+                            {block.items.map((item) => (
+                                <li key={item}>{item}</li>
+                            ))}
+                        </ul>
+                    );
+                }
+                return <p key={`${block.kind}-${index}`}>{block.text}</p>;
+            })}
+        </div>
+    );
+}
+
 function CommandBox({ label, command }: { label: string; command: string }) {
     const [copied, setCopied] = useState(false);
 
@@ -1862,10 +1922,7 @@ export function App() {
                                             Version {updateInfo.version} is
                                             available.
                                         </strong>
-                                        <pre className="update-notes">
-                                            {updateInfo.body ||
-                                                "No release notes were provided."}
-                                        </pre>
+                                        <ReleaseNotes body={updateInfo.body} />
                                         <button
                                             className="primary-button"
                                             type="button"
@@ -2569,10 +2626,7 @@ export function App() {
                             </button>
                         </div>
                         <p>Would you like to install it now?</p>
-                        <pre className="update-notes">
-                            {updateInfo.body ||
-                                "No release notes were provided."}
-                        </pre>
+                        <ReleaseNotes body={updateInfo.body} />
                         <div className="wizard-actions">
                             <button
                                 className="secondary-button"

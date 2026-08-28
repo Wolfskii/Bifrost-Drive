@@ -154,6 +154,37 @@ struct GoogleOAuthTokenResponse {
     expires_in: i64,
 }
 
+#[derive(Debug, Deserialize)]
+struct GoogleOAuthErrorResponse {
+    error: String,
+    error_description: Option<String>,
+}
+
+fn google_oauth_error_message(status: reqwest::StatusCode, body: &str) -> String {
+    let google_error = serde_json::from_str::<GoogleOAuthErrorResponse>(body).ok();
+    let error_code = google_error
+        .as_ref()
+        .map(|error| error.error.as_str())
+        .unwrap_or("token_exchange_failed");
+    let description = google_error
+        .as_ref()
+        .and_then(|error| error.error_description.as_deref())
+        .unwrap_or("Google rejected the authorization code");
+    let guidance = match error_code {
+        "invalid_client" => {
+            "Create a Google OAuth client with application type Desktop app and update BIFROST_GOOGLE_OAUTH_CLIENT_ID."
+        }
+        "invalid_grant" => {
+            "Start Google sign-in again. If it repeats, verify the configured client is a Desktop app OAuth client."
+        }
+        "redirect_uri_mismatch" => {
+            "The configured OAuth client does not support desktop loopback redirects; use a Desktop app OAuth client."
+        }
+        _ => "Check the Google OAuth client configuration and try signing in again.",
+    };
+    format!("Google sign-in failed ({error_code}, HTTP {status}): {description}. {guidance}")
+}
+
 #[tauri::command]
 async fn connections_google_drive_authorize(
     app: tauri::AppHandle,
@@ -214,16 +245,13 @@ async fn connections_google_drive_authorize(
     if callback_state != &state {
         return Err("Google sign-in state validation failed".to_owned());
     }
-    let callback_response = if query.contains_key("error") {
-        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nGoogle sign-in was cancelled."
-    } else {
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nGoogle sign-in completed. You can return to Bifrost Drive."
-    };
-    socket
-        .write_all(callback_response.as_bytes())
-        .await
-        .map_err(|error| format!("Could not complete the Google sign-in callback: {error}"))?;
     if query.contains_key("error") {
+        write_google_callback_response(
+            &mut socket,
+            "400 Bad Request",
+            "Google sign-in was cancelled. You can return to Bifrost Drive.",
+        )
+        .await?;
         return Err("Google sign-in was cancelled".to_owned());
     }
     let code = query
@@ -242,20 +270,55 @@ async fn connections_google_drive_authorize(
         .await
         .map_err(|error| format!("Could not exchange the Google sign-in code: {error}"))?;
     if !response.status().is_success() {
-        return Err("Google rejected the sign-in code".to_owned());
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        write_google_callback_response(
+            &mut socket,
+            "400 Bad Request",
+            "Google sign-in could not be completed. Return to Bifrost Drive for details.",
+        )
+        .await?;
+        return Err(google_oauth_error_message(status, &body));
     }
     let token = response
         .json::<GoogleOAuthTokenResponse>()
         .await
         .map_err(|error| format!("Google returned an invalid token response: {error}"))?;
     let Some(refresh_token) = token.refresh_token else {
+        write_google_callback_response(
+            &mut socket,
+            "400 Bad Request",
+            "Google did not provide offline access. Return to Bifrost Drive and try again.",
+        )
+        .await?;
         return Err("Google did not return a refresh token; try signing in again".to_owned());
     };
+    write_google_callback_response(
+        &mut socket,
+        "200 OK",
+        "Google sign-in completed. You can return to Bifrost Drive.",
+    )
+    .await?;
     Ok(GoogleDriveAuthorization {
         access_token: token.access_token,
         refresh_token,
         expires_at: chrono::Utc::now().timestamp() + token.expires_in,
     })
+}
+
+async fn write_google_callback_response(
+    socket: &mut tokio::net::TcpStream,
+    status: &str,
+    message: &str,
+) -> Result<(), String> {
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{message}",
+        message.len()
+    );
+    socket
+        .write_all(response.as_bytes())
+        .await
+        .map_err(|error| format!("Could not complete the Google sign-in callback: {error}"))
 }
 
 fn google_oauth_client_id() -> Result<&'static str, String> {
@@ -3670,7 +3733,10 @@ mod linux_mount_tests {
 
 #[cfg(test)]
 mod preferences_tests {
-    use super::{is_uninstall_quit_request, load_preferences, save_preferences, AppPreferences};
+    use super::{
+        google_oauth_error_message, is_uninstall_quit_request, load_preferences, save_preferences,
+        AppPreferences,
+    };
 
     #[test]
     fn start_minimized_preference_round_trips() {
@@ -3689,6 +3755,18 @@ mod preferences_tests {
         assert!(load_preferences(&path).unwrap().start_minimized);
         save_preferences(&path, &AppPreferences::default()).unwrap();
         assert!(!load_preferences(&path).unwrap().start_minimized);
+    }
+
+    #[test]
+    fn google_oauth_errors_include_safe_actionable_guidance() {
+        let message = google_oauth_error_message(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"error":"invalid_client","error_description":"The OAuth client was not found"}"#,
+        );
+
+        assert!(message.contains("invalid_client"));
+        assert!(message.contains("Desktop app"));
+        assert!(!message.contains("authorization code="));
     }
 
     #[test]

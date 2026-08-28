@@ -1021,15 +1021,41 @@ input[type="radio"]:disabled {
     max-height: 220px;
     overflow: auto;
     margin: 0;
-    padding: 12px;
-    white-space: pre-wrap;
+    padding: 14px 16px;
     color: var(--ink-soft);
     background: var(--surface);
+    border: 1px solid var(--line-soft);
+    border-radius: 6px;
     font:
-        12px/1.55 ui-monospace,
-        SFMono-Regular,
-        Consolas,
-        monospace;
+        13px/1.55 ui-sans-serif,
+        system-ui,
+        sans-serif;
+}
+.update-notes h4 {
+    margin: 0 0 10px;
+    color: var(--ink);
+    font-size: 15px;
+}
+.update-notes ul {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding-left: 20px;
+}
+.update-notes li::marker {
+    color: var(--accent);
+}
+.update-notes p,
+.update-notes-empty {
+    margin: 0;
+    color: var(--ink-soft);
+    font:
+        13px/1.55 ui-sans-serif,
+        system-ui,
+        sans-serif;
+}
+.update-notes > * + * {
+    margin-top: 10px;
 }
 .update-modal-backdrop {
     position: fixed;
