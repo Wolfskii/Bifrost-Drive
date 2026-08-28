@@ -65,6 +65,8 @@ jobs:
 
   macos-file-provider:
     name: macOS File Provider checks
+    # Disabled until Apple signing and developer-account provisioning are available.
+    if: ${{ false }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -81,7 +83,7 @@ jobs:
   version:
     name: Plan release version
     if: github.event_name != 'pull_request'
-    needs: [frontend, rust, macos-file-provider]
+    needs: [frontend, rust]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -153,8 +155,9 @@ jobs:
         with:
           workspaces: . -> target
       - run: npm ci
-      - name: Install macOS extension build tools
-        run: brew install xcodegen
+      # macOS File Provider tooling is intentionally not installed on Linux.
+      # - name: Install macOS extension build tools
+      #   run: brew install xcodegen
       - name: Apply release version
         env:
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
@@ -191,6 +194,8 @@ jobs:
 
   macos:
     name: Build macOS package
+    # Disabled until Apple signing and developer-account provisioning are available.
+    if: ${{ false }}
     needs: version
     runs-on: macos-latest
     outputs:
@@ -363,7 +368,7 @@ jobs:
 
   release:
     name: Publish GitHub release
-    needs: [version, linux, macos, windows]
+    needs: [version, linux, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -374,24 +379,18 @@ jobs:
           path: release-assets/linux
       - uses: actions/download-artifact@v7
         with:
-          name: bifrost-drive-macos-${{ needs.version.outputs.version }}
-          path: release-assets/macos
-      - uses: actions/download-artifact@v7
-        with:
           name: bifrost-drive-windows-${{ needs.version.outputs.version }}
           path: release-assets/windows
       - name: Generate updater manifest and checksums
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
-          MACOS_UPDATER_PLATFORM: ${{ needs.macos.outputs.updater_platform }}
         run: |
           set -euo pipefail
           windows_artifact="$(find release-assets/windows -type f -name '*.exe' -print -quit)"
           linux_artifact="$(find release-assets/linux -type f -name '*.AppImage' -print -quit)"
           rpm_artifact="$(find release-assets/linux -type f -name '*.rpm' -print -quit)"
-          macos_artifact="$(find release-assets/macos -type f -name '*.app.tar.gz' -print -quit)"
-          for artifact in "$windows_artifact" "$linux_artifact" "$macos_artifact"; do
+          for artifact in "$windows_artifact" "$linux_artifact"; do
             if [[ -z "$artifact" || ! -f "$artifact.sig" ]]; then
               echo "Updater artifact or signature is missing: $artifact" >&2
               exit 1
@@ -403,10 +402,8 @@ jobs:
           fi
           windows_name="$(basename "$windows_artifact")"
           linux_name="$(basename "$linux_artifact")"
-          macos_name="$(basename "$macos_artifact")"
           windows_url_name="$(jq -rn --arg value "$windows_name" '$value | @uri')"
           linux_url_name="$(jq -rn --arg value "$linux_name" '$value | @uri')"
-          macos_url_name="$(jq -rn --arg value "$macos_name" '$value | @uri')"
           base_url="https://github.com/$GITHUB_REPOSITORY/releases/download/v$RELEASE_VERSION"
           jq -n \
             --arg version "$RELEASE_VERSION" \
@@ -415,17 +412,13 @@ jobs:
             --arg windows_url "$base_url/$windows_url_name" \
             --arg linux_signature "$(tr -d '\r\n' < "$linux_artifact.sig")" \
             --arg linux_url "$base_url/$linux_url_name" \
-            --arg macos_platform "$MACOS_UPDATER_PLATFORM" \
-            --arg macos_signature "$(tr -d '\r\n' < "$macos_artifact.sig")" \
-            --arg macos_url "$base_url/$macos_url_name" \
             '{
               version: $version,
               notes: ("Bifrost Drive " + $version),
               pub_date: $pub_date,
               platforms: {
                 "windows-x86_64": { signature: $windows_signature, url: $windows_url },
-                "linux-x86_64": { signature: $linux_signature, url: $linux_url },
-                ($macos_platform): { signature: $macos_signature, url: $macos_url }
+                "linux-x86_64": { signature: $linux_signature, url: $linux_url }
               }
             }' > release-assets/latest.json
 
@@ -443,13 +436,9 @@ jobs:
           for artifact in \
             "$windows_artifact" "$windows_artifact.sig" \
             "$linux_artifact" "$linux_artifact.sig" \
-            "$rpm_artifact" \
-            "$macos_artifact" "$macos_artifact.sig"; do
+            "$rpm_artifact"; do
             stage_asset "$artifact"
           done
-          while IFS= read -r -d '' dmg; do
-            stage_asset "$dmg"
-          done < <(find release-assets/macos -type f -name '*.dmg' -print0)
           stage_asset release-assets/latest.json
 
           : > "$publish_directory/SHA256SUMS.txt"
