@@ -485,13 +485,10 @@ fn linux_mount_directory_name(connection_name: &str) -> Result<String, String> {
 
 #[cfg(target_os = "linux")]
 fn linux_default_mount_root() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
+    std::env::var_os("HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let user = std::env::var("USER").unwrap_or_else(|_| "user".to_owned());
-            std::env::temp_dir().join(format!("bifrost-drive-{user}"))
-        })
-        .join("bifrost-drive")
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Bifrost Drive")
 }
 
 #[cfg(target_os = "linux")]

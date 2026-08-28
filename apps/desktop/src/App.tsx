@@ -104,13 +104,7 @@ import {
     unregisterSyncRoot,
 } from "./api";
 
-type ProviderChoice =
-    | "S3"
-    | "GoogleDrive"
-    | "SFTP"
-    | "WebDAV"
-    | "FTP"
-    | "SMB";
+type ProviderChoice = "S3" | "GoogleDrive" | "SFTP" | "WebDAV" | "FTP" | "SMB";
 type AppView = "connections" | "activity" | "settings" | "add";
 
 type FormDefaults = Record<string, boolean | number | string>;
@@ -1093,7 +1087,8 @@ export function App() {
             const form: GoogleDriveConnectionForm = {
                 name,
                 endpoint,
-                accessToken: googleAuthorization?.access_token ??
+                accessToken:
+                    googleAuthorization?.access_token ??
                     String(values.get("accessToken") ?? ""),
                 refreshToken: googleAuthorization?.refresh_token ?? null,
                 expiresAt: googleAuthorization?.expires_at ?? null,
@@ -2177,11 +2172,6 @@ export function App() {
                                     >
                                         <FolderOpen size={15} /> Browse
                                     </button>
-                                    <small>
-                                        Bifrost appends the chosen connection
-                                        name. The default is outside Home so
-                                        Home snapshots do not include the mount.
-                                    </small>
                                 </div>
                             )}
                             {filesystemIntegration !== "none" && (
@@ -2327,37 +2317,40 @@ export function App() {
                             )}
                             {providerChoice !== "S3" &&
                                 providerChoice !== "GoogleDrive" && (
-                                <div className="form-grid">
-                                    <label>
-                                        Username
-                                        <input
-                                            name="username"
-                                            required
-                                            defaultValue={
-                                                formDefaults.username as string
-                                            }
-                                            autoComplete="username"
-                                        />
-                                    </label>
-                                    {(providerChoice !== "SFTP" ||
-                                        sftpAuthentication === "password") && (
+                                    <div className="form-grid">
                                         <label>
-                                            Password
+                                            Username
                                             <input
-                                                name="password"
-                                                required={!editingConnection}
-                                                type="password"
-                                                placeholder={
-                                                    editingConnection
-                                                        ? "Leave blank to keep current password"
-                                                        : undefined
+                                                name="username"
+                                                required
+                                                defaultValue={
+                                                    formDefaults.username as string
                                                 }
-                                                autoComplete="current-password"
+                                                autoComplete="username"
                                             />
                                         </label>
-                                    )}
-                                </div>
-                            )}
+                                        {(providerChoice !== "SFTP" ||
+                                            sftpAuthentication ===
+                                                "password") && (
+                                            <label>
+                                                Password
+                                                <input
+                                                    name="password"
+                                                    required={
+                                                        !editingConnection
+                                                    }
+                                                    type="password"
+                                                    placeholder={
+                                                        editingConnection
+                                                            ? "Leave blank to keep current password"
+                                                            : undefined
+                                                    }
+                                                    autoComplete="current-password"
+                                                />
+                                            </label>
+                                        )}
+                                    </div>
+                                )}
                             {providerChoice === "GoogleDrive" && (
                                 <>
                                     <label>
@@ -2378,7 +2371,9 @@ export function App() {
                                         className="secondary-button"
                                         type="button"
                                         disabled={googleSigningIn}
-                                        onClick={() => void handleGoogleSignIn()}
+                                        onClick={() =>
+                                            void handleGoogleSignIn()
+                                        }
                                     >
                                         {googleSigningIn
                                             ? "Waiting for Google..."
