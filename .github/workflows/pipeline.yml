@@ -375,6 +375,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v7
         with:
           name: bifrost-drive-linux-${{ needs.version.outputs.version }}
@@ -456,8 +459,19 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -d '' assets < <(find release-assets/publish -maxdepth 1 -type f -print0 | sort -z)
+          previous_tag="$(git tag --merged "$GITHUB_SHA" --sort=-version:refname | grep -Fxv "v$RELEASE_VERSION" | head -n 1 || true)"
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "## Changes"
+            echo
+            if [[ -n "$previous_tag" ]]; then
+              git log --format='- %s (%h)' "$previous_tag..$GITHUB_SHA"
+            else
+              git log --format='- %s (%h)' "$GITHUB_SHA"
+            fi
+          } > "$notes_file"
           gh release create "v$RELEASE_VERSION" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Bifrost Drive $RELEASE_VERSION" \
-            --generate-notes \
+            --notes-file "$notes_file" \
             --target "$GITHUB_SHA"
