@@ -717,6 +717,10 @@ button {
         border-bottom: 1px solid #2d3033;
         font: 700 clamp(27px, 7vw, 40px)/1.1 var(--display);
     }
+    .site-navigation > a:not(.nav-download):hover,
+    .site-navigation > a:not(.nav-download):focus-visible {
+        color: #ffffff;
+    }
     .site-navigation .nav-download {
         width: auto;
         margin-top: 18px;
