@@ -39,8 +39,10 @@ bifrost-windows-cfapi = { path = "../../../platforms/windows/cfapi" }
 chrono.workspace = true
 futures-util = "0.3"
 libloading = "0.8"
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sqlx = { version = "0.8", default-features = false, features = [
   "runtime-tokio-rustls",
   "sqlite",

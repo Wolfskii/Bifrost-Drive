@@ -77,7 +77,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
 thiserror = "2.0"
-tokio = { version = "1.44", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.44", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tracing = "0.1"
 uuid = { version = "1.16", features = ["serde", "v4"] }

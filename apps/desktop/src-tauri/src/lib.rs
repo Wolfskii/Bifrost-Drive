@@ -1,7 +1,6 @@
 #[cfg(any(target_os = "macos", test))]
 mod macos_file_provider;
 
-#[cfg(target_os = "windows")]
 use base64::Engine;
 use bifrost_api::{
     ActivitySummary, AppStatus, ConnectionIdRequest, ConnectionSummary, CreateConnectionRequest,
@@ -9,9 +8,9 @@ use bifrost_api::{
     CreateSftpConnectionRequest, CreateSmbConnectionRequest, CreateWebDavConnectionRequest,
     CredentialStoreStatus, CredentialSummary, DriveIconPreviewRequest, DriveMountRegisterRequest,
     DriveMountRegisterResponse, DriveMountStartupRequest, FilePage, FileSummary,
-    HydrateFileRequest, HydrateFileResponse, ListFilesRequest, StoreS3CredentialRequest,
-    SyncReconcileRequest, SyncReconcileResponse, SyncRunRequest, SyncRunResponse,
-    TestConnectionRequest,
+    GoogleDriveAuthorization, GoogleDriveAuthorizeRequest, HydrateFileRequest, HydrateFileResponse,
+    ListFilesRequest, StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse,
+    SyncRunRequest, SyncRunResponse, TestConnectionRequest,
 };
 use bifrost_cache::{CacheManager, CacheRecord};
 use bifrost_common::{ConnectionState, ProviderKind};
@@ -19,7 +18,7 @@ use bifrost_core::Application;
 use bifrost_crypto::{CredentialError, CredentialRef, CredentialStore, SecretString};
 use bifrost_db::{ConflictRecord, ConnectionRecord, Database, SyncEntryRecord};
 use bifrost_ftp::{FtpConfig, FtpProvider};
-use bifrost_google_drive::{GoogleDriveConfig, GoogleDriveProvider};
+use bifrost_google_drive::{GoogleDriveConfig, GoogleDriveCredentials, GoogleDriveProvider};
 #[cfg(target_os = "linux")]
 use bifrost_linux_credentials::LinuxCredentialStore as WindowsCredentialStore;
 #[cfg(target_os = "linux")]
@@ -43,6 +42,7 @@ use bifrost_windows_winfsp::{MountConfig, MountHandle};
 #[cfg(target_os = "windows")]
 use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::collections::HashMap;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -58,6 +58,12 @@ use tauri::{
     tray::TrayIconBuilder,
     Manager, State,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use uuid::Uuid;
+
+const GOOGLE_AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
+const GOOGLE_DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 
 #[cfg(target_os = "windows")]
 struct SyncRootRegistry(Mutex<HashMap<String, SyncRoot>>);
@@ -137,6 +143,145 @@ impl SyncRootRegistry {
 
 struct SqliteTransferStore {
     database: Database,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleOAuthTokenResponse {
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_in: i64,
+}
+
+fn open_external_url(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+async fn connections_google_drive_authorize(
+    request: GoogleDriveAuthorizeRequest,
+) -> Result<GoogleDriveAuthorization, String> {
+    let client_id = request.client_id.trim();
+    if client_id.is_empty() {
+        return Err("Google OAuth client ID is required".to_owned());
+    }
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .map_err(|error| format!("Could not start the Google sign-in callback: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("Could not read the Google sign-in callback address: {error}"))?
+        .port();
+    let redirect_uri = format!("http://127.0.0.1:{port}/oauth2callback");
+    let code_verifier = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    let code_challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(code_verifier.as_bytes()));
+    let state = Uuid::new_v4().to_string();
+    let mut authorization_url =
+        url::Url::parse(GOOGLE_AUTHORIZATION_ENDPOINT).map_err(|error| error.to_string())?;
+    authorization_url
+        .query_pairs_mut()
+        .append_pair("client_id", client_id)
+        .append_pair("redirect_uri", &redirect_uri)
+        .append_pair("response_type", "code")
+        .append_pair("scope", GOOGLE_DRIVE_SCOPE)
+        .append_pair("access_type", "offline")
+        .append_pair("prompt", "consent")
+        .append_pair("state", &state)
+        .append_pair("code_challenge", &code_challenge)
+        .append_pair("code_challenge_method", "S256");
+    open_external_url(authorization_url.as_str())?;
+
+    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(300), listener.accept())
+        .await
+        .map_err(|_| "Google sign-in timed out".to_owned())?
+        .map_err(|error| format!("Could not receive the Google sign-in callback: {error}"))?;
+    let mut buffer = vec![0_u8; 16 * 1024];
+    let size = tokio::time::timeout(Duration::from_secs(10), socket.read(&mut buffer))
+        .await
+        .map_err(|_| "Google sign-in callback timed out".to_owned())?
+        .map_err(|error| format!("Could not read the Google sign-in callback: {error}"))?;
+    let request_line = String::from_utf8_lossy(&buffer[..size]);
+    let target = request_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| "Google returned an invalid sign-in callback".to_owned())?;
+    if !target.starts_with("/oauth2callback") {
+        return Err("Google returned an invalid sign-in callback".to_owned());
+    }
+    let callback_url = url::Url::parse(&format!("http://127.0.0.1{target}"))
+        .map_err(|_| "Google returned an invalid sign-in callback".to_owned())?;
+    let query: std::collections::HashMap<_, _> = callback_url.query_pairs().into_owned().collect();
+    let callback_state = query
+        .get("state")
+        .ok_or_else(|| "Google sign-in did not return a state value".to_owned())?;
+    if callback_state != &state {
+        return Err("Google sign-in state validation failed".to_owned());
+    }
+    let callback_response = if query.contains_key("error") {
+        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nGoogle sign-in was cancelled."
+    } else {
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nGoogle sign-in completed. You can return to Bifrost Drive."
+    };
+    socket
+        .write_all(callback_response.as_bytes())
+        .await
+        .map_err(|error| format!("Could not complete the Google sign-in callback: {error}"))?;
+    if query.contains_key("error") {
+        return Err("Google sign-in was cancelled".to_owned());
+    }
+    let code = query
+        .get("code")
+        .ok_or_else(|| "Google sign-in did not return an authorization code".to_owned())?;
+    let response = reqwest::Client::new()
+        .post(GOOGLE_TOKEN_ENDPOINT)
+        .form(&[
+            ("client_id", client_id),
+            ("code", code),
+            ("code_verifier", code_verifier.as_str()),
+            ("grant_type", "authorization_code"),
+            ("redirect_uri", redirect_uri.as_str()),
+        ])
+        .send()
+        .await
+        .map_err(|error| format!("Could not exchange the Google sign-in code: {error}"))?;
+    if !response.status().is_success() {
+        return Err("Google rejected the sign-in code".to_owned());
+    }
+    let token = response
+        .json::<GoogleOAuthTokenResponse>()
+        .await
+        .map_err(|error| format!("Google returned an invalid token response: {error}"))?;
+    let Some(refresh_token) = token.refresh_token else {
+        return Err("Google did not return a refresh token; try signing in again".to_owned());
+    };
+    Ok(GoogleDriveAuthorization {
+        access_token: token.access_token,
+        refresh_token,
+        expires_at: chrono::Utc::now().timestamp() + token.expires_in,
+    })
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -1621,6 +1766,20 @@ async fn connections_create_google_drive(
         return Err("Google Drive endpoint must use HTTPS".to_owned());
     }
     let mut configuration = serde_json::json!({});
+    if let Some(client_id) = request
+        .client_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        configuration["client_id"] = serde_json::json!(client_id);
+    }
+    if let Some(shared_drive_id) = request
+        .shared_drive_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        configuration["shared_drive_id"] = serde_json::json!(shared_drive_id);
+    }
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
     set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
@@ -1636,7 +1795,12 @@ async fn connections_create_google_drive(
         ProviderKind::GoogleDrive,
         endpoint.to_string(),
         configuration,
-        serde_json::json!({ "access_token": request.access_token }),
+        serde_json::json!({
+            "access_token": request.access_token,
+            "refresh_token": request.refresh_token,
+            "expires_at": request.expires_at,
+            "client_id": request.client_id,
+        }),
     )
     .await
 }
@@ -1650,6 +1814,20 @@ struct StoredS3Credentials {
 #[derive(Debug, Deserialize)]
 struct StoredGoogleDriveCredentials {
     access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    expires_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleDriveConfiguration {
+    #[serde(default)]
+    shared_drive_id: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1749,13 +1927,27 @@ async fn test_connection(
         ProviderKind::GoogleDrive => {
             let stored: StoredGoogleDriveCredentials = serde_json::from_str(secret.expose())
                 .map_err(|_| "Stored Google Drive credential payload is invalid".to_owned())?;
+            let configuration: GoogleDriveConfiguration =
+                serde_json::from_value(request.configuration)
+                    .map_err(|_| "Google Drive configuration is invalid".to_owned())?;
             let endpoint = url::Url::parse(&request.endpoint)
                 .map_err(|_| "Google Drive endpoint must be a valid URL".to_owned())?;
-            GoogleDriveProvider::connect(GoogleDriveConfig { endpoint }, stored.access_token)
-                .map_err(|error| error.to_string())?
-                .test_connection()
-                .await
-                .map_err(|error| error.to_string())
+            GoogleDriveProvider::connect_with_credentials(
+                GoogleDriveConfig {
+                    endpoint,
+                    shared_drive_id: configuration.shared_drive_id,
+                },
+                GoogleDriveCredentials {
+                    access_token: stored.access_token,
+                    refresh_token: stored.refresh_token,
+                    client_id: stored.client_id.or(configuration.client_id),
+                    expires_at: stored.expires_at,
+                },
+            )
+            .map_err(|error| error.to_string())?
+            .test_connection()
+            .await
+            .map_err(|error| error.to_string())
         }
         ProviderKind::WebDav | ProviderKind::Nextcloud => {
             let endpoint = url::Url::parse(&request.endpoint)
@@ -1936,11 +2128,25 @@ async fn provider_for_connection<C: CredentialStore>(
         ProviderKind::GoogleDrive => {
             let stored: StoredGoogleDriveCredentials = serde_json::from_str(secret.expose())
                 .map_err(|_| "Stored Google Drive credential payload is invalid".to_owned())?;
+            let configuration: GoogleDriveConfiguration =
+                serde_json::from_str(&connection.configuration_json)
+                    .map_err(|_| "Google Drive configuration is invalid".to_owned())?;
             let endpoint = url::Url::parse(&connection.endpoint)
                 .map_err(|_| "Google Drive endpoint must be a valid URL".to_owned())?;
             Ok(Box::new(
-                GoogleDriveProvider::connect(GoogleDriveConfig { endpoint }, stored.access_token)
-                    .map_err(|error| error.to_string())?,
+                GoogleDriveProvider::connect_with_credentials(
+                    GoogleDriveConfig {
+                        endpoint,
+                        shared_drive_id: configuration.shared_drive_id,
+                    },
+                    GoogleDriveCredentials {
+                        access_token: stored.access_token,
+                        refresh_token: stored.refresh_token,
+                        client_id: stored.client_id.or(configuration.client_id),
+                        expires_at: stored.expires_at,
+                    },
+                )
+                .map_err(|error| error.to_string())?,
             ))
         }
         ProviderKind::WebDav | ProviderKind::Nextcloud => {
@@ -3181,6 +3387,7 @@ pub fn run() {
             activity_list,
             connections_create,
             connections_create_google_drive,
+            connections_google_drive_authorize,
             connections_create_s3,
             connections_create_ftp,
             connections_create_smb,

@@ -60,6 +60,7 @@ import packageJson from "../package.json";
 import { CustomSelect, CustomSelectOption } from "./CustomSelect";
 import {
     ActivitySummary,
+    authorizeGoogleDrive,
     ConnectionSummary,
     ConflictSummary,
     CredentialStoreStatus,
@@ -95,6 +96,7 @@ import {
     supportsSyncRoots,
     S3ConnectionForm,
     GoogleDriveConnectionForm,
+    GoogleDriveAuthorization,
     FilesystemIntegration,
     StockDriveIcon,
     updateConnection,
@@ -460,6 +462,11 @@ export function App() {
     const [formDefaults, setFormDefaults] = useState<FormDefaults>({});
     const [providerChoice, setProviderChoice] = useState<ProviderChoice>("S3");
     const [providerSelection, setProviderSelection] = useState("s3-1");
+    const [googleClientId, setGoogleClientId] = useState("");
+    const [googleAuthorization, setGoogleAuthorization] =
+        useState<GoogleDriveAuthorization | null>(null);
+    const [googleSigningIn, setGoogleSigningIn] = useState(false);
+    const [sharedDriveId, setSharedDriveId] = useState("");
     const [driveLetter, setDriveLetter] = useState("");
     const [defaultMountRoot, setDefaultMountRoot] = useState("");
     const [mountRoot, setMountRoot] = useState("");
@@ -482,6 +489,23 @@ export function App() {
         } catch (cause) {
             setRestartingApp(false);
             setError(errorMessage(cause, "Unable to restart Bifrost."));
+        }
+    }
+
+    async function handleGoogleSignIn() {
+        const clientId = googleClientId.trim();
+        if (!clientId) {
+            setError("Google OAuth client ID is required");
+            return;
+        }
+        setGoogleSigningIn(true);
+        setError(null);
+        try {
+            setGoogleAuthorization(await authorizeGoogleDrive(clientId));
+        } catch (cause) {
+            setError(errorMessage(cause, "Google sign-in failed."));
+        } finally {
+            setGoogleSigningIn(false);
         }
     }
 
@@ -821,6 +845,8 @@ export function App() {
                 domain: String(configuration.domain ?? ""),
                 bucket: String(configuration.bucket ?? ""),
                 accessToken: "",
+                clientId: String(configuration.client_id ?? ""),
+                sharedDriveId: String(configuration.shared_drive_id ?? ""),
                 pathStyle: Boolean(configuration.path_style),
                 privateKeyPath: String(configuration.private_key_path ?? ""),
                 trustOnFirstUse: Boolean(configuration.trust_on_first_use),
@@ -850,6 +876,9 @@ export function App() {
                 builtInIcon ? "" : (details.drive_icon_preview ?? ""),
             );
             setProviderChoice(providerChoiceFor(connection.kind));
+            setGoogleClientId(String(configuration.client_id ?? ""));
+            setSharedDriveId(String(configuration.shared_drive_id ?? ""));
+            setGoogleAuthorization(null);
             setProviderSelection(
                 connection.kind === "S3"
                     ? "s3-0"
@@ -935,7 +964,7 @@ export function App() {
         if (editingConnection) {
             let updateEndpoint = endpoint;
             let configuration: Record<string, unknown>;
-            let credentials: Record<string, string>;
+            let credentials: Record<string, unknown>;
             if (providerChoice === "FTP") {
                 configuration = {};
                 credentials = {
@@ -982,9 +1011,17 @@ export function App() {
                     passphrase: String(values.get("passphrase") ?? ""),
                 };
             } else if (providerChoice === "GoogleDrive") {
-                configuration = {};
+                configuration = {
+                    client_id: googleClientId.trim(),
+                    shared_drive_id: sharedDriveId.trim(),
+                };
                 credentials = {
-                    access_token: String(values.get("accessToken") ?? ""),
+                    access_token:
+                        googleAuthorization?.access_token ??
+                        String(values.get("accessToken") ?? ""),
+                    refresh_token: googleAuthorization?.refresh_token ?? "",
+                    expires_at: googleAuthorization?.expires_at ?? null,
+                    client_id: googleClientId.trim(),
                 };
             } else {
                 configuration = {
@@ -1056,7 +1093,12 @@ export function App() {
             const form: GoogleDriveConnectionForm = {
                 name,
                 endpoint,
-                accessToken: String(values.get("accessToken") ?? ""),
+                accessToken: googleAuthorization?.access_token ??
+                    String(values.get("accessToken") ?? ""),
+                refreshToken: googleAuthorization?.refresh_token ?? null,
+                expiresAt: googleAuthorization?.expires_at ?? null,
+                clientId: googleClientId.trim() || null,
+                sharedDriveId: sharedDriveId.trim(),
                 driveLetter,
                 mountOnStartup,
                 mountRoot: selectedMountRoot,
@@ -1171,6 +1213,9 @@ export function App() {
             form.reset();
             setEditingConnection(null);
             setFormDefaults({});
+            setGoogleClientId("");
+            setSharedDriveId("");
+            setGoogleAuthorization(null);
             setSftpAuthentication("password");
             setDriveType("network");
             setDriveIcon("system");
@@ -1318,6 +1363,10 @@ export function App() {
                                         setError(null);
                                         setEditingConnection(null);
                                         setFormDefaults({});
+                                        setProviderChoice("S3");
+                                        setGoogleClientId("");
+                                        setSharedDriveId("");
+                                        setGoogleAuthorization(null);
                                         setSftpAuthentication("password");
                                         setDriveType("network");
                                         setDriveIcon("system");
@@ -2310,20 +2359,69 @@ export function App() {
                                 </div>
                             )}
                             {providerChoice === "GoogleDrive" && (
-                                <label>
-                                    Access token
-                                    <input
-                                        name="accessToken"
-                                        type="password"
-                                        required={!editingConnection}
-                                        placeholder={
-                                            editingConnection
-                                                ? "Leave blank to keep current token"
-                                                : "Paste a Google Drive OAuth access token"
-                                        }
-                                        autoComplete="new-password"
-                                    />
-                                </label>
+                                <>
+                                    <label>
+                                        Google OAuth client ID
+                                        <input
+                                            name="clientId"
+                                            value={googleClientId}
+                                            onChange={(event) =>
+                                                setGoogleClientId(
+                                                    event.target.value,
+                                                )
+                                            }
+                                            placeholder="1234567890.apps.googleusercontent.com"
+                                            autoComplete="off"
+                                        />
+                                    </label>
+                                    <button
+                                        className="secondary-button"
+                                        type="button"
+                                        disabled={googleSigningIn}
+                                        onClick={() => void handleGoogleSignIn()}
+                                    >
+                                        {googleSigningIn
+                                            ? "Waiting for Google..."
+                                            : "Sign in with Google"}
+                                    </button>
+                                    {googleAuthorization && (
+                                        <p className="inline-success">
+                                            Google account connected. You can
+                                            save this connection.
+                                        </p>
+                                    )}
+                                    <label>
+                                        Access token
+                                        <input
+                                            name="accessToken"
+                                            type="password"
+                                            required={
+                                                !editingConnection &&
+                                                !googleAuthorization
+                                            }
+                                            placeholder={
+                                                editingConnection
+                                                    ? "Leave blank to keep current token"
+                                                    : "Optional manual token fallback"
+                                            }
+                                            autoComplete="new-password"
+                                        />
+                                    </label>
+                                    <label>
+                                        Shared Drive ID (optional)
+                                        <input
+                                            name="sharedDriveId"
+                                            value={sharedDriveId}
+                                            onChange={(event) =>
+                                                setSharedDriveId(
+                                                    event.target.value,
+                                                )
+                                            }
+                                            placeholder="Leave blank for My Drive"
+                                            autoComplete="off"
+                                        />
+                                    </label>
+                                </>
                             )}
                             {providerChoice === "S3" && (
                                 <>

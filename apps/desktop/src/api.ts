@@ -66,11 +66,21 @@ export interface GoogleDriveConnectionForm {
     name: string;
     endpoint: string;
     accessToken: string;
+    refreshToken: string | null;
+    expiresAt: number | null;
+    clientId: string | null;
+    sharedDriveId: string;
     driveLetter: string;
     mountOnStartup: boolean;
     mountRoot: string;
     driveType: "network" | "local";
     driveIcon: string;
+}
+
+export interface GoogleDriveAuthorization {
+    access_token: string;
+    refresh_token: string;
+    expires_at: number;
 }
 
 export interface WebDavConnectionForm {
@@ -236,7 +246,7 @@ export async function updateConnection(request: {
     name: string;
     endpoint: string;
     configuration: Record<string, unknown>;
-    credentials: Record<string, string>;
+    credentials: Record<string, unknown>;
 }): Promise<ConnectionSummary> {
     if (!tauriAvailable()) {
         throw new Error("The desktop service is not available in this window");
@@ -349,12 +359,27 @@ export async function createGoogleDriveConnection(
             name: form.name,
             endpoint: form.endpoint,
             access_token: form.accessToken,
+            refresh_token: form.refreshToken,
+            expires_at: form.expiresAt,
+            client_id: form.clientId,
+            shared_drive_id: form.sharedDriveId || null,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
             mount_root: form.mountRoot || null,
             drive_type: form.driveType,
             drive_icon: form.driveIcon || null,
         },
+    });
+}
+
+export async function authorizeGoogleDrive(
+    clientId: string,
+): Promise<GoogleDriveAuthorization> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<GoogleDriveAuthorization>("connections_google_drive_authorize", {
+        request: { client_id: clientId },
     });
 }
 
