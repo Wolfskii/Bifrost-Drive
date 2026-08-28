@@ -74,6 +74,21 @@ pub struct CreateS3ConnectionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateGoogleDriveConnectionRequest {
+    pub name: String,
+    pub endpoint: String,
+    pub access_token: String,
+    pub drive_letter: Option<String>,
+    pub mount_on_startup: bool,
+    #[serde(default)]
+    pub mount_root: Option<String>,
+    #[serde(default)]
+    pub drive_type: String,
+    #[serde(default)]
+    pub drive_icon: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateWebDavConnectionRequest {
     pub name: String,
     pub endpoint: String,

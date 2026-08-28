@@ -64,6 +64,7 @@ import {
     ConflictSummary,
     CredentialStoreStatus,
     createFtpConnection,
+    createGoogleDriveConnection,
     createS3Connection,
     createSftpConnection,
     createSmbConnection,
@@ -93,6 +94,7 @@ import {
     setStartMinimized,
     supportsSyncRoots,
     S3ConnectionForm,
+    GoogleDriveConnectionForm,
     FilesystemIntegration,
     StockDriveIcon,
     updateConnection,
@@ -100,7 +102,13 @@ import {
     unregisterSyncRoot,
 } from "./api";
 
-type ProviderChoice = "S3" | "SFTP" | "WebDAV" | "FTP" | "SMB";
+type ProviderChoice =
+    | "S3"
+    | "GoogleDrive"
+    | "SFTP"
+    | "WebDAV"
+    | "FTP"
+    | "SMB";
 type AppView = "connections" | "activity" | "settings" | "add";
 
 type FormDefaults = Record<string, boolean | number | string>;
@@ -338,8 +346,13 @@ const providerOptions: CustomSelectOption<string>[] = [
                 <Database size={19} />
             ),
     })),
+    {
+        value: "google-drive",
+        label: "Google Drive",
+        group: "Cloud services",
+        icon: <SiGoogledrive size={19} />,
+    },
     ...[
-        ["google-drive", "Google Drive", <SiGoogledrive size={19} />],
         ["dropbox", "Dropbox", <SiDropbox size={19} />],
         ["mega", "MEGA", <SiMega size={19} />],
         ["mailru", "Mail.ru Cloud", <SiMaildotru size={19} />],
@@ -390,6 +403,7 @@ const providerOptions: CustomSelectOption<string>[] = [
 
 function providerChoiceFromSelection(value: string): ProviderChoice {
     if (value.startsWith("s3-")) return "S3";
+    if (value === "google-drive") return "GoogleDrive";
     if (["SFTP", "WebDAV", "FTP", "SMB"].includes(value)) {
         return value as ProviderChoice;
     }
@@ -806,6 +820,7 @@ export function App() {
                 rootPath: String(configuration.root_path ?? ""),
                 domain: String(configuration.domain ?? ""),
                 bucket: String(configuration.bucket ?? ""),
+                accessToken: "",
                 pathStyle: Boolean(configuration.path_style),
                 privateKeyPath: String(configuration.private_key_path ?? ""),
                 trustOnFirstUse: Boolean(configuration.trust_on_first_use),
@@ -966,6 +981,11 @@ export function App() {
                     ).trim(),
                     passphrase: String(values.get("passphrase") ?? ""),
                 };
+            } else if (providerChoice === "GoogleDrive") {
+                configuration = {};
+                credentials = {
+                    access_token: String(values.get("accessToken") ?? ""),
+                };
             } else {
                 configuration = {
                     region: String(values.get("region") ?? "").trim(),
@@ -1032,6 +1052,18 @@ export function App() {
                 passphrase: String(values.get("passphrase") ?? ""),
                 driveLetter,
             });
+        } else if (providerChoice === "GoogleDrive") {
+            const form: GoogleDriveConnectionForm = {
+                name,
+                endpoint,
+                accessToken: String(values.get("accessToken") ?? ""),
+                driveLetter,
+                mountOnStartup,
+                mountRoot: selectedMountRoot,
+                driveType: selectedDriveType,
+                driveIcon: selectedDriveIcon,
+            };
+            connectionOperation = createGoogleDriveConnection(form);
         } else {
             const form: S3ConnectionForm = {
                 name,
@@ -2126,7 +2158,9 @@ export function App() {
                                         required
                                         defaultValue={
                                             (formDefaults.endpoint as string) ??
-                                            "https://s3.amazonaws.com"
+                                            (providerChoice === "GoogleDrive"
+                                                ? "https://www.googleapis.com/drive/v3"
+                                                : "https://s3.amazonaws.com")
                                         }
                                     />
                                 </label>
@@ -2242,7 +2276,8 @@ export function App() {
                                     </div>
                                 </>
                             )}
-                            {providerChoice !== "S3" && (
+                            {providerChoice !== "S3" &&
+                                providerChoice !== "GoogleDrive" && (
                                 <div className="form-grid">
                                     <label>
                                         Username
@@ -2273,6 +2308,22 @@ export function App() {
                                         </label>
                                     )}
                                 </div>
+                            )}
+                            {providerChoice === "GoogleDrive" && (
+                                <label>
+                                    Access token
+                                    <input
+                                        name="accessToken"
+                                        type="password"
+                                        required={!editingConnection}
+                                        placeholder={
+                                            editingConnection
+                                                ? "Leave blank to keep current token"
+                                                : "Paste a Google Drive OAuth access token"
+                                        }
+                                        autoComplete="new-password"
+                                    />
+                                </label>
                             )}
                             {providerChoice === "S3" && (
                                 <>
@@ -2423,5 +2474,7 @@ function providerChoiceFor(kind: ConnectionSummary["kind"]): ProviderChoice {
             return "SMB";
         case "S3":
             return "S3";
+        case "GoogleDrive":
+            return "GoogleDrive";
     }
 }

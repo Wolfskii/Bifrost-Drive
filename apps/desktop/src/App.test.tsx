@@ -79,7 +79,7 @@ describe("App", () => {
         expect(screen.queryByLabelText("Password")).toBeNull();
     });
 
-    it("offers S3 presets and disables planned providers", () => {
+    it("offers S3 presets and a working Google Drive connection", () => {
         render(<App />);
         fireEvent.click(
             screen.getByRole("button", { name: /add connection/i }),
@@ -91,8 +91,17 @@ describe("App", () => {
         const googleDrive = screen.getByRole("option", {
             name: /Google Drive/i,
         }) as HTMLButtonElement;
-        expect(googleDrive.disabled).toBe(true);
+        expect(googleDrive.disabled).toBe(false);
 
+        fireEvent.click(googleDrive);
+        expect(
+            screen.getByRole("heading", { name: "Connect to Google Drive" }),
+        ).toBeTruthy();
+        expect(screen.getByLabelText("Access token")).toBeTruthy();
+
+        fireEvent.click(
+            screen.getByRole("combobox", { name: /storage type/i }),
+        );
         fireEvent.click(screen.getByRole("option", { name: /Cloudflare R2/i }));
         expect(
             screen.getByRole("heading", { name: "Connect to Cloudflare R2" }),

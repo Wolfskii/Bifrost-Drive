@@ -10,6 +10,7 @@ members = [
     "crates/bifrost-db",
     "crates/bifrost-s3",
     "crates/bifrost-ftp",
+    "crates/bifrost-google-drive",
     "crates/bifrost-smb",
     "crates/bifrost-storage",
     "crates/bifrost-transfer",
@@ -34,6 +35,7 @@ default-members = [
     "crates/bifrost-db",
     "crates/bifrost-s3",
     "crates/bifrost-ftp",
+    "crates/bifrost-google-drive",
     "crates/bifrost-smb",
     "crates/bifrost-storage",
     "crates/bifrost-transfer",
@@ -68,7 +70,7 @@ aws-smithy-types = "=1.4.7"
 bytes = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
 quick-xml = { version = "0.38", features = ["serialize"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 russh = { version = "=0.63.1", default-features = false, features = ["ring"] }
 russh-sftp = "=2.4.0"
 serde = { version = "1.0", features = ["derive"] }

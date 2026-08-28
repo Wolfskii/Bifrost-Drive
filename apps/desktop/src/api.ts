@@ -8,7 +8,13 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 
 export type ProviderKind =
-    "S3" | "Sftp" | "WebDav" | "Nextcloud" | "Ftp" | "Smb";
+    | "S3"
+    | "Sftp"
+    | "WebDav"
+    | "Nextcloud"
+    | "GoogleDrive"
+    | "Ftp"
+    | "Smb";
 
 export interface ConnectionSummary {
     id: string;
@@ -49,6 +55,17 @@ export interface S3ConnectionForm {
     pathStyle: boolean;
     accessKeyId: string;
     secretAccessKey: string;
+    driveLetter: string;
+    mountOnStartup: boolean;
+    mountRoot: string;
+    driveType: "network" | "local";
+    driveIcon: string;
+}
+
+export interface GoogleDriveConnectionForm {
+    name: string;
+    endpoint: string;
+    accessToken: string;
     driveLetter: string;
     mountOnStartup: boolean;
     mountRoot: string;
@@ -312,6 +329,26 @@ export async function createS3Connection(
             path_style: form.pathStyle,
             access_key_id: form.accessKeyId,
             secret_access_key: form.secretAccessKey,
+            drive_letter: form.driveLetter || null,
+            mount_on_startup: form.mountOnStartup,
+            mount_root: form.mountRoot || null,
+            drive_type: form.driveType,
+            drive_icon: form.driveIcon || null,
+        },
+    });
+}
+
+export async function createGoogleDriveConnection(
+    form: GoogleDriveConnectionForm,
+): Promise<ConnectionSummary> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<ConnectionSummary>("connections_create_google_drive", {
+        request: {
+            name: form.name,
+            endpoint: form.endpoint,
+            access_token: form.accessToken,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
             mount_root: form.mountRoot || null,

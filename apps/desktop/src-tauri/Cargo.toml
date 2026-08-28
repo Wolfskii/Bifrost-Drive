@@ -23,6 +23,7 @@ bifrost-common = { path = "../../../crates/bifrost-common" }
 bifrost-core = { path = "../../../crates/bifrost-core" }
 bifrost-db = { path = "../../../crates/bifrost-db" }
 bifrost-ftp = { path = "../../../crates/bifrost-ftp" }
+bifrost-google-drive = { path = "../../../crates/bifrost-google-drive" }
 bifrost-linux-credentials = { path = "../../../platforms/linux/credentials" }
 bifrost-macos-credentials = { path = "../../../platforms/macos/credentials" }
 bifrost-crypto = { path = "../../../crates/bifrost-crypto" }

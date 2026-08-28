@@ -5,9 +5,9 @@ mod macos_file_provider;
 use base64::Engine;
 use bifrost_api::{
     ActivitySummary, AppStatus, ConnectionIdRequest, ConnectionSummary, CreateConnectionRequest,
-    CreateFtpConnectionRequest, CreateS3ConnectionRequest, CreateSftpConnectionRequest,
-    CreateSmbConnectionRequest, CreateWebDavConnectionRequest, CredentialStoreStatus,
-    CredentialSummary, DriveIconPreviewRequest, DriveMountRegisterRequest,
+    CreateFtpConnectionRequest, CreateGoogleDriveConnectionRequest, CreateS3ConnectionRequest,
+    CreateSftpConnectionRequest, CreateSmbConnectionRequest, CreateWebDavConnectionRequest,
+    CredentialStoreStatus, CredentialSummary, DriveIconPreviewRequest, DriveMountRegisterRequest,
     DriveMountRegisterResponse, DriveMountStartupRequest, FilePage, FileSummary,
     HydrateFileRequest, HydrateFileResponse, ListFilesRequest, StoreS3CredentialRequest,
     SyncReconcileRequest, SyncReconcileResponse, SyncRunRequest, SyncRunResponse,
@@ -19,6 +19,7 @@ use bifrost_core::Application;
 use bifrost_crypto::{CredentialError, CredentialRef, CredentialStore, SecretString};
 use bifrost_db::{ConflictRecord, ConnectionRecord, Database, SyncEntryRecord};
 use bifrost_ftp::{FtpConfig, FtpProvider};
+use bifrost_google_drive::{GoogleDriveConfig, GoogleDriveProvider};
 #[cfg(target_os = "linux")]
 use bifrost_linux_credentials::LinuxCredentialStore as WindowsCredentialStore;
 #[cfg(target_os = "linux")]
@@ -1189,7 +1190,7 @@ async fn connections_details(
                 .map_err(|_| "Stored credential payload is invalid".to_owned())?
                 .username
         }
-        ProviderKind::S3 => String::new(),
+        ProviderKind::S3 | ProviderKind::GoogleDrive => String::new(),
     };
     #[cfg(target_os = "windows")]
     let drive_icon_preview = configured_drive_icon_preview(&connection.configuration_json);
@@ -1604,10 +1605,51 @@ async fn connections_create_s3(
     })
 }
 
+#[tauri::command]
+async fn connections_create_google_drive(
+    database: State<'_, Database>,
+    credentials: State<'_, WindowsCredentialStore>,
+    request: CreateGoogleDriveConnectionRequest,
+) -> Result<ConnectionSummary, String> {
+    ensure_drive_letter_unassigned(&database, request.drive_letter.as_deref(), None).await?;
+    if request.name.trim().is_empty() || request.access_token.trim().is_empty() {
+        return Err("Google Drive connection name and access token are required".to_owned());
+    }
+    let endpoint = url::Url::parse(&request.endpoint)
+        .map_err(|_| "Google Drive endpoint must be a valid URL".to_owned())?;
+    if endpoint.scheme() != "https" {
+        return Err("Google Drive endpoint must use HTTPS".to_owned());
+    }
+    let mut configuration = serde_json::json!({});
+    set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
+    set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
+    set_drive_presentation(
+        &mut configuration,
+        &request.drive_type,
+        request.drive_icon.as_deref(),
+    )?;
+    create_tested_connection(
+        &database,
+        &credentials,
+        request.name,
+        ProviderKind::GoogleDrive,
+        endpoint.to_string(),
+        configuration,
+        serde_json::json!({ "access_token": request.access_token }),
+    )
+    .await
+}
+
 #[derive(Debug, Deserialize)]
 struct StoredS3Credentials {
     access_key_id: String,
     secret_access_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredGoogleDriveCredentials {
+    access_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1703,6 +1745,17 @@ async fn test_connection(
             .test_connection()
             .await
             .map_err(|error| error.to_string())
+        }
+        ProviderKind::GoogleDrive => {
+            let stored: StoredGoogleDriveCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored Google Drive credential payload is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&request.endpoint)
+                .map_err(|_| "Google Drive endpoint must be a valid URL".to_owned())?;
+            GoogleDriveProvider::connect(GoogleDriveConfig { endpoint }, stored.access_token)
+                .map_err(|error| error.to_string())?
+                .test_connection()
+                .await
+                .map_err(|error| error.to_string())
         }
         ProviderKind::WebDav | ProviderKind::Nextcloud => {
             let endpoint = url::Url::parse(&request.endpoint)
@@ -1878,6 +1931,16 @@ async fn provider_for_connection<C: CredentialStore>(
                 )
                 .await
                 .map_err(|error| error.to_string())?,
+            ))
+        }
+        ProviderKind::GoogleDrive => {
+            let stored: StoredGoogleDriveCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored Google Drive credential payload is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&connection.endpoint)
+                .map_err(|_| "Google Drive endpoint must be a valid URL".to_owned())?;
+            Ok(Box::new(
+                GoogleDriveProvider::connect(GoogleDriveConfig { endpoint }, stored.access_token)
+                    .map_err(|error| error.to_string())?,
             ))
         }
         ProviderKind::WebDav | ProviderKind::Nextcloud => {
@@ -3117,6 +3180,7 @@ pub fn run() {
             connections_update,
             activity_list,
             connections_create,
+            connections_create_google_drive,
             connections_create_s3,
             connections_create_ftp,
             connections_create_smb,

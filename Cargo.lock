@@ -922,6 +922,7 @@ dependencies = [
  "bifrost-crypto",
  "bifrost-db",
  "bifrost-ftp",
+ "bifrost-google-drive",
  "bifrost-linux-credentials",
  "bifrost-linux-fuse",
  "bifrost-macos-credentials",
@@ -984,6 +985,22 @@ dependencies = [
  "tokio",
  "url",
  "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "bifrost-google-drive"
+version = "0.1.6"
+dependencies = [
+ "async-trait",
+ "bifrost-common",
+ "bifrost-storage",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "reqwest 0.12.28",
+ "serde",
+ "tokio",
+ "url",
 ]
 
 [[package]]
