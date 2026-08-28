@@ -70,6 +70,7 @@ base64 = "0.22"
 tauri-plugin-single-instance = "2.0"
 tempfile = "3.27"
 thiserror.workspace = true
+tauri-plugin-opener = "2.5.4"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 bifrost-linux-fuse = { path = "../../../platforms/linux/fuse" }

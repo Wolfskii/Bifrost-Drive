@@ -8,6 +8,7 @@
     "autostart:default",
     "dialog:allow-open",
     "notification:default",
+    "opener:default",
     "process:default",
     "updater:default"
   ]

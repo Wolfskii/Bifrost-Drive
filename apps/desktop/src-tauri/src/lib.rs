@@ -58,6 +58,7 @@ use tauri::{
     tray::TrayIconBuilder,
     Manager, State,
 };
+use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
@@ -153,35 +154,10 @@ struct GoogleOAuthTokenResponse {
     expires_in: i64,
 }
 
-fn open_external_url(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer.exe")
-            .arg(url)
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-}
-
 #[tauri::command]
-async fn connections_google_drive_authorize() -> Result<GoogleDriveAuthorization, String> {
+async fn connections_google_drive_authorize(
+    app: tauri::AppHandle,
+) -> Result<GoogleDriveAuthorization, String> {
     let client_id = google_oauth_client_id()?;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -208,7 +184,9 @@ async fn connections_google_drive_authorize() -> Result<GoogleDriveAuthorization
         .append_pair("state", &state)
         .append_pair("code_challenge", &code_challenge)
         .append_pair("code_challenge_method", "S256");
-    open_external_url(authorization_url.as_str())?;
+    app.opener()
+        .open_url(authorization_url.as_str(), None::<String>)
+        .map_err(|error| format!("Could not open Google sign-in in the browser: {error}"))?;
 
     let (mut socket, _) = tokio::time::timeout(Duration::from_secs(300), listener.accept())
         .await
@@ -3316,6 +3294,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
