@@ -283,9 +283,8 @@ impl GoogleDriveProvider {
             .split('/')
             .filter(|component| !component.is_empty())
         {
-            let page = self
-                .list_children(&parent_id, Some(component), None)
-                .await?;
+            let name = Self::decode_path_component(component)?;
+            let page = self.list_children(&parent_id, Some(&name), None).await?;
             let folder = page
                 .entries
                 .into_iter()
@@ -304,18 +303,22 @@ impl GoogleDriveProvider {
             });
         }
         let mut components = path.as_str().rsplitn(2, '/');
-        let name = components.next().unwrap_or_default();
+        let name = Self::decode_path_component(components.next().unwrap_or_default())?;
         let parent_path = components.next().unwrap_or_default();
         let parent = RemotePath::parse(parent_path).map_err(|error| StorageError::Provider {
             provider: ProviderKind::GoogleDrive,
             message: error.to_string(),
         })?;
-        self.list_children(&self.resolve_directory_id(&parent).await?, Some(name), None)
-            .await?
-            .entries
-            .into_iter()
-            .next()
-            .ok_or_else(|| StorageError::NotFound { path: path.clone() })
+        self.list_children(
+            &self.resolve_directory_id(&parent).await?,
+            Some(&name),
+            None,
+        )
+        .await?
+        .entries
+        .into_iter()
+        .next()
+        .ok_or_else(|| StorageError::NotFound { path: path.clone() })
     }
 
     fn escape_query_literal(value: &str) -> String {
@@ -323,8 +326,9 @@ impl GoogleDriveProvider {
     }
 
     fn entry_path(prefix: &RemotePath, name: &str) -> Result<RemotePath, StorageError> {
+        let name = Self::encode_path_component(name);
         let path = if prefix.as_str().is_empty() {
-            name.to_owned()
+            name
         } else {
             format!("{}/{}", prefix.as_str(), name)
         };
@@ -332,6 +336,106 @@ impl GoogleDriveProvider {
             provider: ProviderKind::GoogleDrive,
             message: error.to_string(),
         })
+    }
+
+    fn encode_path_component(value: &str) -> String {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+        let safe_end = value.trim_end_matches([' ', '.']).len();
+        let reserved_name = Self::is_windows_reserved_name(value);
+        let mut encoded = String::with_capacity(value.len());
+        for (index, character) in value.char_indices() {
+            let unsafe_character = character.is_ascii_control()
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '%'
+                )
+                || index >= safe_end
+                || (reserved_name && index == 0);
+            if unsafe_character {
+                let mut bytes = [0; 4];
+                for byte in character.encode_utf8(&mut bytes).as_bytes() {
+                    encoded.push('%');
+                    encoded.push(HEX[(byte >> 4) as usize] as char);
+                    encoded.push(HEX[(byte & 0x0f) as usize] as char);
+                }
+            } else {
+                encoded.push(character);
+            }
+        }
+        encoded
+    }
+
+    fn decode_path_component(value: &str) -> Result<String, StorageError> {
+        let input = value.as_bytes();
+        let mut decoded = Vec::with_capacity(input.len());
+        let mut index = 0;
+        while index < input.len() {
+            if input[index] == b'%' {
+                let Some(high) = input.get(index + 1).and_then(|byte| Self::hex_value(*byte))
+                else {
+                    return Err(Self::invalid_path_component(value));
+                };
+                let Some(low) = input.get(index + 2).and_then(|byte| Self::hex_value(*byte)) else {
+                    return Err(Self::invalid_path_component(value));
+                };
+                decoded.push((high << 4) | low);
+                index += 3;
+            } else {
+                decoded.push(input[index]);
+                index += 1;
+            }
+        }
+        String::from_utf8(decoded).map_err(|_| Self::invalid_path_component(value))
+    }
+
+    fn hex_value(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    fn is_windows_reserved_name(value: &str) -> bool {
+        let stem = value
+            .trim_end_matches([' ', '.'])
+            .split('.')
+            .next()
+            .unwrap_or_default();
+        matches!(
+            stem.to_ascii_uppercase().as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+        )
+    }
+
+    fn invalid_path_component(value: &str) -> StorageError {
+        StorageError::Provider {
+            provider: ProviderKind::GoogleDrive,
+            message: format!("invalid encoded Google Drive path component: {value}"),
+        }
     }
 
     fn metadata(file: DriveFile, path: RemotePath) -> RemoteMetadata {
@@ -366,7 +470,7 @@ impl GoogleDriveProvider {
 
     async fn ensure_parent(&self, path: &RemotePath) -> Result<(String, String), StorageError> {
         let mut components = path.as_str().rsplitn(2, '/');
-        let name = components.next().unwrap_or_default().to_owned();
+        let name = Self::decode_path_component(components.next().unwrap_or_default())?;
         let parent_path =
             RemotePath::parse(components.next().unwrap_or_default()).map_err(|error| {
                 StorageError::Provider {
@@ -411,8 +515,9 @@ impl StorageProvider for GoogleDriveProvider {
                 .await
                 .map_err(Self::network_error)?,
         )
-        .await
-        .map(|_| ())
+        .await?;
+        self.list(&RemotePath::root(), None).await?;
+        Ok(())
     }
 
     async fn list(
@@ -737,5 +842,35 @@ mod tests {
             GoogleDriveProvider::entry_path(&RemotePath::parse("documents").unwrap(), "report.txt")
                 .unwrap();
         assert_eq!(path.as_str(), "documents/report.txt");
+    }
+
+    #[test]
+    fn encodes_google_names_that_are_not_safe_path_components() {
+        let path =
+            GoogleDriveProvider::entry_path(&RemotePath::root(), r#"Report: Q3/100% \ draft?.txt"#)
+                .unwrap();
+
+        assert_eq!(path.as_str(), "Report%3A Q3%2F100%25 %5C draft%3F.txt");
+        assert_eq!(
+            GoogleDriveProvider::decode_path_component(path.as_str()).unwrap(),
+            r#"Report: Q3/100% \ draft?.txt"#
+        );
+    }
+
+    #[test]
+    fn encodes_windows_reserved_names_and_trailing_characters() {
+        for (name, encoded) in [
+            ("CON.txt", "%43ON.txt"),
+            ("quarterly report. ", "quarterly report%2E%20"),
+            ("..", "%2E%2E"),
+            ("räksmörgås.txt", "räksmörgås.txt"),
+        ] {
+            let path = GoogleDriveProvider::entry_path(&RemotePath::root(), name).unwrap();
+            assert_eq!(path.as_str(), encoded);
+            assert_eq!(
+                GoogleDriveProvider::decode_path_component(encoded).unwrap(),
+                name
+            );
+        }
     }
 }
