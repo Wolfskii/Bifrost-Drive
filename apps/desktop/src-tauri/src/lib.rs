@@ -293,6 +293,12 @@ fn google_oauth_client_id() -> Result<&'static str, String> {
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct AppPreferences {
     start_minimized: bool,
+    #[serde(default = "default_show_update_popups")]
+    show_update_popups: bool,
+}
+
+fn default_show_update_popups() -> bool {
+    true
 }
 
 fn preferences_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -341,6 +347,19 @@ fn app_start_minimized_set(app: tauri::AppHandle, enabled: bool) -> Result<(), S
     let path = preferences_path(&app)?;
     let mut preferences = load_preferences(&path)?;
     preferences.start_minimized = enabled;
+    save_preferences(&path, &preferences)
+}
+
+#[tauri::command]
+fn app_update_popups_get(app: tauri::AppHandle) -> Result<bool, String> {
+    Ok(load_preferences(&preferences_path(&app)?)?.show_update_popups)
+}
+
+#[tauri::command]
+fn app_update_popups_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let path = preferences_path(&app)?;
+    let mut preferences = load_preferences(&path)?;
+    preferences.show_update_popups = enabled;
     save_preferences(&path, &preferences)
 }
 
@@ -3402,6 +3421,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             drive_mount_register,
             drive_mount_unregister,
             drive_mount_startup_set,
+            app_update_popups_get,
+            app_update_popups_set,
             connection_location_open
         ])
         .run(tauri::generate_context!())?;
@@ -3677,6 +3698,7 @@ mod preferences_tests {
             &path,
             &AppPreferences {
                 start_minimized: true,
+                show_update_popups: true,
             },
         )
         .unwrap();

@@ -7,6 +7,11 @@ import {
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 
+export interface UpdateInfo {
+    version: string;
+    body: string;
+}
+
 export type ProviderKind =
     "S3" | "Sftp" | "WebDav" | "Nextcloud" | "GoogleDrive" | "Ftp" | "Smb";
 
@@ -297,12 +302,26 @@ export async function setStartMinimized(enabled: boolean): Promise<void> {
     await invoke("app_start_minimized_set", { enabled });
 }
 
-export async function checkForUpdate(): Promise<string | null> {
+export async function getUpdatePopupsEnabled(): Promise<boolean> {
+    if (!tauriAvailable()) {
+        return true;
+    }
+    return invoke<boolean>("app_update_popups_get");
+}
+
+export async function setUpdatePopupsEnabled(enabled: boolean): Promise<void> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    await invoke("app_update_popups_set", { enabled });
+}
+
+export async function checkForUpdate(): Promise<UpdateInfo | null> {
     if (!tauriAvailable()) {
         return null;
     }
     const update = await check();
-    return update?.version ?? null;
+    return update ? { version: update.version, body: update.body ?? "" } : null;
 }
 
 export async function installUpdate(): Promise<void> {

@@ -983,6 +983,85 @@ input[type="radio"]:disabled {
     font-size: 11px;
     line-height: 1.4;
 }
+.settings-update-section {
+    max-width: 760px;
+    margin-top: 34px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+}
+.settings-update-section .section-heading {
+    align-items: center;
+}
+.settings-update-section h3 {
+    margin: 0;
+    color: var(--ink);
+    font-size: 18px;
+}
+.settings-status,
+.update-details {
+    margin: 14px 0 0;
+    color: var(--ink-soft);
+    font:
+        13px/1.5 ui-sans-serif,
+        system-ui,
+        sans-serif;
+}
+.update-details {
+    display: grid;
+    gap: 12px;
+    padding: 15px;
+    border: 1px solid var(--line);
+    background: var(--surface-soft);
+}
+.update-notes {
+    max-height: 220px;
+    overflow: auto;
+    margin: 0;
+    padding: 12px;
+    white-space: pre-wrap;
+    color: var(--ink-soft);
+    background: var(--surface);
+    font:
+        12px/1.55 ui-monospace,
+        SFMono-Regular,
+        Consolas,
+        monospace;
+}
+.update-modal-backdrop {
+    position: fixed;
+    z-index: 10;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(20, 42, 48, 0.32);
+}
+.update-modal {
+    width: min(560px, 100%);
+    max-height: min(680px, calc(100vh - 48px));
+    overflow: auto;
+    padding: 26px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--surface);
+    box-shadow: 0 22px 60px rgba(20, 42, 48, 0.24);
+}
+.update-modal .section-heading {
+    align-items: start;
+}
+.update-modal h2 {
+    margin: 0;
+    color: var(--ink);
+    font-size: 24px;
+}
+.update-modal > p {
+    margin: 18px 0 12px;
+    color: var(--ink-soft);
+}
+.update-modal .wizard-actions {
+    display: flex;
+    gap: 10px;
+}
 .legal-notice {
     max-width: 680px;
     margin: 20px 0 0;

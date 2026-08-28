@@ -410,8 +410,21 @@ jobs:
           windows_url_name="$(jq -rn --arg value "$windows_name" '$value | @uri')"
           linux_url_name="$(jq -rn --arg value "$linux_name" '$value | @uri')"
           base_url="https://github.com/$GITHUB_REPOSITORY/releases/download/v$RELEASE_VERSION"
+          previous_tag="$(git tag --merged "$GITHUB_SHA" --sort=-version:refname | grep -Fxv "v$RELEASE_VERSION" | head -n 1 || true)"
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "## Changes"
+            echo
+            if [[ -n "$previous_tag" ]]; then
+              git log --format='- %s (%h)' "$previous_tag..$GITHUB_SHA"
+            else
+              git log --format='- %s (%h)' "$GITHUB_SHA"
+            fi
+          } > "$notes_file"
+          release_notes="$(cat "$notes_file")"
           jq -n \
             --arg version "$RELEASE_VERSION" \
+            --arg notes "$release_notes" \
             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg windows_signature "$(tr -d '\r\n' < "$windows_artifact.sig")" \
             --arg windows_url "$base_url/$windows_url_name" \
@@ -419,7 +432,7 @@ jobs:
             --arg linux_url "$base_url/$linux_url_name" \
             '{
               version: $version,
-              notes: ("Bifrost Drive " + $version),
+              notes: $notes,
               pub_date: $pub_date,
               platforms: {
                 "windows-x86_64": { signature: $windows_signature, url: $windows_url },
@@ -459,17 +472,6 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -d '' assets < <(find release-assets/publish -maxdepth 1 -type f -print0 | sort -z)
-          previous_tag="$(git tag --merged "$GITHUB_SHA" --sort=-version:refname | grep -Fxv "v$RELEASE_VERSION" | head -n 1 || true)"
-          notes_file="$RUNNER_TEMP/release-notes.md"
-          {
-            echo "## Changes"
-            echo
-            if [[ -n "$previous_tag" ]]; then
-              git log --format='- %s (%h)' "$previous_tag..$GITHUB_SHA"
-            else
-              git log --format='- %s (%h)' "$GITHUB_SHA"
-            fi
-          } > "$notes_file"
           gh release create "v$RELEASE_VERSION" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Bifrost Drive $RELEASE_VERSION" \

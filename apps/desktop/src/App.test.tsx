@@ -126,4 +126,19 @@ describe("App", () => {
 
         expect(checkbox.checked).toBe(false);
     });
+
+    it("shows update controls in settings", () => {
+        render(<App />);
+        fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+        expect(
+            screen.getByRole("button", { name: "Check for updates" }),
+        ).toBeTruthy();
+        expect(
+            screen.getByRole("checkbox", { name: "Show update popups" }),
+        ).toBeTruthy();
+        expect(
+            screen.getByText("No update is currently available."),
+        ).toBeTruthy();
+    });
 });

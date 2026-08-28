@@ -74,6 +74,7 @@ import {
     getAutostartEnabled,
     getCredentialStoreStatus,
     getStartMinimized,
+    getUpdatePopupsEnabled,
     getConnectionDetails,
     getDriveIconPreview,
     getFilesystemIntegration,
@@ -93,12 +94,14 @@ import {
     setDriveMountStartup,
     setAutostartEnabled,
     setStartMinimized,
+    setUpdatePopupsEnabled,
     supportsSyncRoots,
     S3ConnectionForm,
     GoogleDriveConnectionForm,
     GoogleDriveAuthorization,
     FilesystemIntegration,
     StockDriveIcon,
+    UpdateInfo,
     updateConnection,
     unregisterDriveMount,
     unregisterSyncRoot,
@@ -417,8 +420,12 @@ export function App() {
         useState<CredentialStoreStatus | null>(null);
     const [restartingApp, setRestartingApp] = useState(false);
     const [saving, setSaving] = useState(false);
-    const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+    const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
     const [installingUpdate, setInstallingUpdate] = useState(false);
+    const [checkingForUpdate, setCheckingForUpdate] = useState(false);
+    const [showUpdatePopups, setShowUpdatePopups] = useState(true);
+    const [updatingUpdatePopups, setUpdatingUpdatePopups] = useState(false);
+    const [updatePopupOpen, setUpdatePopupOpen] = useState(false);
     const [autostartEnabled, setAutostartEnabledState] = useState(false);
     const [updatingAutostart, setUpdatingAutostart] = useState(false);
     const [startMinimized, setStartMinimizedState] = useState(false);
@@ -645,9 +652,33 @@ export function App() {
         document.addEventListener("pointerdown", closePicker);
         return () => document.removeEventListener("pointerdown", closePicker);
     }, [iconPickerOpen]);
+    async function checkForUpdates(showPopup = false) {
+        setCheckingForUpdate(true);
+        setError(null);
+        try {
+            const update = await checkForUpdate();
+            setUpdateInfo(update);
+            if (showPopup && update && showUpdatePopups) {
+                setUpdatePopupOpen(true);
+            }
+            return update;
+        } catch (cause) {
+            setError(errorMessage(cause, "Unable to check for updates."));
+            return null;
+        } finally {
+            setCheckingForUpdate(false);
+        }
+    }
+
     useEffect(() => {
-        checkForUpdate()
-            .then(setUpdateVersion)
+        Promise.all([checkForUpdate(), getUpdatePopupsEnabled()])
+            .then(([update, popupsEnabled]) => {
+                setUpdateInfo(update);
+                setShowUpdatePopups(popupsEnabled);
+                if (update && popupsEnabled) {
+                    setUpdatePopupOpen(true);
+                }
+            })
             .catch(() => undefined);
     }, []);
 
@@ -714,6 +745,30 @@ export function App() {
             );
         } finally {
             setUpdatingStartMinimized(false);
+        }
+    }
+
+    async function handleUpdatePopupsChange(enabled: boolean) {
+        setUpdatingUpdatePopups(true);
+        setError(null);
+        try {
+            await setUpdatePopupsEnabled(enabled);
+            setShowUpdatePopups(enabled);
+        } catch (cause) {
+            setError(errorMessage(cause, "Unable to update update settings."));
+        } finally {
+            setUpdatingUpdatePopups(false);
+        }
+    }
+
+    async function handleInstallUpdate() {
+        setInstallingUpdate(true);
+        setError(null);
+        try {
+            await installUpdate();
+        } catch (cause) {
+            setError(errorMessage(cause, "Unable to install the update."));
+            setInstallingUpdate(false);
         }
     }
 
@@ -1369,34 +1424,6 @@ export function App() {
                                     {error}
                                 </p>
                             )}
-                            {updateVersion && (
-                                <p className="inline-error" role="status">
-                                    Version {updateVersion} is available.{" "}
-                                    <button
-                                        className="link-button"
-                                        type="button"
-                                        disabled={installingUpdate}
-                                        onClick={async () => {
-                                            setInstallingUpdate(true);
-                                            try {
-                                                await installUpdate();
-                                            } catch (cause) {
-                                                setError(
-                                                    cause instanceof Error
-                                                        ? cause.message
-                                                        : "Unable to install the update.",
-                                                );
-                                            } finally {
-                                                setInstallingUpdate(false);
-                                            }
-                                        }}
-                                    >
-                                        {installingUpdate
-                                            ? "Installing..."
-                                            : "Install update"}
-                                    </button>
-                                </p>
-                            )}
                             {conflicts.length > 0 && (
                                 <section
                                     className="saved-connections"
@@ -1806,6 +1833,72 @@ export function App() {
                                         opening the main window.
                                     </small>
                                 </span>
+                            </div>
+                            <div className="settings-update-section">
+                                <div className="section-heading">
+                                    <div>
+                                        <p className="eyebrow">Software</p>
+                                        <h3>Updates</h3>
+                                    </div>
+                                    <button
+                                        className="secondary-button"
+                                        type="button"
+                                        disabled={checkingForUpdate}
+                                        onClick={() => void checkForUpdates()}
+                                    >
+                                        {checkingForUpdate
+                                            ? "Checking..."
+                                            : "Check for updates"}
+                                    </button>
+                                </div>
+                                {updateInfo ? (
+                                    <div
+                                        className="update-details"
+                                        role="status"
+                                    >
+                                        <strong>
+                                            Version {updateInfo.version} is
+                                            available.
+                                        </strong>
+                                        <pre className="update-notes">
+                                            {updateInfo.body ||
+                                                "No release notes were provided."}
+                                        </pre>
+                                        <button
+                                            className="primary-button"
+                                            type="button"
+                                            disabled={installingUpdate}
+                                            onClick={() =>
+                                                void handleInstallUpdate()
+                                            }
+                                        >
+                                            {installingUpdate
+                                                ? "Installing..."
+                                                : "Update now"}
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <p
+                                        className="settings-status"
+                                        role="status"
+                                    >
+                                        No update is currently available.
+                                    </p>
+                                )}
+                                <label className="checkbox-row settings-option">
+                                    <input
+                                        type="checkbox"
+                                        aria-label="Show update popups"
+                                        checked={showUpdatePopups}
+                                        disabled={updatingUpdatePopups}
+                                        onChange={(event) =>
+                                            void handleUpdatePopupsChange(
+                                                event.target.checked,
+                                            )
+                                        }
+                                    />
+                                    Show update popups
+                                </label>
                             </div>
                         </section>
                     )}
@@ -2464,6 +2557,57 @@ export function App() {
                         </form>
                     </section>
                 </section>
+            )}
+            {updatePopupOpen && updateInfo && (
+                <div className="update-modal-backdrop">
+                    <section
+                        className="update-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="update-modal-title"
+                    >
+                        <div className="section-heading">
+                            <div>
+                                <p className="eyebrow">Software update</p>
+                                <h2 id="update-modal-title">
+                                    Version {updateInfo.version} is available
+                                </h2>
+                            </div>
+                            <button
+                                className="icon-button"
+                                type="button"
+                                aria-label="Close update"
+                                onClick={() => setUpdatePopupOpen(false)}
+                            >
+                                x
+                            </button>
+                        </div>
+                        <p>Would you like to install it now?</p>
+                        <pre className="update-notes">
+                            {updateInfo.body ||
+                                "No release notes were provided."}
+                        </pre>
+                        <div className="wizard-actions">
+                            <button
+                                className="secondary-button"
+                                type="button"
+                                onClick={() => setUpdatePopupOpen(false)}
+                            >
+                                No, later
+                            </button>
+                            <button
+                                className="primary-button"
+                                type="button"
+                                disabled={installingUpdate}
+                                onClick={() => void handleInstallUpdate()}
+                            >
+                                {installingUpdate
+                                    ? "Installing..."
+                                    : "Yes, update now"}
+                            </button>
+                        </div>
+                    </section>
+                </div>
             )}
         </main>
     );
