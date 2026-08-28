@@ -25,6 +25,7 @@ pub struct GoogleDriveCredentials {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub client_id: Option<String>,
+    pub client_secret: Option<String>,
     pub expires_at: Option<i64>,
 }
 
@@ -32,6 +33,7 @@ struct GoogleDriveSession {
     access_token: String,
     refresh_token: Option<String>,
     client_id: Option<String>,
+    client_secret: Option<String>,
     expires_at: Option<i64>,
 }
 
@@ -95,6 +97,7 @@ impl GoogleDriveProvider {
                 access_token: access_token.into(),
                 refresh_token: None,
                 client_id: None,
+                client_secret: None,
                 expires_at: None,
             },
         )
@@ -129,6 +132,7 @@ impl GoogleDriveProvider {
                 access_token: credentials.access_token,
                 refresh_token: credentials.refresh_token,
                 client_id: credentials.client_id,
+                client_secret: credentials.client_secret,
                 expires_at: credentials.expires_at,
             })),
         })
@@ -164,9 +168,11 @@ impl GoogleDriveProvider {
         {
             return Ok(session.access_token.clone());
         }
-        let (Some(refresh_token), Some(client_id)) =
-            (session.refresh_token.clone(), session.client_id.clone())
-        else {
+        let (Some(refresh_token), Some(client_id), Some(client_secret)) = (
+            session.refresh_token.clone(),
+            session.client_id.clone(),
+            session.client_secret.clone(),
+        ) else {
             return Ok(session.access_token.clone());
         };
         let response = self
@@ -174,6 +180,7 @@ impl GoogleDriveProvider {
             .post("https://oauth2.googleapis.com/token")
             .form(&[
                 ("client_id", client_id.as_str()),
+                ("client_secret", client_secret.as_str()),
                 ("refresh_token", refresh_token.as_str()),
                 ("grant_type", "refresh_token"),
             ])

@@ -190,6 +190,7 @@ async fn connections_google_drive_authorize(
     app: tauri::AppHandle,
 ) -> Result<GoogleDriveAuthorization, String> {
     let client_id = google_oauth_client_id()?;
+    let client_secret = google_oauth_client_secret()?;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .map_err(|error| format!("Could not start the Google sign-in callback: {error}"))?;
@@ -261,6 +262,7 @@ async fn connections_google_drive_authorize(
         .post(GOOGLE_TOKEN_ENDPOINT)
         .form(&[
             ("client_id", client_id),
+            ("client_secret", client_secret),
             ("code", code),
             ("code_verifier", code_verifier.as_str()),
             ("grant_type", "authorization_code"),
@@ -327,6 +329,16 @@ fn google_oauth_client_id() -> Result<&'static str, String> {
         .filter(|client_id| !client_id.is_empty())
         .ok_or_else(|| {
             "Google sign-in is not configured in this Bifrost build. Set BIFROST_GOOGLE_OAUTH_CLIENT_ID when building the application."
+                .to_owned()
+        })
+}
+
+fn google_oauth_client_secret() -> Result<&'static str, String> {
+    option_env!("BIFROST_GOOGLE_OAUTH_CLIENT_SECRET")
+        .map(str::trim)
+        .filter(|client_secret| !client_secret.is_empty())
+        .ok_or_else(|| {
+            "Google sign-in is not configured in this Bifrost build. Set BIFROST_GOOGLE_OAUTH_CLIENT_SECRET when building the application."
                 .to_owned()
         })
 }
@@ -1998,6 +2010,7 @@ async fn test_connection(
                     access_token: stored.access_token,
                     refresh_token: stored.refresh_token,
                     client_id: stored.client_id.or(configuration.client_id),
+                    client_secret: Some(google_oauth_client_secret()?.to_owned()),
                     expires_at: stored.expires_at,
                 },
             )
@@ -2200,6 +2213,7 @@ async fn provider_for_connection<C: CredentialStore>(
                         access_token: stored.access_token,
                         refresh_token: stored.refresh_token,
                         client_id: stored.client_id.or(configuration.client_id),
+                        client_secret: Some(google_oauth_client_secret()?.to_owned()),
                         expires_at: stored.expires_at,
                     },
                 )
