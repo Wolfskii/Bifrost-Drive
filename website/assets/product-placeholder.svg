@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" role="img" aria-labelledby="title description">
+  <title id="title">Bifrost Drive desktop application preview</title>
+  <desc id="description">A replaceable placeholder showing the Bifrost Drive connections interface.</desc>
+  <rect width="1440" height="900" rx="24" fill="#f4f8f8"/>
+  <rect width="280" height="900" fill="#eaf1f1"/>
+  <rect x="34" y="42" width="56" height="56" rx="13" fill="#17191c"/>
+  <path d="M46 76c9-18 20-27 30-27s21 9 30 27M49 76h54" fill="none" stroke="#e9f4f0" stroke-width="6" stroke-linecap="round"/>
+  <text x="108" y="68" fill="#14383f" font-family="Arial, sans-serif" font-size="24" font-weight="700">Bifrost Drive</text>
+  <text x="108" y="89" fill="#6d8589" font-family="Arial, sans-serif" font-size="12">One gateway. Every storage.</text>
+  <rect x="20" y="160" width="240" height="58" rx="10" fill="#d5e5e3"/>
+  <circle cx="48" cy="189" r="9" fill="#247cff"/>
+  <text x="70" y="196" fill="#14383f" font-family="Arial, sans-serif" font-size="17" font-weight="700">Connections</text>
+  <text x="70" y="264" fill="#6d8589" font-family="Arial, sans-serif" font-size="17">Activity</text>
+  <text x="70" y="323" fill="#6d8589" font-family="Arial, sans-serif" font-size="17">Settings</text>
+  <text x="360" y="96" fill="#71888c" font-family="Arial, sans-serif" font-size="13" letter-spacing="2">STORAGE WORKSPACE</text>
+  <text x="360" y="164" fill="#14383f" font-family="Arial, sans-serif" font-size="54" font-weight="700">Your connections</text>
+  <text x="360" y="204" fill="#71888c" font-family="Arial, sans-serif" font-size="20">Remote files, ready when you are.</text>
+  <rect x="1150" y="112" width="220" height="58" rx="10" fill="#16646d"/>
+  <text x="1194" y="149" fill="#fff" font-family="Arial, sans-serif" font-size="17" font-weight="700">+  Add connection</text>
+  <rect x="360" y="286" width="1010" height="130" rx="12" fill="#fff" stroke="#d6e1e2"/>
+  <circle cx="420" cy="351" r="30" fill="#e6f1ef"/>
+  <path d="M403 360c7-15 16-22 26-22s19 7 26 22M407 360h44" fill="none" stroke="#247cff" stroke-width="5" stroke-linecap="round"/>
+  <text x="475" y="341" fill="#14383f" font-family="Arial, sans-serif" font-size="22" font-weight="700">Team files</text>
+  <text x="475" y="372" fill="#71888c" font-family="Arial, sans-serif" font-size="15">Google Drive · Mounted as B:</text>
+  <rect x="1217" y="329" width="116" height="44" rx="8" fill="#e8f2f1"/>
+  <text x="1246" y="357" fill="#17191c" font-family="Arial, sans-serif" font-size="14" font-weight="700">Open drive</text>
+  <rect x="360" y="438" width="1010" height="130" rx="12" fill="#fff" stroke="#d6e1e2"/>
+  <circle cx="420" cy="503" r="30" fill="#edf1fb"/>
+  <text x="407" y="512" fill="#285da8" font-family="Arial, sans-serif" font-size="26" font-weight="700">S3</text>
+  <text x="475" y="493" fill="#14383f" font-family="Arial, sans-serif" font-size="22" font-weight="700">Archive</text>
+  <text x="475" y="524" fill="#71888c" font-family="Arial, sans-serif" font-size="15">S3 · Mounted as S:</text>
+  <rect x="1217" y="481" width="116" height="44" rx="8" fill="#e8f2f1"/>
+  <text x="1246" y="509" fill="#17191c" font-family="Arial, sans-serif" font-size="14" font-weight="700">Open drive</text>
+  <rect x="360" y="625" width="470" height="190" rx="12" fill="#14383f"/>
+  <text x="396" y="675" fill="#8eb9b4" font-family="Arial, sans-serif" font-size="12" letter-spacing="2">ACTIVITY</text>
+  <text x="396" y="719" fill="#fff" font-family="Arial, sans-serif" font-size="22" font-weight="700">Files stay in motion.</text>
+  <rect x="396" y="756" width="290" height="12" rx="6" fill="#31565c"/>
+  <rect x="396" y="756" width="218" height="12" rx="6" fill="#f2c879"/>
+  <text x="396" y="794" fill="#a9c0c3" font-family="Arial, sans-serif" font-size="14">Uploading annual-report.pdf</text>
+  <rect x="856" y="625" width="514" height="190" rx="12" fill="#e4eeee"/>
+  <text x="892" y="675" fill="#247cff" font-family="Arial, sans-serif" font-size="12" letter-spacing="2">LOCAL-FIRST</text>
+  <text x="892" y="719" fill="#14383f" font-family="Arial, sans-serif" font-size="22" font-weight="700">Credentials stay in your OS vault.</text>
+  <text x="892" y="758" fill="#637d81" font-family="Arial, sans-serif" font-size="15">No plaintext passwords in the app database.</text>
+  <text x="1240" y="868" fill="#82979a" font-family="Arial, sans-serif" font-size="12">REPLACEABLE PLACEHOLDER</text>
+</svg>

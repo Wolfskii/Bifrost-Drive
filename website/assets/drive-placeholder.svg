@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" role="img" aria-labelledby="title description">
+  <title id="title">Remote files mounted in the operating system</title>
+  <desc id="description">A replaceable placeholder showing a native file browser with Bifrost drives.</desc>
+  <rect width="960" height="640" rx="20" fill="#10191d"/>
+  <rect x="22" y="22" width="916" height="54" rx="9" fill="#1c292e"/>
+  <circle cx="51" cy="49" r="7" fill="#f2c879"/><circle cx="75" cy="49" r="7" fill="#6a9e99"/><circle cx="99" cy="49" r="7" fill="#31565c"/>
+  <rect x="170" y="35" width="510" height="28" rx="7" fill="#27373d"/>
+  <text x="191" y="55" fill="#b8cacc" font-family="Arial, sans-serif" font-size="13">This PC  /  Bifrost Team Files (B:)</text>
+  <rect x="22" y="94" width="220" height="524" rx="10" fill="#172328"/>
+  <text x="50" y="139" fill="#7d9699" font-family="Arial, sans-serif" font-size="13" letter-spacing="1">LOCATIONS</text>
+  <rect x="38" y="160" width="188" height="46" rx="8" fill="#254146"/>
+  <circle cx="62" cy="183" r="10" fill="#f2c879"/>
+  <text x="84" y="188" fill="#fff" font-family="Arial, sans-serif" font-size="14">Bifrost Team Files</text>
+  <text x="51" y="241" fill="#a4b7b9" font-family="Arial, sans-serif" font-size="14">Archive (S:)</text>
+  <text x="51" y="281" fill="#a4b7b9" font-family="Arial, sans-serif" font-size="14">Documents</text>
+  <text x="51" y="321" fill="#a4b7b9" font-family="Arial, sans-serif" font-size="14">Downloads</text>
+  <g fill="#f2c879">
+    <path d="M288 139h117a13 13 0 0 1 13 13v82a13 13 0 0 1-13 13H288a13 13 0 0 1-13-13v-82a13 13 0 0 1 13-13z"/>
+    <path d="M475 139h117a13 13 0 0 1 13 13v82a13 13 0 0 1-13 13H475a13 13 0 0 1-13-13v-82a13 13 0 0 1 13-13z"/>
+    <path d="M662 139h117a13 13 0 0 1 13 13v82a13 13 0 0 1-13 13H662a13 13 0 0 1-13-13v-82a13 13 0 0 1 13-13z"/>
+  </g>
+  <g fill="#dfeaec">
+    <rect x="275" y="304" width="143" height="176" rx="9"/><rect x="462" y="304" width="143" height="176" rx="9"/><rect x="649" y="304" width="143" height="176" rx="9"/>
+  </g>
+  <g fill="#47666b">
+    <rect x="295" y="340" width="103" height="9" rx="4"/><rect x="295" y="365" width="78" height="7" rx="3"/><rect x="482" y="340" width="103" height="9" rx="4"/><rect x="482" y="365" width="78" height="7" rx="3"/><rect x="669" y="340" width="103" height="9" rx="4"/><rect x="669" y="365" width="78" height="7" rx="3"/>
+  </g>
+  <text x="304" y="276" fill="#bdced0" font-family="Arial, sans-serif" font-size="14">Projects</text>
+  <text x="493" y="276" fill="#bdced0" font-family="Arial, sans-serif" font-size="14">Reports</text>
+  <text x="680" y="276" fill="#bdced0" font-family="Arial, sans-serif" font-size="14">Shared</text>
+  <text x="760" y="598" fill="#6f8588" font-family="Arial, sans-serif" font-size="12">REPLACEABLE PLACEHOLDER</text>
+</svg>

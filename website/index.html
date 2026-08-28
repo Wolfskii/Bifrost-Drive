@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta
+            name="description"
+            content="Bifrost Drive mounts Google Drive, S3, SFTP, WebDAV, FTP, and SMB storage as native drives on your desktop."
+        />
+        <meta name="theme-color" content="#eaf3f5" />
+        <meta
+            property="og:title"
+            content="Bifrost Drive — One gateway. Every storage."
+        />
+        <meta
+            property="og:description"
+            content="Remote storage that feels local. Mount cloud and server connections as native drives."
+        />
+        <meta property="og:type" content="website" />
+        <meta property="og:image" content="/assets/product-placeholder.svg" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <title>Bifrost Drive — Remote storage, mounted locally</title>
+        <link rel="icon" href="./assets/bifrost.svg" type="image/svg+xml" />
+        <link rel="stylesheet" href="./assets/styles.css" />
+        <script type="module" src="./assets/site.js"></script>
+    </head>
+    <body>
+        <a class="skip-link" href="#main">Skip to content</a>
+        <header class="site-header">
+            <a class="brand" href="./" aria-label="Bifrost Drive home">
+                <img src="./assets/bifrost.svg" alt="" width="38" height="38" />
+                <span><strong>Bifrost Drive</strong></span>
+            </a>
+            <button
+                class="menu-toggle"
+                type="button"
+                data-menu-toggle
+                aria-expanded="false"
+                aria-controls="site-navigation"
+                aria-label="Open navigation"
+            >
+                <span></span><span></span><span></span>
+            </button>
+            <nav
+                id="site-navigation"
+                class="site-navigation"
+                data-navigation
+                aria-label="Main navigation"
+            >
+                <a href="#how-it-works">How it works</a>
+                <a href="#security">Security</a>
+                <a href="#platforms">Platforms</a>
+                <a
+                    href="https://github.com/Wolfskii/Bifrost-Drive/releases/latest"
+                    rel="noreferrer"
+                    >Downloads</a
+                >
+                <a
+                    class="nav-download"
+                    data-download-link
+                    href="https://github.com/Wolfskii/Bifrost-Drive/releases/latest"
+                    ><span data-download-label>View downloads</span></a
+                >
+                <div class="mobile-menu-footer">
+                    <span>A product by</span>
+                    <a
+                        href="https://webble.se"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        <img
+                            src="./assets/webble-on-dark.png"
+                            alt="Webble"
+                            width="104"
+                            height="20"
+                        />
+                    </a>
+                </div>
+            </nav>
+        </header>
+
+        <main id="main">
+            <section class="hero" aria-labelledby="hero-title">
+                <img
+                    class="hero-media"
+                    src="./assets/product-placeholder.svg"
+                    alt="Preview of the Bifrost Drive desktop application showing mounted remote storage connections"
+                />
+                <div class="hero-shade"></div>
+                <div class="hero-grid" aria-hidden="true"></div>
+                <div class="hero-content">
+                    <p class="eyebrow">Remote storage, without the distance</p>
+                    <h1 id="hero-title">One gateway.<br />Every storage.</h1>
+                    <p class="hero-copy">
+                        Bring Google Drive, S3, SFTP, WebDAV, FTP, and SMB into
+                        the file browser you already use.
+                    </p>
+                    <div class="hero-actions">
+                        <a
+                            class="button button-primary"
+                            data-download-link
+                            href="https://github.com/Wolfskii/Bifrost-Drive/releases/latest"
+                        >
+                            <span data-download-label>View downloads</span
+                            ><span aria-hidden="true">↓</span>
+                        </a>
+                        <a class="button button-ghost" href="#how-it-works"
+                            >See how it works</a
+                        >
+                    </div>
+                    <div class="download-meta">
+                        <span data-download-detail
+                            >Choose an installer from the latest GitHub
+                            release.</span
+                        >
+                        <span class="meta-divider" aria-hidden="true"></span>
+                        <span data-release-version>Latest release</span>
+                    </div>
+                </div>
+            </section>
+
+            <section
+                class="provider-band"
+                aria-label="Supported storage services"
+            >
+                <div class="provider-intro">
+                    <span>Connect the services you already use</span>
+                </div>
+                <div class="provider-list" role="list">
+                    <span role="listitem"
+                        ><img src="./assets/google-drive.svg" alt="" />Google
+                        Drive</span
+                    >
+                    <span role="listitem"
+                        ><img src="./assets/amazon-s3.svg" alt="" />Amazon
+                        S3</span
+                    >
+                    <span role="listitem"
+                        ><img src="./assets/sftp.svg" alt="" />SFTP</span
+                    >
+                    <span role="listitem"
+                        ><img src="./assets/webdav.svg" alt="" />WebDAV</span
+                    >
+                    <span role="listitem"
+                        ><img src="./assets/ftp.svg" alt="" />FTP</span
+                    >
+                    <span role="listitem"
+                        ><img src="./assets/smb.svg" alt="" />SMB</span
+                    >
+                </div>
+            </section>
+
+            <section
+                id="how-it-works"
+                class="feature-band native-band"
+                aria-labelledby="native-title"
+            >
+                <div class="feature-copy">
+                    <p class="eyebrow dark">A familiar place for every file</p>
+                    <h2 id="native-title">
+                        Cloud storage that behaves like a drive.
+                    </h2>
+                    <p>
+                        Bifrost turns remote services into ordinary filesystem
+                        locations. Browse, open, and organize remote files from
+                        Explorer or your Linux file manager without learning
+                        another dashboard.
+                    </p>
+                    <ol class="steps">
+                        <li>
+                            <span>01</span>
+                            <div>
+                                <strong>Choose a provider</strong>
+                                <p>
+                                    Connect with the provider's native
+                                    credentials or browser sign-in.
+                                </p>
+                            </div>
+                        </li>
+                        <li>
+                            <span>02</span>
+                            <div>
+                                <strong>Pick a location</strong>
+                                <p>
+                                    Select a drive letter on Windows or a mount
+                                    parent on Linux.
+                                </p>
+                            </div>
+                        </li>
+                        <li>
+                            <span>03</span>
+                            <div>
+                                <strong>Work normally</strong>
+                                <p>
+                                    Your remote files appear where the rest of
+                                    your files live.
+                                </p>
+                            </div>
+                        </li>
+                    </ol>
+                </div>
+                <div class="feature-visual">
+                    <img
+                        src="./assets/drive-placeholder.svg"
+                        alt="Replaceable preview of remote folders mounted in a native file browser"
+                        loading="lazy"
+                    />
+                    <span class="replace-note"
+                        >Placeholder image — replace anytime</span
+                    >
+                </div>
+            </section>
+
+            <section
+                id="security"
+                class="security-band"
+                aria-labelledby="security-title"
+            >
+                <div class="security-heading">
+                    <p class="eyebrow">Local-first by design</p>
+                    <h2 id="security-title">Your keys stay with you.</h2>
+                    <p>
+                        Bifrost connects directly from your computer to your
+                        storage provider. It does not operate a cloud relay for
+                        your files.
+                    </p>
+                </div>
+                <div class="security-grid">
+                    <article>
+                        <span class="feature-number">01</span>
+                        <h3>Native credential vaults</h3>
+                        <p>
+                            Secrets live in Windows Credential Manager, macOS
+                            Keychain, or Linux Secret Service — never as
+                            plaintext in SQLite.
+                        </p>
+                    </article>
+                    <article>
+                        <span class="feature-number">02</span>
+                        <h3>Verification stays on</h3>
+                        <p>
+                            TLS certificates and SSH host keys are verified by
+                            default. Connections fail visibly instead of
+                            silently weakening security.
+                        </p>
+                    </article>
+                    <article>
+                        <span class="feature-number">03</span>
+                        <h3>Direct provider connections</h3>
+                        <p>
+                            Your computer talks directly to the storage services
+                            you choose, without routing file content through a
+                            Bifrost cloud.
+                        </p>
+                    </article>
+                </div>
+            </section>
+
+            <section
+                id="platforms"
+                class="platform-band"
+                aria-labelledby="platform-title"
+            >
+                <div class="section-lead">
+                    <p class="eyebrow dark">Built for the desktop</p>
+                    <h2 id="platform-title">Meet Bifrost where you work.</h2>
+                </div>
+                <div class="platform-list">
+                    <article class="platform-row primary-platform">
+                        <div class="platform-symbol">
+                            <img src="./assets/windows.svg" alt="Windows" />
+                        </div>
+                        <div>
+                            <span class="status live">Available</span>
+                            <h3>Windows</h3>
+                            <p>
+                                Writable drive letters and Explorer integration
+                                for Windows 10/11.
+                            </p>
+                        </div>
+                        <a
+                            class="text-link"
+                            href="https://github.com/Wolfskii/Bifrost-Drive/releases/latest"
+                            >Windows details →</a
+                        >
+                    </article>
+                    <article class="platform-row">
+                        <div class="platform-symbol">
+                            <img src="./assets/linux.svg" alt="Linux" />
+                        </div>
+                        <div>
+                            <span class="status early">Early access</span>
+                            <h3>Linux</h3>
+                            <p>
+                                Read-only FUSE mounts with a user-selected mount
+                                location. AppImage and RPM are published for
+                                x86_64.
+                            </p>
+                        </div>
+                        <a
+                            class="text-link"
+                            href="https://github.com/Wolfskii/Bifrost-Drive/releases/latest"
+                            >Linux downloads →</a
+                        >
+                    </article>
+                    <article class="platform-row muted-platform">
+                        <div class="platform-symbol">
+                            <img src="./assets/apple.svg" alt="macOS" />
+                        </div>
+                        <div>
+                            <span class="status soon">Coming soon</span>
+                            <h3>macOS</h3>
+                            <p>
+                                File Provider integration is in development.
+                                Signed public distribution is not available yet.
+                            </p>
+                        </div>
+                        <span class="text-link muted">In progress</span>
+                    </article>
+                </div>
+            </section>
+
+            <section class="download-band" aria-labelledby="download-title">
+                <div>
+                    <p class="eyebrow">Ready when you are</p>
+                    <h2 id="download-title">
+                        Put remote storage<br />within reach.
+                    </h2>
+                </div>
+                <div class="download-panel">
+                    <a
+                        class="button button-light"
+                        data-download-link
+                        href="https://github.com/Wolfskii/Bifrost-Drive/releases/latest"
+                        ><span data-download-label>View downloads</span
+                        ><span aria-hidden="true">↓</span></a
+                    >
+                    <p data-download-detail>
+                        Choose an installer from the latest GitHub release.
+                    </p>
+                    <a
+                        class="other-downloads"
+                        href="https://github.com/Wolfskii/Bifrost-Drive/releases/latest"
+                        >Other operating systems and package formats →</a
+                    >
+                </div>
+            </section>
+        </main>
+
+        <footer class="site-footer">
+            <a class="brand footer-brand" href="./"
+                ><img
+                    src="./assets/bifrost.svg"
+                    alt=""
+                    width="34"
+                    height="34"
+                /><span
+                    ><strong>Bifrost Drive</strong
+                    ><small>One gateway. Every storage.</small></span
+                ></a
+            >
+            <div class="footer-links">
+                <a href="./privacy/">Privacy Policy</a>
+                <a href="./terms/">Terms of Service</a>
+                <a
+                    href="https://github.com/Wolfskii/Bifrost-Drive/releases/latest"
+                    >All downloads</a
+                >
+                <a href="mailto:dawidkaleta.pl@gmail.com">Contact</a>
+            </div>
+            <div class="footer-publisher">
+                <span>By</span>
+                <a
+                    href="https://webble.se"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                >
+                    <img
+                        src="./assets/webble-on-light.png"
+                        alt="Webble"
+                        width="88"
+                        height="17"
+                    />
+                </a>
+            </div>
+        </footer>
+    </body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "name": "@bifrost-drive/website",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}

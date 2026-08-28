@@ -1,0 +1,7 @@
+README.md
+package.json
+tests/
+sitemap.xml.example
+.git/
+.DS_Store
+Thumbs.db
