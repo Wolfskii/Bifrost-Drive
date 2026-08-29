@@ -19,6 +19,7 @@ export type ProviderKind =
     | "Nextcloud"
     | "GoogleDrive"
     | "GooglePhotos"
+    | "Immich"
     | "Ftp"
     | "Smb";
 
@@ -94,6 +95,20 @@ export interface GooglePhotosConnectionForm {
     expiresAt: number | null;
     legacyFolderId: string;
     legacyFolderPath: string;
+    driveLetter: string;
+    mountOnStartup: boolean;
+    mountRoot: string;
+    driveType: "network" | "local";
+    driveIcon: string;
+}
+
+export interface ImmichConnectionForm {
+    name: string;
+    endpoint: string;
+    authentication: "api_key" | "password";
+    apiKey: string;
+    email: string;
+    password: string;
     driveLetter: string;
     mountOnStartup: boolean;
     mountRoot: string;
@@ -392,8 +407,6 @@ export async function createGoogleDriveConnection(
             access_token: form.accessToken,
             refresh_token: form.refreshToken,
             expires_at: form.expiresAt,
-            legacy_folder_id: form.legacyFolderId || null,
-            legacy_folder_path: form.legacyFolderPath || null,
             shared_drive_id: null,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
@@ -435,6 +448,31 @@ export async function createGooglePhotosConnection(
             access_token: form.accessToken,
             refresh_token: form.refreshToken,
             expires_at: form.expiresAt,
+            legacy_folder_id: form.legacyFolderId || null,
+            legacy_folder_path: form.legacyFolderPath || null,
+            drive_letter: form.driveLetter || null,
+            mount_on_startup: form.mountOnStartup,
+            mount_root: form.mountRoot || null,
+            drive_type: form.driveType,
+            drive_icon: form.driveIcon || null,
+        },
+    });
+}
+
+export async function createImmichConnection(
+    form: ImmichConnectionForm,
+): Promise<ConnectionSummary> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<ConnectionSummary>("connections_create_immich", {
+        request: {
+            name: form.name,
+            endpoint: form.endpoint,
+            authentication: form.authentication,
+            api_key: form.apiKey || null,
+            email: form.email || null,
+            password: form.password || null,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
             mount_root: form.mountRoot || null,

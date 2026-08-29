@@ -124,6 +124,27 @@ pub struct CreateGooglePhotosConnectionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateImmichConnectionRequest {
+    pub name: String,
+    pub endpoint: String,
+    pub authentication: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    pub drive_letter: Option<String>,
+    pub mount_on_startup: bool,
+    #[serde(default)]
+    pub mount_root: Option<String>,
+    #[serde(default)]
+    pub drive_type: String,
+    #[serde(default)]
+    pub drive_icon: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateWebDavConnectionRequest {
     pub name: String,
     pub endpoint: String,

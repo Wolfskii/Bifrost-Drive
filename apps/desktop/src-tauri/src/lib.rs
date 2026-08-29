@@ -5,9 +5,9 @@ use base64::Engine;
 use bifrost_api::{
     ActivitySummary, AppStatus, ConnectionIdRequest, ConnectionSummary, CreateConnectionRequest,
     CreateFtpConnectionRequest, CreateGoogleDriveConnectionRequest,
-    CreateGooglePhotosConnectionRequest, CreateS3ConnectionRequest, CreateSftpConnectionRequest,
-    CreateSmbConnectionRequest, CreateWebDavConnectionRequest, CredentialStoreStatus,
-    CredentialSummary, DriveIconPreviewRequest, DriveMountRegisterRequest,
+    CreateGooglePhotosConnectionRequest, CreateImmichConnectionRequest, CreateS3ConnectionRequest,
+    CreateSftpConnectionRequest, CreateSmbConnectionRequest, CreateWebDavConnectionRequest,
+    CredentialStoreStatus, CredentialSummary, DriveIconPreviewRequest, DriveMountRegisterRequest,
     DriveMountRegisterResponse, DriveMountStartupRequest, FilePage, FileSummary,
     GoogleDriveAuthorization, HydrateFileRequest, HydrateFileResponse, ListFilesRequest,
     StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse, SyncRunRequest,
@@ -26,6 +26,7 @@ use bifrost_google_photos::{
     GooglePhotosConfig, GooglePhotosCredentials, GooglePhotosProvider, HybridGooglePhotosProvider,
     GOOGLE_PHOTOS_ENDPOINT,
 };
+use bifrost_immich::{ImmichConfig, ImmichCredentials, ImmichProvider};
 #[cfg(target_os = "linux")]
 use bifrost_linux_credentials::LinuxCredentialStore as WindowsCredentialStore;
 #[cfg(target_os = "linux")]
@@ -1432,6 +1433,10 @@ async fn connections_details(
                 .map_err(|_| "Stored credential payload is invalid".to_owned())?
                 .username
         }
+        ProviderKind::Immich => serde_json::from_str::<StoredImmichCredentials>(secret.expose())
+            .map_err(|_| "Stored Immich credential payload is invalid".to_owned())?
+            .email
+            .unwrap_or_default(),
         ProviderKind::S3 | ProviderKind::GoogleDrive | ProviderKind::GooglePhotos => String::new(),
     };
     #[cfg(target_os = "windows")]
@@ -1523,6 +1528,18 @@ async fn connections_update(
         .await
         .map_err(|error| error.to_string())?;
     let merged_secret = merge_connection_credentials(old_secret.expose(), request.credentials)?;
+    if existing.kind == ProviderKind::Immich {
+        let stored: StoredImmichCredentials = serde_json::from_str(&merged_secret)
+            .map_err(|_| "Stored Immich credential payload is invalid".to_owned())?;
+        let configuration: ImmichConfiguration =
+            serde_json::from_value(request.configuration.clone())
+                .map_err(|_| "Immich configuration is invalid".to_owned())?;
+        let immich_credentials = immich_credentials_from_stored(stored, &configuration)?;
+        request.endpoint = ImmichProvider::resolve_endpoint(&request.endpoint, immich_credentials)
+            .await
+            .map_err(|error| error.to_string())?
+            .to_string();
+    }
     let new_credential = credentials
         .put(
             "connection",
@@ -1934,7 +1951,12 @@ async fn connections_create_google_photos(
                 .map(str::to_owned)
         });
     let legacy_folder_id = match legacy_folder_id {
-        Some(folder_id) if request.legacy_folder_id.as_deref().is_some_and(|id| !id.trim().is_empty()) => {
+        Some(folder_id)
+            if request
+                .legacy_folder_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty()) =>
+        {
             Some(folder_id)
         }
         Some(path) => {
@@ -1997,6 +2019,53 @@ async fn connections_create_google_photos(
     .await
 }
 
+#[tauri::command]
+async fn connections_create_immich(
+    database: State<'_, Database>,
+    credentials: State<'_, WindowsCredentialStore>,
+    request: CreateImmichConnectionRequest,
+) -> Result<ConnectionSummary, String> {
+    ensure_drive_letter_unassigned(&database, request.drive_letter.as_deref(), None).await?;
+    if request.name.trim().is_empty() {
+        return Err("Immich connection name is required".to_owned());
+    }
+    let immich_credentials = immich_credentials_from_values(
+        &request.authentication,
+        request.api_key.as_deref(),
+        request.email.as_deref(),
+        request.password.as_deref(),
+    )?;
+    let endpoint = ImmichProvider::resolve_endpoint(&request.endpoint, immich_credentials)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut configuration = serde_json::json!({
+        "authentication": request.authentication.trim(),
+    });
+    set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
+    set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
+    set_drive_presentation(
+        &mut configuration,
+        &request.drive_type,
+        request.drive_icon.as_deref(),
+    )?;
+    create_tested_connection(
+        &database,
+        &credentials,
+        request.name,
+        ProviderKind::Immich,
+        endpoint.to_string(),
+        configuration,
+        serde_json::json!({
+            "authentication": request.authentication.trim(),
+            "api_key": request.api_key,
+            "email": request.email,
+            "password": request.password,
+        }),
+    )
+    .await
+}
+
 #[derive(Debug, Deserialize)]
 struct StoredS3Credentials {
     access_key_id: String,
@@ -2034,6 +2103,67 @@ struct GooglePhotosConfiguration {
     client_id: Option<String>,
     #[serde(default)]
     legacy_folder_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImmichConfiguration {
+    #[serde(default = "default_immich_authentication")]
+    authentication: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredImmichCredentials {
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+}
+
+fn default_immich_authentication() -> String {
+    "api_key".to_owned()
+}
+
+fn immich_credentials_from_values(
+    authentication: &str,
+    api_key: Option<&str>,
+    email: Option<&str>,
+    password: Option<&str>,
+) -> Result<ImmichCredentials, String> {
+    match authentication.trim() {
+        "api_key" => api_key
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| ImmichCredentials::ApiKey(value.to_owned()))
+            .ok_or_else(|| "Immich API key is required".to_owned()),
+        "password" => {
+            let email = email
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "Immich email is required".to_owned())?;
+            let password = password
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "Immich password is required".to_owned())?;
+            Ok(ImmichCredentials::Password {
+                email: email.to_owned(),
+                password: password.to_owned(),
+            })
+        }
+        _ => Err("Immich authentication must be api_key or password".to_owned()),
+    }
+}
+
+fn immich_credentials_from_stored(
+    stored: StoredImmichCredentials,
+    configuration: &ImmichConfiguration,
+) -> Result<ImmichCredentials, String> {
+    immich_credentials_from_values(
+        &configuration.authentication,
+        stored.api_key.as_deref(),
+        stored.email.as_deref(),
+        stored.password.as_deref(),
+    )
 }
 
 fn parse_google_workspace_open_mode(value: &str) -> Result<WorkspaceOpenMode, String> {
@@ -2210,9 +2340,27 @@ async fn test_connection(
                 })
                 .transpose()?;
             HybridGooglePhotosProvider::new(photos, legacy)
-            .test_connection()
+                .test_connection()
+                .await
+                .map_err(|error| error.to_string())
+        }
+        ProviderKind::Immich => {
+            let stored: StoredImmichCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored Immich credential payload is invalid".to_owned())?;
+            let configuration: ImmichConfiguration = serde_json::from_value(request.configuration)
+                .map_err(|_| "Immich configuration is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&request.endpoint)
+                .map_err(|_| "Immich endpoint must be a valid URL".to_owned())?;
+            let provider = ImmichProvider::connect_with_credentials(
+                ImmichConfig { endpoint },
+                immich_credentials_from_stored(stored, &configuration)?,
+            )
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+            provider
+                .test_connection()
+                .await
+                .map_err(|error| error.to_string())
         }
         ProviderKind::WebDav | ProviderKind::Nextcloud => {
             let endpoint = url::Url::parse(&request.endpoint)
@@ -2427,16 +2575,16 @@ async fn provider_for_connection<C: CredentialStore>(
             let endpoint = url::Url::parse(&connection.endpoint)
                 .map_err(|_| "Google Photos endpoint must be a valid URL".to_owned())?;
             let photos = GooglePhotosProvider::connect_with_credentials(
-                    GooglePhotosConfig { endpoint },
-                    GooglePhotosCredentials {
-                        access_token: stored.access_token.clone(),
-                        refresh_token: stored.refresh_token.clone(),
-                        client_id: stored.client_id.clone().or(configuration.client_id.clone()),
-                        client_secret: Some(google_oauth_client_secret()?.to_owned()),
-                        expires_at: stored.expires_at,
-                    },
-                )
-                .map_err(|error| error.to_string())?;
+                GooglePhotosConfig { endpoint },
+                GooglePhotosCredentials {
+                    access_token: stored.access_token.clone(),
+                    refresh_token: stored.refresh_token.clone(),
+                    client_id: stored.client_id.clone().or(configuration.client_id.clone()),
+                    client_secret: Some(google_oauth_client_secret()?.to_owned()),
+                    expires_at: stored.expires_at,
+                },
+            )
+            .map_err(|error| error.to_string())?;
             let legacy = configuration
                 .legacy_folder_id
                 .map(|root_folder_id| {
@@ -2461,6 +2609,23 @@ async fn provider_for_connection<C: CredentialStore>(
                 })
                 .transpose()?;
             Ok(Box::new(HybridGooglePhotosProvider::new(photos, legacy)))
+        }
+        ProviderKind::Immich => {
+            let stored: StoredImmichCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored Immich credential payload is invalid".to_owned())?;
+            let configuration: ImmichConfiguration =
+                serde_json::from_str(&connection.configuration_json)
+                    .map_err(|_| "Immich configuration is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&connection.endpoint)
+                .map_err(|_| "Immich endpoint must be a valid URL".to_owned())?;
+            Ok(Box::new(
+                ImmichProvider::connect_with_credentials(
+                    ImmichConfig { endpoint },
+                    immich_credentials_from_stored(stored, &configuration)?,
+                )
+                .await
+                .map_err(|error| error.to_string())?,
+            ))
         }
         ProviderKind::WebDav | ProviderKind::Nextcloud => {
             let stored: WebDavCredentials = serde_json::from_str(secret.expose())
@@ -3708,6 +3873,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             connections_google_drive_authorize,
             connections_create_google_photos,
             connections_google_photos_authorize,
+            connections_create_immich,
             connections_create_s3,
             connections_create_ftp,
             connections_create_smb,

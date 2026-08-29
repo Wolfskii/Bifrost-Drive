@@ -17,6 +17,7 @@ Start with [architecture.md](architecture.md), then [development.md](development
 - [WebDAV](webdav.md)
 - [Nextcloud](nextcloud.md)
 - [Google Drive](google-drive.md)
+- [Immich](immich.md)
 - [Synchronization](synchronization.md)
 - [Caching](caching.md)
 - [Transfers](transfers.md)

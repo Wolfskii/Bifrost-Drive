@@ -80,6 +80,7 @@ pub enum ProviderKind {
     Nextcloud,
     GoogleDrive,
     GooglePhotos,
+    Immich,
     Ftp,
     Smb,
 }
@@ -93,6 +94,7 @@ impl fmt::Display for ProviderKind {
             Self::Nextcloud => "Nextcloud",
             Self::GoogleDrive => "Google Drive",
             Self::GooglePhotos => "Google Photos",
+            Self::Immich => "Immich",
             Self::Ftp => "FTP",
             Self::Smb => "SMB",
         };
@@ -109,6 +111,7 @@ impl ProviderKind {
             Self::Nextcloud => "nextcloud",
             Self::GoogleDrive => "google-drive",
             Self::GooglePhotos => "google-photos",
+            Self::Immich => "immich",
             Self::Ftp => "ftp",
             Self::Smb => "smb",
         }
@@ -122,6 +125,7 @@ impl ProviderKind {
             "nextcloud" => Ok(Self::Nextcloud),
             "google-drive" => Ok(Self::GoogleDrive),
             "google-photos" => Ok(Self::GooglePhotos),
+            "immich" => Ok(Self::Immich),
             "ftp" => Ok(Self::Ftp),
             "smb" => Ok(Self::Smb),
             _ => Err(BifrostError::Configuration(format!(

@@ -924,6 +924,7 @@ dependencies = [
  "bifrost-ftp",
  "bifrost-google-drive",
  "bifrost-google-photos",
+ "bifrost-immich",
  "bifrost-linux-credentials",
  "bifrost-linux-fuse",
  "bifrost-macos-credentials",
@@ -1014,6 +1015,23 @@ dependencies = [
  "async-trait",
  "bifrost-common",
  "bifrost-google-drive",
+ "bifrost-storage",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "bifrost-immich"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "bifrost-common",
  "bifrost-storage",
  "bytes",
  "chrono",

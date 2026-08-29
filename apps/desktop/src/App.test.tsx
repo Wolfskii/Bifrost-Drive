@@ -188,6 +188,42 @@ describe("App", () => {
         ).toBe("Fritid/Google Foto");
     });
 
+    it("offers Immich with API key and email authentication", () => {
+        render(<App />);
+        fireEvent.click(
+            screen.getByRole("button", { name: /add connection/i }),
+        );
+        fireEvent.click(
+            screen.getByRole("combobox", { name: /storage type/i }),
+        );
+
+        const immich = screen.getByRole("option", {
+            name: /Immich/i,
+        }) as HTMLButtonElement;
+        expect(immich.disabled).toBe(false);
+
+        fireEvent.click(immich);
+        expect(
+            screen.getByRole("heading", { name: "Connect to Immich" }),
+        ).toBeTruthy();
+        expect(screen.getByLabelText("Endpoint").getAttribute("type")).toBe(
+            "text",
+        );
+        expect(screen.getByLabelText("API key")).toBeTruthy();
+        expect(screen.queryByLabelText("Email")).toBeNull();
+
+        fireEvent.click(
+            screen.getByRole("combobox", { name: /authentication/i }),
+        );
+        fireEvent.click(
+            screen.getByRole("option", { name: /Email and password/i }),
+        );
+
+        expect(screen.getByLabelText("Email")).toBeTruthy();
+        expect(screen.getByLabelText("Password")).toBeTruthy();
+        expect(screen.queryByLabelText("API key")).toBeNull();
+    });
+
     it("shows the start-minimized tray setting", () => {
         render(<App />);
         fireEvent.click(screen.getByRole("button", { name: "Settings" }));

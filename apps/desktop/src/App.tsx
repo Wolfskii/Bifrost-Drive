@@ -68,6 +68,7 @@ import {
     createFtpConnection,
     createGoogleDriveConnection,
     createGooglePhotosConnection,
+    createImmichConnection,
     createS3Connection,
     createSftpConnection,
     createSmbConnection,
@@ -102,6 +103,7 @@ import {
     GoogleDriveConnectionForm,
     GoogleDriveAuthorization,
     GooglePhotosConnectionForm,
+    ImmichConnectionForm,
     FilesystemIntegration,
     StockDriveIcon,
     UpdateInfo,
@@ -114,6 +116,7 @@ type ProviderChoice =
     | "S3"
     | "GoogleDrive"
     | "GooglePhotos"
+    | "Immich"
     | "SFTP"
     | "WebDAV"
     | "FTP"
@@ -199,6 +202,8 @@ export function ConnectionProviderIcon({
             return <SiGoogledrive size={20} aria-label="Google Drive" />;
         case "GooglePhotos":
             return <SiGooglephotos size={20} aria-label="Google Photos" />;
+        case "Immich":
+            return <SiImmich size={20} aria-label="Immich" />;
         case "Nextcloud":
             return <SiNextcloud size={20} aria-label="Nextcloud" />;
         case "S3":
@@ -454,6 +459,13 @@ const providerOptions: CustomSelectOption<string>[] = [
         description: "Official access to media and albums created by Bifrost",
         icon: <SiGooglephotos size={19} />,
     },
+    {
+        value: "immich",
+        label: "Immich",
+        group: "Cloud services",
+        description: "Self-hosted photo library",
+        icon: <SiImmich size={19} />,
+    },
     ...[
         ["dropbox", "Dropbox", <SiDropbox size={19} />],
         ["mega", "MEGA", <SiMega size={19} />],
@@ -473,7 +485,6 @@ const providerOptions: CustomSelectOption<string>[] = [
         ["4shared", "4shared", <Cloud size={19} />],
         ["mediafire", "MediaFire", <SiMediafire size={19} />],
         ["jottacloud", "Jottacloud", <Cloud size={19} />],
-        ["immich", "Immich", <SiImmich size={19} />],
         ["opendrive", "OpenDrive", <Cloud size={19} />],
         ["nordlocker", "NordLocker", <KeyRound size={19} />],
         ["sharepoint", "SharePoint Online", <CloudCog size={19} />],
@@ -506,6 +517,7 @@ function providerChoiceFromSelection(value: string): ProviderChoice {
     if (value.startsWith("s3-")) return "S3";
     if (value === "google-drive") return "GoogleDrive";
     if (value === "google-photos") return "GooglePhotos";
+    if (value === "immich") return "Immich";
     if (["SFTP", "WebDAV", "FTP", "SMB"].includes(value)) {
         return value as ProviderChoice;
     }
@@ -536,6 +548,9 @@ export function App() {
     const [sftpAuthentication, setSftpAuthentication] = useState<
         "password" | "private_key"
     >("password");
+    const [immichAuthentication, setImmichAuthentication] = useState<
+        "api_key" | "password"
+    >("api_key");
     const [driveType, setDriveType] = useState<"network" | "local">("network");
     const [driveIcon, setDriveIcon] = useState("system");
     const [customDriveIcon, setCustomDriveIcon] = useState("");
@@ -1013,6 +1028,11 @@ export function App() {
                     configuration.workspace_open_mode !== "browser",
                 legacyFolderId: String(configuration.legacy_folder_id ?? ""),
                 legacyFolderPath: "",
+                immichAuthentication: String(
+                    configuration.authentication ?? "api_key",
+                ),
+                email: "",
+                apiKey: "",
             });
             const configuredIcon = String(configuration.drive_icon ?? "system");
             const builtInIcon =
@@ -1049,6 +1069,11 @@ export function App() {
                 configuration.authentication === "private_key"
                     ? "private_key"
                     : "password",
+            );
+            setImmichAuthentication(
+                configuration.authentication === "password"
+                    ? "password"
+                    : "api_key",
             );
             setEditingConnection(connection);
             setWizardOpen(true);
@@ -1200,6 +1225,18 @@ export function App() {
                           expires_at: googleAuthorization.expires_at,
                       }
                     : {};
+            } else if (providerChoice === "Immich") {
+                configuration = {
+                    authentication: String(
+                        values.get("authentication") ?? immichAuthentication,
+                    ),
+                };
+                credentials = {
+                    authentication: configuration.authentication,
+                    api_key: String(values.get("apiKey") ?? "").trim(),
+                    email: String(values.get("email") ?? "").trim(),
+                    password: String(values.get("password") ?? ""),
+                };
             } else {
                 configuration = {
                     region: String(values.get("region") ?? "").trim(),
@@ -1274,8 +1311,6 @@ export function App() {
                     String(values.get("accessToken") ?? ""),
                 refreshToken: googleAuthorization?.refresh_token ?? null,
                 expiresAt: googleAuthorization?.expires_at ?? null,
-                legacyFolderId: String(values.get("legacyFolderId") ?? "").trim(),
-                legacyFolderPath: String(values.get("legacyFolderPath") ?? "").trim(),
                 driveLetter,
                 mountOnStartup,
                 mountRoot: selectedMountRoot,
@@ -1292,6 +1327,8 @@ export function App() {
                     String(values.get("accessToken") ?? ""),
                 refreshToken: googleAuthorization?.refresh_token ?? null,
                 expiresAt: googleAuthorization?.expires_at ?? null,
+                legacyFolderId: String(values.get("legacyFolderId") ?? "").trim(),
+                legacyFolderPath: String(values.get("legacyFolderPath") ?? "").trim(),
                 driveLetter,
                 mountOnStartup,
                 mountRoot: selectedMountRoot,
@@ -1299,6 +1336,21 @@ export function App() {
                 driveIcon: selectedDriveIcon,
             };
             connectionOperation = createGooglePhotosConnection(form);
+        } else if (providerChoice === "Immich") {
+            const form: ImmichConnectionForm = {
+                name,
+                endpoint,
+                authentication: immichAuthentication,
+                apiKey: String(values.get("apiKey") ?? "").trim(),
+                email: String(values.get("email") ?? "").trim(),
+                password: String(values.get("password") ?? ""),
+                driveLetter,
+                mountOnStartup,
+                mountRoot: selectedMountRoot,
+                driveType: selectedDriveType,
+                driveIcon: selectedDriveIcon,
+            };
+            connectionOperation = createImmichConnection(form);
         } else {
             const form: S3ConnectionForm = {
                 name,
@@ -1408,6 +1460,7 @@ export function App() {
             setFormDefaults({});
             setGoogleAuthorization(null);
             setSftpAuthentication("password");
+            setImmichAuthentication("api_key");
             setDriveType("network");
             setDriveIcon("system");
             setCustomDriveIcon("");
@@ -1557,6 +1610,7 @@ export function App() {
                                         setProviderChoice("S3");
                                         setGoogleAuthorization(null);
                                         setSftpAuthentication("password");
+                                        setImmichAuthentication("api_key");
                                         setDriveType("network");
                                         setDriveIcon("system");
                                         setCustomDriveIcon("");
@@ -2439,11 +2493,22 @@ export function App() {
                                         Endpoint
                                         <input
                                             name="endpoint"
-                                            type="url"
+                                            type={
+                                                providerChoice === "Immich"
+                                                    ? "text"
+                                                    : "url"
+                                            }
                                             required
                                             defaultValue={
                                                 (formDefaults.endpoint as string) ??
-                                                "https://s3.amazonaws.com"
+                                                (providerChoice === "Immich"
+                                                    ? "localhost:2283"
+                                                    : "https://s3.amazonaws.com")
+                                            }
+                                            placeholder={
+                                                providerChoice === "Immich"
+                                                    ? "immich.example.com"
+                                                    : undefined
                                             }
                                         />
                                     </label>
@@ -2561,7 +2626,8 @@ export function App() {
                             )}
                             {providerChoice !== "S3" &&
                                 providerChoice !== "GoogleDrive" &&
-                                providerChoice !== "GooglePhotos" && (
+                                providerChoice !== "GooglePhotos" &&
+                                providerChoice !== "Immich" && (
                                     <div className="form-grid">
                                         <label>
                                             Username
@@ -2596,6 +2662,73 @@ export function App() {
                                         )}
                                     </div>
                                 )}
+                            {providerChoice === "Immich" && (
+                                <>
+                                    <CustomSelect
+                                        label="Authentication"
+                                        name="authentication"
+                                        value={immichAuthentication}
+                                        options={[
+                                            {
+                                                value: "api_key",
+                                                label: "API key",
+                                                icon: <KeyRound size={18} />,
+                                            },
+                                            {
+                                                value: "password",
+                                                label: "Email and password",
+                                                icon: <LockKeyhole size={18} />,
+                                            },
+                                        ]}
+                                        onChange={setImmichAuthentication}
+                                    />
+                                    {immichAuthentication === "api_key" ? (
+                                        <label>
+                                            API key
+                                            <input
+                                                name="apiKey"
+                                                type="password"
+                                                required={!editingConnection}
+                                                autoComplete="new-password"
+                                                placeholder={
+                                                    editingConnection
+                                                        ? "Leave blank to keep the current API key"
+                                                        : undefined
+                                                }
+                                            />
+                                        </label>
+                                    ) : (
+                                        <div className="form-grid">
+                                            <label>
+                                                Email
+                                                <input
+                                                    name="email"
+                                                    type="email"
+                                                    required
+                                                    defaultValue={
+                                                        formDefaults.email as string
+                                                    }
+                                                    autoComplete="username"
+                                                />
+                                            </label>
+                                            <label>
+                                                Password
+                                                <input
+                                                    name="password"
+                                                    type="password"
+                                                    required={!editingConnection}
+                                                    placeholder={
+                                                        editingConnection
+                                                            ? "Leave blank to keep the current password"
+                                                            : undefined
+                                                    }
+                                                    autoComplete="current-password"
+                                                />
+                                            </label>
+                                        </div>
+                                    )}
+                                </>
+                            )}
                             {providerChoice === "GoogleDrive" && (
                                 <>
                                     <label className="checkbox-row settings-option">
@@ -2913,5 +3046,7 @@ function providerChoiceFor(kind: ConnectionSummary["kind"]): ProviderChoice {
             return "GoogleDrive";
         case "GooglePhotos":
             return "GooglePhotos";
+        case "Immich":
+            return "Immich";
     }
 }

@@ -29,6 +29,7 @@
 - [x] SMB and FTP/FTPS provider slices with opt-in contract tests
 - [x] macOS Keychain and Linux Secret Service credential adapters
 - [x] Read-only Linux FUSE provider mount and CI compile test
+- [x] Read-only Immich provider with custom server connections
 - [ ] Nextcloud-specific discovery and authentication
 - [x] macOS File Provider Swift target boundary and CI package tests
 - [ ] macOS File Provider Rust transport wiring, signing, and Finder acceptance
