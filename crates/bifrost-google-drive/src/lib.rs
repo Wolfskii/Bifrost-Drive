@@ -596,10 +596,8 @@ impl GoogleDriveProvider {
         file: &DriveFile,
         format: WorkspaceFormat,
     ) -> Result<Bytes, StorageError> {
-        if let Some(content) = self
-            .workspace_exports
-            .lock()
-            .await
+        let mut cache = self.workspace_exports.lock().await;
+        if let Some(content) = cache
             .get(&file.id)
             .filter(|cached| cached.version == file.version)
             .and_then(|cached| cached.content.clone())
@@ -621,7 +619,6 @@ impl GoogleDriveProvider {
             )
             .await?;
         let content = response.bytes().await.map_err(Self::network_error)?;
-        let mut cache = self.workspace_exports.lock().await;
         Self::cache_workspace_export(
             &mut cache,
             file,

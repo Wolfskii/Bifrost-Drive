@@ -231,10 +231,15 @@ impl RemoteFilesystem {
         } else {
             None
         };
+        let size = if let Some(stage) = &stage {
+            stage.file.lock().await.metadata().await?.len()
+        } else {
+            metadata.size_bytes.unwrap_or(0)
+        };
         Ok(Arc::new(OpenFile {
             path: RwLock::new(path),
             is_directory: metadata.is_directory,
-            size: AtomicU64::new(metadata.size_bytes.unwrap_or(0)),
+            size: AtomicU64::new(size),
             stage,
             read_request: Mutex::new(()),
             read_cache: Mutex::new(None),
@@ -1079,6 +1084,27 @@ mod tests {
 
         assert_eq!(provider.write_calls.load(Ordering::Relaxed), 0);
         assert_eq!(provider.contents("document.docx").await, b"original export");
+    }
+
+    #[tokio::test]
+    async fn writable_open_uses_the_complete_staged_file_size() {
+        let provider = Arc::new(MemoryProvider {
+            advertised_size: Some(4),
+            ..Default::default()
+        });
+        provider.insert("document.docx", b"complete document").await;
+        let filesystem = RemoteFilesystem::new(provider);
+
+        let handle = filesystem
+            .open(RemotePath::parse("document.docx").unwrap(), true)
+            .await
+            .unwrap();
+
+        assert_eq!(handle.size.load(Ordering::Acquire), 17);
+        assert_eq!(
+            filesystem.read(&handle, 0, 32).await.unwrap(),
+            b"complete document"
+        );
     }
 
     #[tokio::test]
