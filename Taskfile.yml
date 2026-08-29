@@ -10,6 +10,7 @@ vars:
   SFTP_TEST_PORT: '{{default "2222" .SFTP_PORT}}'
   FTP_TEST_PORT: '{{default "2121" .FTP_PORT}}'
   SMB_TEST_PORT: '{{default "1445" .SMB_PORT}}'
+  IMMICH_TEST_PORT: '{{default "2283" .IMMICH_PORT}}'
 
 silent: true
 
@@ -145,6 +146,18 @@ tasks:
       - task: docker:webdav:up
       - defer: docker compose -f '{{.WEBDAV_COMPOSE_FILE}}' down -v
       - cargo test -p bifrost-webdav --test apache -- --ignored --nocapture
+
+  test:immich:
+    desc: Start a fresh Immich Docker stack and run the provider contract
+    deps: [docker:start]
+    env:
+      BIFROST_IMMICH_INTEGRATION: "1"
+      BIFROST_IMMICH_ENDPOINT: http://127.0.0.1:{{.IMMICH_TEST_PORT}}
+      IMMICH_PORT: "{{.IMMICH_TEST_PORT}}"
+    cmds:
+      - defer: docker compose -f tests/servers/immich/docker-compose.yml down -v --remove-orphans
+      - docker compose -f tests/servers/immich/docker-compose.yml up -d --wait
+      - cargo test -p bifrost-immich --test immich -- --ignored --nocapture
 
   lint:
     desc: Run Rust and frontend linters

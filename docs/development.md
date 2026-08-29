@@ -25,6 +25,7 @@ Run commands from the repository root:
 | `task docker:webdav:up`       | Start the standalone Apache WebDAV service           |
 | `task docker:webdav:down`     | Stop the standalone Apache WebDAV service            |
 | `task test:webdav`            | Exercise the WebDAV provider against Apache          |
+| `task test:immich`            | Exercise the Immich provider against Docker         |
 | `task db:migrate`             | Apply SQLite migrations                              |
 | `task package:windows`        | Build Windows x64 bundle on Windows                  |
 | `task cleanup:windows-drives` | Select stale Bifrost Explorer drive entries          |
