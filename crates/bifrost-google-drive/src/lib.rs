@@ -690,10 +690,13 @@ impl GoogleDriveProvider {
     }
 
     fn metadata(file: DriveFile, path: RemotePath) -> RemoteMetadata {
+        let is_workspace_file = Self::workspace_format(&file.mime_type).is_some();
         RemoteMetadata {
             path,
             is_directory: file.mime_type == FOLDER_MIME_TYPE,
-            size_bytes: file.size.and_then(|size| size.parse().ok()),
+            size_bytes: (!is_workspace_file)
+                .then(|| file.size.and_then(|size| size.parse().ok()))
+                .flatten(),
             etag: file.version.or(file.md5_checksum),
             modified_at: file.modified_time,
         }
@@ -1338,6 +1341,18 @@ mod tests {
         .unwrap();
         assert_eq!(name, "Project brief.docx");
         assert!(matches!(selector, super::WorkspaceSelector::Binary));
+    }
+
+    #[test]
+    fn workspace_listing_does_not_advertise_the_google_source_size() {
+        let mut document = file("Project brief", GOOGLE_DOC_MIME_TYPE);
+        document.size = Some("4412".to_owned());
+        let metadata = GoogleDriveProvider::metadata(
+            document,
+            RemotePath::parse("Project brief.docx").unwrap(),
+        );
+
+        assert_eq!(metadata.size_bytes, None);
     }
 
     #[test]
