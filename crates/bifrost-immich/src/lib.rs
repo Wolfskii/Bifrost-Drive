@@ -74,8 +74,13 @@ struct AlbumDetails {
 
 #[derive(Debug, Deserialize)]
 struct SearchResponse {
+    assets: SearchAssetResponse,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchAssetResponse {
     #[serde(default)]
-    assets: Vec<Asset>,
+    items: Vec<Asset>,
     #[serde(rename = "nextPage")]
     next_page: Option<serde_json::Value>,
 }
@@ -289,8 +294,8 @@ impl ImmichProvider {
             .await
             .map_err(Self::network_error)?;
         Ok(Page {
-            entries: response.assets,
-            next_cursor: response.next_page.and_then(value_to_cursor),
+            entries: response.assets.items,
+            next_cursor: response.assets.next_page.and_then(value_to_cursor),
         })
     }
 
@@ -607,7 +612,7 @@ fn encode_name(value: &str) -> String {
 mod tests {
     use super::{
         encode_name, has_explicit_scheme, normalize_endpoint, ImmichCredentials, ImmichProvider,
-        StorageResponse,
+        SearchResponse, StorageResponse,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -643,6 +648,18 @@ mod tests {
                 .unwrap();
         assert_eq!(storage.disk_size_raw, 1_000);
         assert_eq!(storage.disk_available_raw, 750);
+    }
+
+    #[test]
+    fn parses_nested_metadata_search_assets() {
+        let response: SearchResponse = serde_json::from_str(
+            r#"{"albums":{"total":0,"count":0,"items":[],"facets":[]},"assets":{"total":1,"count":1,"items":[{"id":"asset-id","originalFileName":"photo.jpg","originalFileSize":42,"fileCreatedAt":"2026-08-29T10:00:00Z"}],"facets":[],"nextPage":"2","nextCursor":null}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.assets.items.len(), 1);
+        assert_eq!(response.assets.items[0].original_file_name, "photo.jpg");
+        assert_eq!(response.assets.next_page, Some(serde_json::json!("2")));
     }
 
     #[tokio::test]
