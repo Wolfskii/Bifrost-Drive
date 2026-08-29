@@ -5,6 +5,7 @@ vars:
   RUST_TARGET: x86_64-pc-windows-msvc
   WEBDAV_COMPOSE_FILE: tests/servers/webdav/docker-compose.yml
   MINIO_TEST_PORT: '{{default "9000" .MINIO_API_PORT}}'
+  S3MOCK_TEST_PORT: '{{default "9090" .S3MOCK_PORT}}'
   WEBDAV_TEST_PORT: '{{default "8080" .WEBDAV_PORT}}'
   SFTP_TEST_PORT: '{{default "2222" .SFTP_PORT}}'
   FTP_TEST_PORT: '{{default "2121" .FTP_PORT}}'
@@ -108,6 +109,7 @@ tasks:
       BIFROST_SMB_INTEGRATION: "1"
       MINIO_API_PORT: "{{.MINIO_TEST_PORT}}"
       BIFROST_S3_ENDPOINT: http://127.0.0.1:{{.MINIO_TEST_PORT}}
+      S3MOCK_PORT: "{{.S3MOCK_TEST_PORT}}"
       WEBDAV_PORT: "{{.WEBDAV_TEST_PORT}}"
       BIFROST_WEBDAV_ENDPOINT: http://127.0.0.1:{{.WEBDAV_TEST_PORT}}/webdav
       WEBDAV_USERNAME: test
@@ -126,6 +128,7 @@ tasks:
       - task: docker:up
       - ssh-keyscan -p "${SFTP_PORT:-2222}" 127.0.0.1 > .cache/sftp_known_hosts
       - cargo test -p bifrost-s3 --test minio -- --ignored --nocapture
+      - BIFROST_S3_ENDPOINT=http://127.0.0.1:${S3MOCK_PORT:-9090} cargo test -p bifrost-s3 --test minio -- --ignored --nocapture
       - cargo test -p bifrost-webdav --test apache -- --ignored --nocapture
       - cargo test -p bifrost-sftp --test atmoz -- --ignored --nocapture
       - cargo test -p bifrost-ftp --test fixture -- --ignored --nocapture

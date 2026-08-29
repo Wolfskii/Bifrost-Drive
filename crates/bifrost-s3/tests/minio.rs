@@ -28,8 +28,8 @@ fn integration_provider() -> Option<(S3Config, String, String)> {
 }
 
 #[tokio::test]
-#[ignore = "requires task docker:up and BIFROST_S3_INTEGRATION=1"]
-async fn minio_round_trip_uses_the_provider_contract() {
+#[ignore = "requires an S3-compatible fixture and BIFROST_S3_INTEGRATION=1"]
+async fn s3_compatible_round_trip_uses_the_provider_contract() {
     let Some((config, access_key, secret_key)) = integration_provider() else {
         return;
     };
