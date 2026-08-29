@@ -16,6 +16,18 @@ describe("App", () => {
         ).toBeTruthy();
     });
 
+    it("links users to the privacy policy from the app", () => {
+        render(<App />);
+        fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+        const privacyLink = screen.getByRole("link", {
+            name: "Privacy Policy",
+        });
+        expect(privacyLink.getAttribute("href")).toBe(
+            "https://bifrost.webble.se/privacy/",
+        );
+    });
+
     it("uses provider icons for saved connections", () => {
         const { rerender } = render(
             <ConnectionProviderIcon kind="GoogleDrive" />,

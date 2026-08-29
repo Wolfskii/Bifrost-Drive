@@ -6,9 +6,9 @@ Static public product site for Bifrost Drive. It has no backend, analytics, cook
 
 After assigning the Dokploy HTTPS domain, these URLs are intended for Google Auth Platform:
 
-- Application home page: `https://YOUR-DOMAIN.example/`
-- Privacy policy: `https://YOUR-DOMAIN.example/privacy/`
-- Terms of service: `https://YOUR-DOMAIN.example/terms/`
+- Application home page: `https://bifrost.webble.se/`
+- Privacy policy: `https://bifrost.webble.se/privacy/`
+- Terms of service: `https://bifrost.webble.se/terms/`
 
 All three pages are public and require no authentication.
 
@@ -66,12 +66,9 @@ No secrets are required for the website container.
 
 When the final domain is known:
 
-1. Replace `YOUR-DOMAIN.example` in `sitemap.xml.example` and rename it to `sitemap.xml`.
-2. Add `Sitemap: https://YOUR-DOMAIN.example/sitemap.xml` to `robots.txt`.
-3. Add canonical and `og:url` metadata to `index.html`, `privacy/index.html`, and `terms/index.html`.
-4. Add the domain in Google Search Console and Google Auth Platform.
-5. Enter the exact public home, privacy, and terms URLs in the OAuth consent configuration.
-6. Confirm the publisher name and contact email are correct before submitting for verification.
+1. Verify `bifrost.webble.se` in Google Search Console.
+2. Confirm the exact public home, privacy, and terms URLs in Google Auth Platform.
+3. Confirm the publisher name and contact email are correct before submitting for verification.
 
 ## Replaceable Visuals
 

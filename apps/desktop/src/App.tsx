@@ -109,6 +109,7 @@ import {
 
 type ProviderChoice = "S3" | "GoogleDrive" | "SFTP" | "WebDAV" | "FTP" | "SMB";
 type AppView = "connections" | "activity" | "settings" | "add";
+const PRIVACY_POLICY_URL = "https://bifrost.webble.se/privacy/";
 
 type FormDefaults = Record<string, boolean | number | string>;
 
@@ -1999,6 +2000,20 @@ export function App() {
                                     Show update popups
                                 </label>
                             </div>
+                            <p className="legal-notice">
+                                Bifrost stores credentials in your operating
+                                system’s secure credential service and uses
+                                Google Drive data only to provide requested
+                                storage features. Read the{" "}
+                                <a
+                                    href={PRIVACY_POLICY_URL}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                >
+                                    Privacy Policy
+                                </a>
+                                .
+                            </p>
                         </section>
                     )}
                 </section>
@@ -2560,6 +2575,23 @@ export function App() {
                                             save this connection.
                                         </p>
                                     )}
+                                    <p className="legal-notice">
+                                        Bifrost accesses Google Drive files,
+                                        folders, metadata, and content to
+                                        provide browsing, mounting,
+                                        synchronization, and requested file
+                                        operations. Native-app mode temporarily
+                                        exports Workspace files for local Office
+                                        applications. Read the{" "}
+                                        <a
+                                            href={PRIVACY_POLICY_URL}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                        >
+                                            Privacy Policy
+                                        </a>
+                                        .
+                                    </p>
                                 </>
                             )}
                             {providerChoice === "S3" && (
