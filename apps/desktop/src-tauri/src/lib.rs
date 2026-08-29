@@ -4,9 +4,10 @@ mod macos_file_provider;
 use base64::Engine;
 use bifrost_api::{
     ActivitySummary, AppStatus, ConnectionIdRequest, ConnectionSummary, CreateConnectionRequest,
-    CreateFtpConnectionRequest, CreateGoogleDriveConnectionRequest, CreateS3ConnectionRequest,
-    CreateSftpConnectionRequest, CreateSmbConnectionRequest, CreateWebDavConnectionRequest,
-    CredentialStoreStatus, CredentialSummary, DriveIconPreviewRequest, DriveMountRegisterRequest,
+    CreateFtpConnectionRequest, CreateGoogleDriveConnectionRequest,
+    CreateGooglePhotosConnectionRequest, CreateS3ConnectionRequest, CreateSftpConnectionRequest,
+    CreateSmbConnectionRequest, CreateWebDavConnectionRequest, CredentialStoreStatus,
+    CredentialSummary, DriveIconPreviewRequest, DriveMountRegisterRequest,
     DriveMountRegisterResponse, DriveMountStartupRequest, FilePage, FileSummary,
     GoogleDriveAuthorization, HydrateFileRequest, HydrateFileResponse, ListFilesRequest,
     StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse, SyncRunRequest,
@@ -20,6 +21,9 @@ use bifrost_db::{ConflictRecord, ConnectionRecord, Database, SyncEntryRecord};
 use bifrost_ftp::{FtpConfig, FtpProvider};
 use bifrost_google_drive::{
     GoogleDriveConfig, GoogleDriveCredentials, GoogleDriveProvider, WorkspaceOpenMode,
+};
+use bifrost_google_photos::{
+    GooglePhotosConfig, GooglePhotosCredentials, GooglePhotosProvider, GOOGLE_PHOTOS_ENDPOINT,
 };
 #[cfg(target_os = "linux")]
 use bifrost_linux_credentials::LinuxCredentialStore as WindowsCredentialStore;
@@ -68,6 +72,7 @@ const GOOGLE_AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth
 const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 const GOOGLE_DRIVE_ENDPOINT: &str = "https://www.googleapis.com/drive/v3";
+const GOOGLE_PHOTOS_SCOPES: &str = "https://www.googleapis.com/auth/photoslibrary.appendonly https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata";
 
 #[cfg(target_os = "windows")]
 struct SyncRootRegistry(Mutex<HashMap<String, SyncRoot>>);
@@ -191,6 +196,20 @@ fn google_oauth_error_message(status: reqwest::StatusCode, body: &str) -> String
 async fn connections_google_drive_authorize(
     app: tauri::AppHandle,
 ) -> Result<GoogleDriveAuthorization, String> {
+    connections_google_authorize(app, GOOGLE_DRIVE_SCOPE).await
+}
+
+#[tauri::command]
+async fn connections_google_photos_authorize(
+    app: tauri::AppHandle,
+) -> Result<GoogleDriveAuthorization, String> {
+    connections_google_authorize(app, GOOGLE_PHOTOS_SCOPES).await
+}
+
+async fn connections_google_authorize(
+    app: tauri::AppHandle,
+    scope: &str,
+) -> Result<GoogleDriveAuthorization, String> {
     let client_id = google_oauth_client_id()?;
     let client_secret = google_oauth_client_secret()?;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -212,7 +231,7 @@ async fn connections_google_drive_authorize(
         .append_pair("client_id", client_id)
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("response_type", "code")
-        .append_pair("scope", GOOGLE_DRIVE_SCOPE)
+        .append_pair("scope", scope)
         .append_pair("access_type", "offline")
         .append_pair("prompt", "consent")
         .append_pair("state", &state)
@@ -1412,7 +1431,7 @@ async fn connections_details(
                 .map_err(|_| "Stored credential payload is invalid".to_owned())?
                 .username
         }
-        ProviderKind::S3 | ProviderKind::GoogleDrive => String::new(),
+        ProviderKind::S3 | ProviderKind::GoogleDrive | ProviderKind::GooglePhotos => String::new(),
     };
     #[cfg(target_os = "windows")]
     let drive_icon_preview = configured_drive_icon_preview(&connection.configuration_json);
@@ -1879,6 +1898,51 @@ async fn connections_create_google_drive(
     .await
 }
 
+#[tauri::command]
+async fn connections_create_google_photos(
+    database: State<'_, Database>,
+    credentials: State<'_, WindowsCredentialStore>,
+    request: CreateGooglePhotosConnectionRequest,
+) -> Result<ConnectionSummary, String> {
+    ensure_drive_letter_unassigned(&database, request.drive_letter.as_deref(), None).await?;
+    if request.name.trim().is_empty() {
+        return Err("Google Photos connection name is required".to_owned());
+    }
+    if request.access_token.trim().is_empty()
+        || request.refresh_token.as_deref().is_none_or(str::is_empty)
+    {
+        return Err("Sign in with Google before mounting this connection".to_owned());
+    }
+    let endpoint =
+        url::Url::parse(GOOGLE_PHOTOS_ENDPOINT).expect("Google Photos endpoint is valid");
+    let mut configuration = serde_json::json!({
+        "client_id": google_oauth_client_id()?,
+    });
+    set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
+    set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
+    set_drive_presentation(
+        &mut configuration,
+        &request.drive_type,
+        request.drive_icon.as_deref(),
+    )?;
+    create_tested_connection(
+        &database,
+        &credentials,
+        request.name,
+        ProviderKind::GooglePhotos,
+        endpoint.to_string(),
+        configuration,
+        serde_json::json!({
+            "access_token": request.access_token,
+            "refresh_token": request.refresh_token,
+            "expires_at": request.expires_at,
+            "client_id": google_oauth_client_id()?,
+        }),
+    )
+    .await
+}
+
 #[derive(Debug, Deserialize)]
 struct StoredS3Credentials {
     access_key_id: String,
@@ -1901,9 +1965,19 @@ struct GoogleDriveConfiguration {
     #[serde(default)]
     shared_drive_id: Option<String>,
     #[serde(default)]
+    root_folder_id: Option<String>,
+    #[serde(default)]
+    excluded_folder_ids: std::collections::BTreeSet<String>,
+    #[serde(default)]
     client_id: Option<String>,
     #[serde(default)]
     workspace_open_mode: WorkspaceOpenMode,
+}
+
+#[derive(Debug, Deserialize)]
+struct GooglePhotosConfiguration {
+    #[serde(default)]
+    client_id: Option<String>,
 }
 
 fn parse_google_workspace_open_mode(value: &str) -> Result<WorkspaceOpenMode, String> {
@@ -2020,9 +2094,34 @@ async fn test_connection(
                 GoogleDriveConfig {
                     endpoint,
                     shared_drive_id: configuration.shared_drive_id,
+                    root_folder_id: configuration.root_folder_id,
+                    excluded_folder_ids: configuration.excluded_folder_ids,
                     workspace_open_mode: configuration.workspace_open_mode,
                 },
                 GoogleDriveCredentials {
+                    access_token: stored.access_token,
+                    refresh_token: stored.refresh_token,
+                    client_id: stored.client_id.or(configuration.client_id),
+                    client_secret: Some(google_oauth_client_secret()?.to_owned()),
+                    expires_at: stored.expires_at,
+                },
+            )
+            .map_err(|error| error.to_string())?
+            .test_connection()
+            .await
+            .map_err(|error| error.to_string())
+        }
+        ProviderKind::GooglePhotos => {
+            let stored: StoredGoogleDriveCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored Google Photos credential payload is invalid".to_owned())?;
+            let configuration: GooglePhotosConfiguration =
+                serde_json::from_value(request.configuration)
+                    .map_err(|_| "Google Photos configuration is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&request.endpoint)
+                .map_err(|_| "Google Photos endpoint must be a valid URL".to_owned())?;
+            GooglePhotosProvider::connect_with_credentials(
+                GooglePhotosConfig { endpoint },
+                GooglePhotosCredentials {
                     access_token: stored.access_token,
                     refresh_token: stored.refresh_token,
                     client_id: stored.client_id.or(configuration.client_id),
@@ -2224,9 +2323,33 @@ async fn provider_for_connection<C: CredentialStore>(
                     GoogleDriveConfig {
                         endpoint,
                         shared_drive_id: configuration.shared_drive_id,
+                        root_folder_id: configuration.root_folder_id,
+                        excluded_folder_ids: configuration.excluded_folder_ids,
                         workspace_open_mode: configuration.workspace_open_mode,
                     },
                     GoogleDriveCredentials {
+                        access_token: stored.access_token,
+                        refresh_token: stored.refresh_token,
+                        client_id: stored.client_id.or(configuration.client_id),
+                        client_secret: Some(google_oauth_client_secret()?.to_owned()),
+                        expires_at: stored.expires_at,
+                    },
+                )
+                .map_err(|error| error.to_string())?,
+            ))
+        }
+        ProviderKind::GooglePhotos => {
+            let stored: StoredGoogleDriveCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored Google Photos credential payload is invalid".to_owned())?;
+            let configuration: GooglePhotosConfiguration =
+                serde_json::from_str(&connection.configuration_json)
+                    .map_err(|_| "Google Photos configuration is invalid".to_owned())?;
+            let endpoint = url::Url::parse(&connection.endpoint)
+                .map_err(|_| "Google Photos endpoint must be a valid URL".to_owned())?;
+            Ok(Box::new(
+                GooglePhotosProvider::connect_with_credentials(
+                    GooglePhotosConfig { endpoint },
+                    GooglePhotosCredentials {
                         access_token: stored.access_token,
                         refresh_token: stored.refresh_token,
                         client_id: stored.client_id.or(configuration.client_id),
@@ -3481,6 +3604,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             connections_create,
             connections_create_google_drive,
             connections_google_drive_authorize,
+            connections_create_google_photos,
+            connections_google_photos_authorize,
             connections_create_s3,
             connections_create_ftp,
             connections_create_smb,

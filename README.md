@@ -6,7 +6,7 @@ Bifrost Drive is a cross-platform desktop client for remote storage. It is desig
 
 ## Status
 
-Early foundation. The repository currently contains shared Rust contracts, SQLite migrations, native Windows/macOS/Linux credential adapters, connection wizards for S3/SFTP/WebDAV/FTP/SMB, provider implementations for S3/SFTP/WebDAV/FTP/SMB, remote root browsing, durable cache-backed transfers, scheduled conflict-safe synchronization, CFAPI hydration and local mutation routing, writable WinFsp drive-letter mounts, tray support, native notifications, start-on-boot settings, signed updater configuration, durable activity history, and real provider tests. Native Explorer/File Provider acceptance coverage and writable Linux FUSE semantics remain in progress.
+Early foundation. The repository currently contains shared Rust contracts, SQLite migrations, native Windows/macOS/Linux credential adapters, connection wizards for S3/SFTP/WebDAV/FTP/SMB/Google Drive/Google Photos, provider implementations for S3/SFTP/WebDAV/FTP/SMB/Google Drive and app-created Google Photos media, remote root browsing, durable cache-backed transfers, scheduled conflict-safe synchronization, CFAPI hydration and local mutation routing, writable WinFsp drive-letter mounts, tray support, native notifications, start-on-boot settings, signed updater configuration, durable activity history, and real provider tests. Native Explorer/File Provider acceptance coverage and writable Linux FUSE semantics remain in progress.
 
 ## Supported Targets
 

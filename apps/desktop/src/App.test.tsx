@@ -152,6 +152,33 @@ describe("App", () => {
         expect(screen.getByLabelText("Bucket")).toBeTruthy();
     });
 
+    it("offers an official Google Photos connection", () => {
+        render(<App />);
+        fireEvent.click(
+            screen.getByRole("button", { name: /add connection/i }),
+        );
+        fireEvent.click(
+            screen.getByRole("combobox", { name: /storage type/i }),
+        );
+
+        const googlePhotos = screen.getByRole("option", {
+            name: /Google Photos/i,
+        }) as HTMLButtonElement;
+        expect(googlePhotos.disabled).toBe(false);
+
+        fireEvent.click(googlePhotos);
+        expect(
+            screen.getByRole("heading", { name: "Connect to Google Photos" }),
+        ).toBeTruthy();
+        expect(
+            screen.getByRole("button", { name: "Sign in with Google" }),
+        ).toBeTruthy();
+        expect(
+            screen.getByText(/only media and albums created by Bifrost/i),
+        ).toBeTruthy();
+        expect(screen.queryByLabelText("Endpoint")).toBeNull();
+    });
+
     it("shows the start-minimized tray setting", () => {
         render(<App />);
         fireEvent.click(screen.getByRole("button", { name: "Settings" }));

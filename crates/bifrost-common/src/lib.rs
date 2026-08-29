@@ -79,6 +79,7 @@ pub enum ProviderKind {
     WebDav,
     Nextcloud,
     GoogleDrive,
+    GooglePhotos,
     Ftp,
     Smb,
 }
@@ -91,6 +92,7 @@ impl fmt::Display for ProviderKind {
             Self::WebDav => "WebDAV",
             Self::Nextcloud => "Nextcloud",
             Self::GoogleDrive => "Google Drive",
+            Self::GooglePhotos => "Google Photos",
             Self::Ftp => "FTP",
             Self::Smb => "SMB",
         };
@@ -106,6 +108,7 @@ impl ProviderKind {
             Self::WebDav => "webdav",
             Self::Nextcloud => "nextcloud",
             Self::GoogleDrive => "google-drive",
+            Self::GooglePhotos => "google-photos",
             Self::Ftp => "ftp",
             Self::Smb => "smb",
         }
@@ -118,6 +121,7 @@ impl ProviderKind {
             "webdav" => Ok(Self::WebDav),
             "nextcloud" => Ok(Self::Nextcloud),
             "google-drive" => Ok(Self::GoogleDrive),
+            "google-photos" => Ok(Self::GooglePhotos),
             "ftp" => Ok(Self::Ftp),
             "smb" => Ok(Self::Smb),
             _ => Err(BifrostError::Configuration(format!(

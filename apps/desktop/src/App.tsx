@@ -61,11 +61,13 @@ import { CustomSelect, CustomSelectOption } from "./CustomSelect";
 import {
     ActivitySummary,
     authorizeGoogleDrive,
+    authorizeGooglePhotos,
     ConnectionSummary,
     ConflictSummary,
     CredentialStoreStatus,
     createFtpConnection,
     createGoogleDriveConnection,
+    createGooglePhotosConnection,
     createS3Connection,
     createSftpConnection,
     createSmbConnection,
@@ -99,6 +101,7 @@ import {
     S3ConnectionForm,
     GoogleDriveConnectionForm,
     GoogleDriveAuthorization,
+    GooglePhotosConnectionForm,
     FilesystemIntegration,
     StockDriveIcon,
     UpdateInfo,
@@ -107,7 +110,14 @@ import {
     unregisterSyncRoot,
 } from "./api";
 
-type ProviderChoice = "S3" | "GoogleDrive" | "SFTP" | "WebDAV" | "FTP" | "SMB";
+type ProviderChoice =
+    | "S3"
+    | "GoogleDrive"
+    | "GooglePhotos"
+    | "SFTP"
+    | "WebDAV"
+    | "FTP"
+    | "SMB";
 type AppView = "connections" | "activity" | "settings" | "add";
 const PRIVACY_POLICY_URL = "https://bifrost.webble.se/privacy/";
 
@@ -187,6 +197,8 @@ export function ConnectionProviderIcon({
     switch (kind) {
         case "GoogleDrive":
             return <SiGoogledrive size={20} aria-label="Google Drive" />;
+        case "GooglePhotos":
+            return <SiGooglephotos size={20} aria-label="Google Photos" />;
         case "Nextcloud":
             return <SiNextcloud size={20} aria-label="Nextcloud" />;
         case "S3":
@@ -435,12 +447,18 @@ const providerOptions: CustomSelectOption<string>[] = [
         group: "Cloud services",
         icon: <SiGoogledrive size={19} />,
     },
+    {
+        value: "google-photos",
+        label: "Google Photos",
+        group: "Cloud services",
+        description: "Official access to media and albums created by Bifrost",
+        icon: <SiGooglephotos size={19} />,
+    },
     ...[
         ["dropbox", "Dropbox", <SiDropbox size={19} />],
         ["mega", "MEGA", <SiMega size={19} />],
         ["mailru", "Mail.ru Cloud", <SiMaildotru size={19} />],
         ["yandex", "Yandex Disk", <SiYandexcloud size={19} />],
-        ["google-photos", "Google Photos", <SiGooglephotos size={19} />],
         ["pcloud", "pCloud", <Cloud size={19} />],
         ["onedrive", "OneDrive", <Cloud size={19} />],
         ["box", "Box", <SiBox size={19} />],
@@ -487,6 +505,7 @@ const providerOptions: CustomSelectOption<string>[] = [
 function providerChoiceFromSelection(value: string): ProviderChoice {
     if (value.startsWith("s3-")) return "S3";
     if (value === "google-drive") return "GoogleDrive";
+    if (value === "google-photos") return "GooglePhotos";
     if (["SFTP", "WebDAV", "FTP", "SMB"].includes(value)) {
         return value as ProviderChoice;
     }
@@ -579,7 +598,11 @@ export function App() {
         setGoogleSigningIn(true);
         setError(null);
         try {
-            setGoogleAuthorization(await authorizeGoogleDrive());
+            setGoogleAuthorization(
+                await (providerChoice === "GooglePhotos"
+                    ? authorizeGooglePhotos()
+                    : authorizeGoogleDrive()),
+            );
         } catch (cause) {
             setError(errorMessage(cause, "Google sign-in failed."));
         } finally {
@@ -1094,7 +1117,8 @@ export function App() {
             driveIcon: selectedDriveIcon,
         };
         if (
-            providerChoice === "GoogleDrive" &&
+            (providerChoice === "GoogleDrive" ||
+                providerChoice === "GooglePhotos") &&
             !googleAuthorization &&
             !editingConnection
         ) {
@@ -1157,6 +1181,16 @@ export function App() {
                 configuration = {
                     workspace_open_mode: workspaceOpenMode,
                 };
+                credentials = googleAuthorization
+                    ? {
+                          access_token: googleAuthorization.access_token,
+                          refresh_token: googleAuthorization.refresh_token,
+                          expires_at: googleAuthorization.expires_at,
+                      }
+                    : {};
+            } else if (providerChoice === "GooglePhotos") {
+                updateEndpoint = "https://photoslibrary.googleapis.com/v1";
+                configuration = {};
                 credentials = googleAuthorization
                     ? {
                           access_token: googleAuthorization.access_token,
@@ -1246,6 +1280,21 @@ export function App() {
                 workspaceOpenMode,
             };
             connectionOperation = createGoogleDriveConnection(form);
+        } else if (providerChoice === "GooglePhotos") {
+            const form: GooglePhotosConnectionForm = {
+                name,
+                accessToken:
+                    googleAuthorization?.access_token ??
+                    String(values.get("accessToken") ?? ""),
+                refreshToken: googleAuthorization?.refresh_token ?? null,
+                expiresAt: googleAuthorization?.expires_at ?? null,
+                driveLetter,
+                mountOnStartup,
+                mountRoot: selectedMountRoot,
+                driveType: selectedDriveType,
+                driveIcon: selectedDriveIcon,
+            };
+            connectionOperation = createGooglePhotosConnection(form);
         } else {
             const form: S3ConnectionForm = {
                 name,
@@ -2380,7 +2429,8 @@ export function App() {
                                 </div>
                             )}
                             {providerChoice !== "SFTP" &&
-                                providerChoice !== "GoogleDrive" && (
+                                providerChoice !== "GoogleDrive" &&
+                                providerChoice !== "GooglePhotos" && (
                                     <label>
                                         Endpoint
                                         <input
@@ -2594,6 +2644,42 @@ export function App() {
                                     </p>
                                 </>
                             )}
+                            {providerChoice === "GooglePhotos" && (
+                                <>
+                                    <button
+                                        className="secondary-button"
+                                        type="button"
+                                        disabled={googleSigningIn}
+                                        onClick={() =>
+                                            void handleGoogleSignIn()
+                                        }
+                                    >
+                                        {googleSigningIn
+                                            ? "Waiting for Google..."
+                                            : "Sign in with Google"}
+                                    </button>
+                                    {googleAuthorization && (
+                                        <p className="inline-success">
+                                            Google account connected. You can
+                                            save this connection.
+                                        </p>
+                                    )}
+                                    <p className="legal-notice">
+                                        Bifrost accesses only media and albums
+                                        created by Bifrost through the official
+                                        Google Photos API. Files you add count
+                                        toward your Google storage. Read the{" "}
+                                        <a
+                                            href={PRIVACY_POLICY_URL}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                        >
+                                            Privacy Policy
+                                        </a>
+                                        .
+                                    </p>
+                                </>
+                            )}
                             {providerChoice === "S3" && (
                                 <>
                                     <div className="form-grid">
@@ -2671,7 +2757,8 @@ export function App() {
                                     className="primary-button"
                                     disabled={
                                         saving ||
-                                        (providerChoice === "GoogleDrive" &&
+                                        ((providerChoice === "GoogleDrive" ||
+                                            providerChoice === "GooglePhotos") &&
                                             !googleAuthorization &&
                                             !editingConnection)
                                     }
@@ -2795,5 +2882,7 @@ function providerChoiceFor(kind: ConnectionSummary["kind"]): ProviderChoice {
             return "S3";
         case "GoogleDrive":
             return "GoogleDrive";
+        case "GooglePhotos":
+            return "GooglePhotos";
     }
 }

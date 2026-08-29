@@ -351,8 +351,6 @@ async fn handle_request_inner(
     let provider = crate::provider_for_connection(&connection, credentials)
         .await
         .map_err(message_error)?;
-    let capabilities = provider.capabilities();
-
     match request.operation.as_str() {
         "item" => {
             let path = request_path(request.identifier.as_deref())?;
@@ -364,7 +362,7 @@ async fn handle_request_inner(
             Ok(item_response(remote_item(
                 &connection,
                 metadata,
-                &capabilities,
+                &provider.capabilities_for_path(&path),
             )))
         }
         "enumerate" => {
@@ -376,7 +374,10 @@ async fn handle_request_inner(
                 items: Some(
                     page.entries
                         .into_iter()
-                        .map(|entry| remote_item(&connection, entry.metadata, &capabilities))
+                        .map(|entry| {
+                            let capabilities = provider.capabilities_for_path(&entry.metadata.path);
+                            remote_item(&connection, entry.metadata, &capabilities)
+                        })
                         .collect(),
                 ),
                 next_page_token: page.next_cursor,
@@ -402,7 +403,11 @@ async fn handle_request_inner(
             }
             output.flush().await.map_err(StorageError::Io)?;
             let metadata = provider.stat(&path).await?;
-            let mut response = item_response(remote_item(&connection, metadata, &capabilities));
+            let mut response = item_response(remote_item(
+                &connection,
+                metadata,
+                &provider.capabilities_for_path(&path),
+            ));
             response.content_file = Some(filename);
             Ok(response)
         }
@@ -424,7 +429,7 @@ async fn handle_request_inner(
             Ok(item_response(remote_item(
                 &connection,
                 provider.stat(&path).await?,
-                &capabilities,
+                &provider.capabilities_for_path(&path),
             )))
         }
         "modify" => {
@@ -447,7 +452,7 @@ async fn handle_request_inner(
             Ok(item_response(remote_item(
                 &connection,
                 provider.stat(&target).await?,
-                &capabilities,
+                &provider.capabilities_for_path(&target),
             )))
         }
         "delete" => {

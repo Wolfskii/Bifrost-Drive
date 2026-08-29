@@ -13,7 +13,14 @@ export interface UpdateInfo {
 }
 
 export type ProviderKind =
-    "S3" | "Sftp" | "WebDav" | "Nextcloud" | "GoogleDrive" | "Ftp" | "Smb";
+    | "S3"
+    | "Sftp"
+    | "WebDav"
+    | "Nextcloud"
+    | "GoogleDrive"
+    | "GooglePhotos"
+    | "Ftp"
+    | "Smb";
 
 export interface ConnectionSummary {
     id: string;
@@ -78,6 +85,18 @@ export interface GoogleDriveAuthorization {
     access_token: string;
     refresh_token: string;
     expires_at: number;
+}
+
+export interface GooglePhotosConnectionForm {
+    name: string;
+    accessToken: string;
+    refreshToken: string | null;
+    expiresAt: number | null;
+    driveLetter: string;
+    mountOnStartup: boolean;
+    mountRoot: string;
+    driveType: "network" | "local";
+    driveIcon: string;
 }
 
 export interface WebDavConnectionForm {
@@ -389,6 +408,36 @@ export async function authorizeGoogleDrive(): Promise<GoogleDriveAuthorization> 
     return invoke<GoogleDriveAuthorization>(
         "connections_google_drive_authorize",
     );
+}
+
+export async function authorizeGooglePhotos(): Promise<GoogleDriveAuthorization> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<GoogleDriveAuthorization>(
+        "connections_google_photos_authorize",
+    );
+}
+
+export async function createGooglePhotosConnection(
+    form: GooglePhotosConnectionForm,
+): Promise<ConnectionSummary> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<ConnectionSummary>("connections_create_google_photos", {
+        request: {
+            name: form.name,
+            access_token: form.accessToken,
+            refresh_token: form.refreshToken,
+            expires_at: form.expiresAt,
+            drive_letter: form.driveLetter || null,
+            mount_on_startup: form.mountOnStartup,
+            mount_root: form.mountRoot || null,
+            drive_type: form.driveType,
+            drive_icon: form.driveIcon || null,
+        },
+    });
 }
 
 export async function createWebDavConnection(

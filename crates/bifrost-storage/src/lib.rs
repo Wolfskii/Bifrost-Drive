@@ -87,6 +87,10 @@ pub trait StorageProvider: Send + Sync {
     fn kind(&self) -> ProviderKind;
     fn capabilities(&self) -> CapabilitySet;
 
+    fn capabilities_for_path(&self, _path: &RemotePath) -> CapabilitySet {
+        self.capabilities()
+    }
+
     async fn test_connection(&self) -> Result<(), StorageError>;
     async fn list(
         &self,

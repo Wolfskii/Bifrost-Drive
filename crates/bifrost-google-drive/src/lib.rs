@@ -9,7 +9,11 @@ use chrono::{DateTime, Utc};
 use futures_util::{stream, StreamExt, TryStreamExt};
 use reqwest::{header, Client, Method, StatusCode, Url};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, ops::Range, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    ops::Range,
+    sync::Arc,
+};
 use tokio::sync::Mutex;
 
 const FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
@@ -67,6 +71,8 @@ pub enum WorkspaceOpenMode {
 pub struct GoogleDriveConfig {
     pub endpoint: Url,
     pub shared_drive_id: Option<String>,
+    pub root_folder_id: Option<String>,
+    pub excluded_folder_ids: BTreeSet<String>,
     pub workspace_open_mode: WorkspaceOpenMode,
 }
 
@@ -91,6 +97,8 @@ pub struct GoogleDriveProvider {
     client: Client,
     endpoint: Url,
     shared_drive_id: Option<String>,
+    root_folder_id: Option<String>,
+    excluded_folder_ids: BTreeSet<String>,
     workspace_open_mode: WorkspaceOpenMode,
     session: Arc<Mutex<GoogleDriveSession>>,
     workspace_exports: Arc<Mutex<HashMap<String, CachedWorkspaceExport>>>,
@@ -188,6 +196,8 @@ impl GoogleDriveProvider {
             client,
             endpoint: config.endpoint,
             shared_drive_id: config.shared_drive_id,
+            root_folder_id: config.root_folder_id,
+            excluded_folder_ids: config.excluded_folder_ids,
             workspace_open_mode: config.workspace_open_mode,
             session: Arc::new(Mutex::new(GoogleDriveSession {
                 access_token: credentials.access_token,
@@ -330,16 +340,21 @@ impl GoogleDriveProvider {
             .await
             .map_err(Self::network_error)?;
         Ok(Page {
-            entries: page.files,
+            entries: page
+                .files
+                .into_iter()
+                .filter(|file| !self.excluded_folder_ids.contains(&file.id))
+                .collect(),
             next_cursor: page.next_page_token,
         })
     }
 
     async fn resolve_directory_id(&self, path: &RemotePath) -> Result<String, StorageError> {
-        let mut parent_id = self
-            .shared_drive_id
-            .clone()
-            .unwrap_or_else(|| "root".to_owned());
+        let mut parent_id = self.root_folder_id.clone().unwrap_or_else(|| {
+            self.shared_drive_id
+                .clone()
+                .unwrap_or_else(|| "root".to_owned())
+        });
         for component in path
             .as_str()
             .split('/')
