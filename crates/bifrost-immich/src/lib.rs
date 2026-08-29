@@ -355,7 +355,7 @@ impl StorageProvider for ImmichProvider {
 
     async fn test_connection(&self) -> Result<(), StorageError> {
         self.send(
-            self.authorized(Method::GET, self.api_url("auth/me"))
+            self.authorized(Method::GET, self.api_url("server/ping"))
                 .send()
                 .await
                 .map_err(Self::network_error)?,
@@ -617,7 +617,7 @@ mod tests {
                 let size = socket.read(&mut buffer).await.unwrap();
                 if attempt == 1 {
                     let request = String::from_utf8_lossy(&buffer[..size]);
-                    assert!(request.contains("GET /api/auth/me HTTP/1.1"));
+                    assert!(request.contains("GET /api/server/ping HTTP/1.1"));
                     assert!(request.to_ascii_lowercase().contains("x-api-key: test-key"));
                     socket
                         .write_all(
