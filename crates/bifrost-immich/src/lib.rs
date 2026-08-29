@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use bifrost_common::{Capability, CapabilitySet, ProviderKind, RemoteMetadata, RemotePath};
 use bifrost_storage::{
-    ByteStream, Page, ReadRequest, RemoteEntry, StorageError, StorageProvider, WriteRequest,
+    ByteStream, Page, ReadRequest, RemoteEntry, StorageCapacity, StorageError, StorageProvider,
+    WriteRequest,
 };
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
@@ -77,6 +78,14 @@ struct SearchResponse {
     assets: Vec<Asset>,
     #[serde(rename = "nextPage")]
     next_page: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StorageResponse {
+    #[serde(rename = "diskSizeRaw")]
+    disk_size_raw: u64,
+    #[serde(rename = "diskAvailableRaw")]
+    disk_available_raw: u64,
 }
 
 impl ImmichProvider {
@@ -355,13 +364,33 @@ impl StorageProvider for ImmichProvider {
 
     async fn test_connection(&self) -> Result<(), StorageError> {
         self.send(
-            self.authorized(Method::GET, self.api_url("server/ping"))
+            self.authorized(Method::POST, self.api_url("search/metadata"))
+                .json(&serde_json::json!({ "page": 1, "size": 1 }))
                 .send()
                 .await
                 .map_err(Self::network_error)?,
         )
         .await
         .map(|_| ())
+    }
+
+    async fn capacity(&self) -> Result<Option<StorageCapacity>, StorageError> {
+        let response = self
+            .send(
+                self.authorized(Method::GET, self.api_url("server/storage"))
+                    .send()
+                    .await
+                    .map_err(Self::network_error)?,
+            )
+            .await?;
+        let storage = response
+            .json::<StorageResponse>()
+            .await
+            .map_err(Self::network_error)?;
+        Ok(Some(StorageCapacity {
+            total_bytes: storage.disk_size_raw,
+            available_bytes: storage.disk_available_raw,
+        }))
     }
 
     async fn list(
@@ -578,6 +607,7 @@ fn encode_name(value: &str) -> String {
 mod tests {
     use super::{
         encode_name, has_explicit_scheme, normalize_endpoint, ImmichCredentials, ImmichProvider,
+        StorageResponse,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -606,6 +636,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parses_storage_capacity_response() {
+        let storage: StorageResponse = serde_json::from_str(
+            r#"{"diskSizeRaw":1000,"diskAvailableRaw":750,"diskUseRaw":250}"#,
+        )
+        .unwrap();
+        assert_eq!(storage.disk_size_raw, 1_000);
+        assert_eq!(storage.disk_available_raw, 750);
+    }
+
     #[tokio::test]
     async fn scheme_less_endpoint_falls_back_to_http_and_sends_api_key() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -617,7 +657,7 @@ mod tests {
                 let size = socket.read(&mut buffer).await.unwrap();
                 if attempt == 1 {
                     let request = String::from_utf8_lossy(&buffer[..size]);
-                    assert!(request.contains("GET /api/server/ping HTTP/1.1"));
+                    assert!(request.contains("POST /api/search/metadata HTTP/1.1"));
                     assert!(request.to_ascii_lowercase().contains("x-api-key: test-key"));
                     socket
                         .write_all(

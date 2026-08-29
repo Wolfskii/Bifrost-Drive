@@ -55,6 +55,7 @@ import {
     sendNotification,
 } from "@tauri-apps/plugin-notification";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import packageJson from "../package.json";
 import { CustomSelect, CustomSelectOption } from "./CustomSelect";
@@ -954,6 +955,17 @@ export function App() {
             await openConnectionLocation(connection.id);
         } catch (cause) {
             setError(errorMessage(cause, "Unable to open this location."));
+        }
+    }
+
+    async function handleOpenWebUi(connection: ConnectionSummary) {
+        const url = webUiUrlForConnection(connection);
+        if (!url) return;
+        setError(null);
+        try {
+            await openUrl(url);
+        } catch (cause) {
+            setError(errorMessage(cause, "Unable to open the web interface."));
         }
     }
 
@@ -1918,6 +1930,23 @@ export function App() {
                                                 >
                                                     <FolderOpen size={15} />
                                                 </button>
+                                                {webUiUrlForConnection(
+                                                    connection,
+                                                ) && (
+                                                    <button
+                                                        className="icon-button"
+                                                        type="button"
+                                                        aria-label={`Open ${connection.name} web interface`}
+                                                        title="Open web interface"
+                                                        onClick={() =>
+                                                            handleOpenWebUi(
+                                                                connection,
+                                                            )
+                                                        }
+                                                    >
+                                                        <Globe2 size={15} />
+                                                    </button>
+                                                )}
                                                 <button
                                                     className="icon-button"
                                                     type="button"
@@ -3027,6 +3056,21 @@ function activityTitle(kind: string): string {
 function formatActivityTime(value: string): string {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+export function webUiUrlForConnection(
+    connection: Pick<ConnectionSummary, "kind" | "endpoint">,
+): string | null {
+    switch (connection.kind) {
+        case "Immich":
+            return connection.endpoint;
+        case "GoogleDrive":
+            return "https://drive.google.com/drive/my-drive";
+        case "GooglePhotos":
+            return "https://photos.google.com/";
+        default:
+            return null;
+    }
 }
 
 function providerChoiceFor(kind: ConnectionSummary["kind"]): ProviderChoice {

@@ -1,6 +1,11 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { App, ConnectionProviderIcon, parseReleaseNotes } from "./App";
+import {
+    App,
+    ConnectionProviderIcon,
+    parseReleaseNotes,
+    webUiUrlForConnection,
+} from "./App";
 
 describe("App", () => {
     afterEach(() => cleanup());
@@ -36,6 +41,33 @@ describe("App", () => {
 
         rerender(<ConnectionProviderIcon kind="S3" />);
         expect(screen.getByLabelText("S3 object storage")).toBeTruthy();
+    });
+
+    it("maps browser-capable providers to their web interfaces", () => {
+        expect(
+            webUiUrlForConnection({
+                kind: "Immich",
+                endpoint: "https://images.example.com",
+            }),
+        ).toBe("https://images.example.com");
+        expect(
+            webUiUrlForConnection({
+                kind: "GoogleDrive",
+                endpoint: "https://www.googleapis.com/drive/v3",
+            }),
+        ).toBe("https://drive.google.com/drive/my-drive");
+        expect(
+            webUiUrlForConnection({
+                kind: "GooglePhotos",
+                endpoint: "https://photoslibrary.googleapis.com/v1",
+            }),
+        ).toBe("https://photos.google.com/");
+        expect(
+            webUiUrlForConnection({
+                kind: "Sftp",
+                endpoint: "sftp://files.example.com:22",
+            }),
+        ).toBeNull();
     });
 
     it("hides native mount controls when no filesystem integration is available", () => {
