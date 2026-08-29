@@ -4,15 +4,48 @@ use bifrost_storage::{
     ByteStream, Page, ReadRequest, RemoteEntry, StorageCapacity, StorageError, StorageProvider,
     WriteRequest,
 };
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::{stream, StreamExt, TryStreamExt};
 use reqwest::{header, Client, Method, StatusCode, Url};
 use serde::{Deserialize, Serialize};
-use std::{ops::Range, sync::Arc};
+use std::{collections::HashMap, ops::Range, sync::Arc};
 use tokio::sync::Mutex;
 
 const FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
-const FILE_FIELDS: &str = "nextPageToken,files(id,name,mimeType,size,modifiedTime,md5Checksum)";
+const FILE_FIELDS: &str =
+    "nextPageToken,files(id,name,mimeType,size,modifiedTime,md5Checksum,version)";
+const SINGLE_FILE_FIELDS: &str = "id,name,mimeType,size,modifiedTime,md5Checksum,version";
+const MAX_WORKSPACE_EXPORT_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const GOOGLE_DOC_MIME_TYPE: &str = "application/vnd.google-apps.document";
+const GOOGLE_SHEET_MIME_TYPE: &str = "application/vnd.google-apps.spreadsheet";
+const GOOGLE_SLIDES_MIME_TYPE: &str = "application/vnd.google-apps.presentation";
+
+#[derive(Clone, Copy)]
+struct WorkspaceFormat {
+    google_mime_type: &'static str,
+    office_mime_type: &'static str,
+    extension: &'static str,
+}
+
+const WORKSPACE_FORMATS: [WorkspaceFormat; 3] = [
+    WorkspaceFormat {
+        google_mime_type: GOOGLE_DOC_MIME_TYPE,
+        office_mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        extension: ".docx",
+    },
+    WorkspaceFormat {
+        google_mime_type: GOOGLE_SHEET_MIME_TYPE,
+        office_mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        extension: ".xlsx",
+    },
+    WorkspaceFormat {
+        google_mime_type: GOOGLE_SLIDES_MIME_TYPE,
+        office_mime_type:
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        extension: ".pptx",
+    },
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoogleDriveConfig {
@@ -42,6 +75,12 @@ pub struct GoogleDriveProvider {
     endpoint: Url,
     shared_drive_id: Option<String>,
     session: Arc<Mutex<GoogleDriveSession>>,
+    workspace_exports: Arc<Mutex<HashMap<String, CachedWorkspaceExport>>>,
+}
+
+struct CachedWorkspaceExport {
+    version: Option<String>,
+    content: Option<Bytes>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +102,7 @@ struct DriveFile {
     modified_time: Option<DateTime<Utc>>,
     #[serde(rename = "md5Checksum")]
     md5_checksum: Option<String>,
+    version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +175,7 @@ impl GoogleDriveProvider {
                 client_secret: credentials.client_secret,
                 expires_at: credentials.expires_at,
             })),
+            workspace_exports: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -303,7 +344,8 @@ impl GoogleDriveProvider {
             });
         }
         let mut components = path.as_str().rsplitn(2, '/');
-        let name = Self::decode_path_component(components.next().unwrap_or_default())?;
+        let (name, workspace_format) =
+            Self::remote_file_name(components.next().unwrap_or_default())?;
         let parent_path = components.next().unwrap_or_default();
         let parent = RemotePath::parse(parent_path).map_err(|error| StorageError::Provider {
             provider: ProviderKind::GoogleDrive,
@@ -317,7 +359,12 @@ impl GoogleDriveProvider {
         .await?
         .entries
         .into_iter()
-        .next()
+        .find(|file| {
+            workspace_format.map_or_else(
+                || Self::workspace_format(&file.mime_type).is_none(),
+                |format| file.mime_type == format.google_mime_type,
+            )
+        })
         .ok_or_else(|| StorageError::NotFound { path: path.clone() })
     }
 
@@ -325,8 +372,8 @@ impl GoogleDriveProvider {
         value.replace('\\', "\\\\").replace('\'', "\\'")
     }
 
-    fn entry_path(prefix: &RemotePath, name: &str) -> Result<RemotePath, StorageError> {
-        let name = Self::encode_path_component(name);
+    fn entry_path(prefix: &RemotePath, file: &DriveFile) -> Result<RemotePath, StorageError> {
+        let name = Self::virtual_file_name(file);
         let path = if prefix.as_str().is_empty() {
             name
         } else {
@@ -336,6 +383,59 @@ impl GoogleDriveProvider {
             provider: ProviderKind::GoogleDrive,
             message: error.to_string(),
         })
+    }
+
+    fn workspace_format(mime_type: &str) -> Option<WorkspaceFormat> {
+        WORKSPACE_FORMATS
+            .iter()
+            .copied()
+            .find(|format| format.google_mime_type == mime_type)
+    }
+
+    fn virtual_file_name(file: &DriveFile) -> String {
+        let mut name = Self::encode_path_component(&file.name);
+        if let Some(format) = Self::workspace_format(&file.mime_type) {
+            name.push_str(format.extension);
+            return name;
+        }
+        let lowercase = name.to_ascii_lowercase();
+        if let Some(format) = WORKSPACE_FORMATS
+            .iter()
+            .find(|format| lowercase.ends_with(format.extension))
+        {
+            let extension_start = name.len() - format.extension.len();
+            name.replace_range(extension_start..extension_start + 1, "%2E");
+        }
+        name
+    }
+
+    fn remote_file_name(
+        component: &str,
+    ) -> Result<(String, Option<WorkspaceFormat>), StorageError> {
+        let lowercase = component.to_ascii_lowercase();
+        if let Some(format) = WORKSPACE_FORMATS
+            .iter()
+            .copied()
+            .find(|format| lowercase.ends_with(format.extension))
+        {
+            let name = &component[..component.len() - format.extension.len()];
+            return Ok((Self::decode_path_component(name)?, Some(format)));
+        }
+        Ok((Self::decode_path_component(component)?, None))
+    }
+
+    fn remote_destination_name(
+        component: &str,
+        workspace_format: Option<WorkspaceFormat>,
+    ) -> Result<String, StorageError> {
+        if let Some(format) = workspace_format
+            .filter(|format| component.to_ascii_lowercase().ends_with(format.extension))
+        {
+            return Self::decode_path_component(
+                &component[..component.len() - format.extension.len()],
+            );
+        }
+        Self::decode_path_component(component)
     }
 
     fn encode_path_component(value: &str) -> String {
@@ -438,12 +538,103 @@ impl GoogleDriveProvider {
         }
     }
 
+    async fn workspace_export(
+        &self,
+        file: &DriveFile,
+        format: WorkspaceFormat,
+    ) -> Result<Bytes, StorageError> {
+        if let Some(content) = self
+            .workspace_exports
+            .lock()
+            .await
+            .get(&file.id)
+            .filter(|cached| cached.version == file.version)
+            .and_then(|cached| cached.content.clone())
+        {
+            return Ok(content);
+        }
+        let access_token = self.access_token().await?;
+        let response = self
+            .send(
+                self.authorized(
+                    Method::GET,
+                    self.api_url(&format!("files/{}/export", file.id))?,
+                    &access_token,
+                )
+                .query(&[("mimeType", format.office_mime_type)])
+                .send()
+                .await
+                .map_err(Self::network_error)?,
+            )
+            .await?;
+        let content = response.bytes().await.map_err(Self::network_error)?;
+        let mut cache = self.workspace_exports.lock().await;
+        Self::cache_workspace_export(
+            &mut cache,
+            file,
+            content.clone(),
+            MAX_WORKSPACE_EXPORT_CACHE_BYTES,
+        );
+        Ok(content)
+    }
+
+    fn cache_workspace_export(
+        cache: &mut HashMap<String, CachedWorkspaceExport>,
+        file: &DriveFile,
+        content: Bytes,
+        max_bytes: usize,
+    ) {
+        cache.remove(&file.id);
+        let mut cached_bytes = cache
+            .values()
+            .filter_map(|cached| cached.content.as_ref())
+            .map(Bytes::len)
+            .sum::<usize>();
+        while cached_bytes.saturating_add(content.len()) > max_bytes {
+            let Some(key) = cache
+                .iter()
+                .find_map(|(key, cached)| cached.content.as_ref().map(|_| key.clone()))
+            else {
+                break;
+            };
+            if let Some(evicted) = cache.get_mut(&key).and_then(|cached| cached.content.take()) {
+                cached_bytes = cached_bytes.saturating_sub(evicted.len());
+            }
+        }
+        cache.insert(
+            file.id.clone(),
+            CachedWorkspaceExport {
+                version: file.version.clone(),
+                content: (content.len() <= max_bytes).then_some(content),
+            },
+        );
+    }
+
+    fn workspace_range(content: Bytes, range: Option<Range<u64>>) -> Result<Bytes, StorageError> {
+        let Some(range) = range else {
+            return Ok(content);
+        };
+        if range.start >= range.end {
+            return Err(StorageError::Provider {
+                provider: ProviderKind::GoogleDrive,
+                message: "read range must have a positive length".to_owned(),
+            });
+        }
+        let start = usize::try_from(range.start)
+            .unwrap_or(usize::MAX)
+            .min(content.len());
+        let end = usize::try_from(range.end)
+            .unwrap_or(usize::MAX)
+            .min(content.len());
+        Ok(content.slice(start..end.max(start)))
+    }
+
     fn metadata(file: DriveFile, path: RemotePath) -> RemoteMetadata {
         RemoteMetadata {
             path,
             is_directory: file.mime_type == FOLDER_MIME_TYPE,
             size_bytes: file.size.and_then(|size| size.parse().ok()),
-            etag: file.md5_checksum,
+            etag: file.version.or(file.md5_checksum),
             modified_at: file.modified_time,
         }
     }
@@ -469,8 +660,17 @@ impl GoogleDriveProvider {
     }
 
     async fn ensure_parent(&self, path: &RemotePath) -> Result<(String, String), StorageError> {
+        self.ensure_parent_for_format(path, None).await
+    }
+
+    async fn ensure_parent_for_format(
+        &self,
+        path: &RemotePath,
+        workspace_format: Option<WorkspaceFormat>,
+    ) -> Result<(String, String), StorageError> {
         let mut components = path.as_str().rsplitn(2, '/');
-        let name = Self::decode_path_component(components.next().unwrap_or_default())?;
+        let component = components.next().unwrap_or_default();
+        let name = Self::remote_destination_name(component, workspace_format)?;
         let parent_path =
             RemotePath::parse(components.next().unwrap_or_default()).map_err(|error| {
                 StorageError::Provider {
@@ -531,7 +731,7 @@ impl StorageProvider for GoogleDriveProvider {
             .entries
             .into_iter()
             .map(|file| {
-                let path = Self::entry_path(prefix, &file.name)?;
+                let path = Self::entry_path(prefix, &file)?;
                 Ok(RemoteEntry {
                     metadata: Self::metadata(file, path),
                 })
@@ -554,7 +754,16 @@ impl StorageProvider for GoogleDriveProvider {
             });
         }
         let file = self.resolve_file(path).await?;
-        Ok(Self::metadata(file, path.clone()))
+        let export_size = if let Some(format) = Self::workspace_format(&file.mime_type) {
+            Some(self.workspace_export(&file, format).await?.len() as u64)
+        } else {
+            None
+        };
+        let mut metadata = Self::metadata(file, path.clone());
+        if let Some(export_size) = export_size {
+            metadata.size_bytes = Some(export_size);
+        }
+        Ok(metadata)
     }
 
     async fn read(&self, request: ReadRequest) -> Result<ByteStream, StorageError> {
@@ -565,6 +774,11 @@ impl StorageProvider for GoogleDriveProvider {
                 provider: ProviderKind::GoogleDrive,
                 capability: "read_directory".to_owned(),
             });
+        }
+        if let Some(format) = Self::workspace_format(&file.mime_type) {
+            let content =
+                Self::workspace_range(self.workspace_export(&file, format).await?, request.range)?;
+            return Ok(Box::pin(stream::once(async move { Ok(content) })));
         }
         let mut request_builder = self.authorized(
             Method::GET,
@@ -588,6 +802,7 @@ impl StorageProvider for GoogleDriveProvider {
     async fn write(&self, request: WriteRequest) -> Result<RemoteMetadata, StorageError> {
         let access_token = self.access_token().await?;
         let path = request.path;
+        let uploaded_size = request.size_bytes;
         let existing = match self.resolve_file(&path).await {
             Ok(file) => Some(file),
             Err(StorageError::NotFound { .. }) => None,
@@ -601,6 +816,24 @@ impl StorageProvider for GoogleDriveProvider {
                 provider: ProviderKind::GoogleDrive,
                 message: "cannot write content to a directory".to_owned(),
             });
+        }
+        let workspace_format = existing
+            .as_ref()
+            .and_then(|file| Self::workspace_format(&file.mime_type));
+        if let (Some(file), Some(_)) = (existing.as_ref(), workspace_format) {
+            let exports = self.workspace_exports.lock().await;
+            let unchanged = exports
+                .get(&file.id)
+                .is_some_and(|cached| cached.version == file.version);
+            if !unchanged {
+                return Err(StorageError::Provider {
+                    provider: ProviderKind::GoogleDrive,
+                    message: format!(
+                        "{} changed in Google Drive after it was opened; close and reopen the file before saving",
+                        file.name
+                    ),
+                });
+            }
         }
         let file_id = if let Some(file) = existing {
             file.id
@@ -634,7 +867,12 @@ impl StorageProvider for GoogleDriveProvider {
                 )
                 .query(&[("uploadType", "media")])
                 .query(&[("supportsAllDrives", "true")])
-                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .query(&[("fields", SINGLE_FILE_FIELDS)])
+                .header(
+                    header::CONTENT_TYPE,
+                    workspace_format
+                        .map_or("application/octet-stream", |format| format.office_mime_type),
+                )
                 .body(reqwest::Body::wrap_stream(
                     request.content.map_ok(|bytes| bytes),
                 ))
@@ -647,16 +885,30 @@ impl StorageProvider for GoogleDriveProvider {
             .json::<DriveFile>()
             .await
             .map_err(Self::network_error)?;
-        Ok(Self::metadata(file, path))
+        if workspace_format.is_some() {
+            self.workspace_exports.lock().await.insert(
+                file_id,
+                CachedWorkspaceExport {
+                    version: file.version.clone(),
+                    content: None,
+                },
+            );
+        }
+        let mut metadata = Self::metadata(file, path);
+        if workspace_format.is_some() {
+            metadata.size_bytes = uploaded_size;
+        }
+        Ok(metadata)
     }
 
     async fn delete(&self, path: &RemotePath) -> Result<(), StorageError> {
         let access_token = self.access_token().await?;
         let file = self.resolve_file(path).await?;
+        let file_id = file.id;
         self.send(
             self.authorized(
                 Method::DELETE,
-                self.api_url(&format!("files/{}", file.id))?,
+                self.api_url(&format!("files/{file_id}"))?,
                 &access_token,
             )
             .query(&[("supportsAllDrives", "true")])
@@ -664,8 +916,9 @@ impl StorageProvider for GoogleDriveProvider {
             .await
             .map_err(Self::network_error)?,
         )
-        .await
-        .map(|_| ())
+        .await?;
+        self.workspace_exports.lock().await.remove(&file_id);
+        Ok(())
     }
 
     async fn capacity(&self) -> Result<Option<StorageCapacity>, StorageError> {
@@ -740,7 +993,9 @@ impl StorageProvider for GoogleDriveProvider {
     async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), StorageError> {
         let access_token = self.access_token().await?;
         let file = self.resolve_file(from).await?;
-        let (parent_id, name) = self.ensure_parent(to).await?;
+        let (parent_id, name) = self
+            .ensure_parent_for_format(to, Self::workspace_format(&file.mime_type))
+            .await?;
         if self
             .list_children(&parent_id, Some(&name), None)
             .await?
@@ -785,10 +1040,72 @@ impl StorageProvider for GoogleDriveProvider {
             .map(|_| ())
     }
 
+    async fn replace(&self, from: &RemotePath, to: &RemotePath) -> Result<(), StorageError> {
+        let destination = self.resolve_file(to).await?;
+        let Some(workspace_format) = Self::workspace_format(&destination.mime_type) else {
+            self.delete(to).await?;
+            return self.rename(from, to).await;
+        };
+        let unchanged = self
+            .workspace_exports
+            .lock()
+            .await
+            .get(&destination.id)
+            .is_some_and(|cached| cached.version == destination.version);
+        if !unchanged {
+            return Err(StorageError::Provider {
+                provider: ProviderKind::GoogleDrive,
+                message: format!(
+                    "{} changed in Google Drive after it was opened; close and reopen the file before saving",
+                    destination.name
+                ),
+            });
+        }
+
+        let content = self
+            .read(ReadRequest {
+                path: from.clone(),
+                range: None,
+            })
+            .await?;
+        let access_token = self.access_token().await?;
+        let response = self
+            .send(
+                self.authorized(
+                    Method::PATCH,
+                    self.upload_url(Some(&destination.id))?,
+                    &access_token,
+                )
+                .query(&[("uploadType", "media")])
+                .query(&[("supportsAllDrives", "true")])
+                .query(&[("fields", SINGLE_FILE_FIELDS)])
+                .header(header::CONTENT_TYPE, workspace_format.office_mime_type)
+                .body(reqwest::Body::wrap_stream(content.map_ok(|bytes| bytes)))
+                .send()
+                .await
+                .map_err(Self::network_error)?,
+            )
+            .await?;
+        let updated = response
+            .json::<DriveFile>()
+            .await
+            .map_err(Self::network_error)?;
+        self.workspace_exports.lock().await.insert(
+            destination.id,
+            CachedWorkspaceExport {
+                version: updated.version,
+                content: None,
+            },
+        );
+        self.delete(from).await
+    }
+
     async fn copy(&self, from: &RemotePath, to: &RemotePath) -> Result<(), StorageError> {
         let access_token = self.access_token().await?;
         let file = self.resolve_file(from).await?;
-        let (parent_id, name) = self.ensure_parent(to).await?;
+        let (parent_id, name) = self
+            .ensure_parent_for_format(to, Self::workspace_format(&file.mime_type))
+            .await?;
         if self
             .list_children(&parent_id, Some(&name), None)
             .await?
@@ -825,8 +1142,22 @@ impl StorageProvider for GoogleDriveProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::GoogleDriveProvider;
+    use super::{DriveFile, GoogleDriveProvider, GOOGLE_DOC_MIME_TYPE};
     use bifrost_common::RemotePath;
+    use bytes::Bytes;
+    use std::collections::HashMap;
+
+    fn file(name: &str, mime_type: &str) -> DriveFile {
+        DriveFile {
+            id: "file-id".to_owned(),
+            name: name.to_owned(),
+            mime_type: mime_type.to_owned(),
+            size: None,
+            modified_time: None,
+            md5_checksum: None,
+            version: None,
+        }
+    }
 
     #[test]
     fn escapes_drive_query_literals() {
@@ -838,17 +1169,21 @@ mod tests {
 
     #[test]
     fn joins_nested_remote_paths() {
-        let path =
-            GoogleDriveProvider::entry_path(&RemotePath::parse("documents").unwrap(), "report.txt")
-                .unwrap();
+        let path = GoogleDriveProvider::entry_path(
+            &RemotePath::parse("documents").unwrap(),
+            &file("report.txt", "text/plain"),
+        )
+        .unwrap();
         assert_eq!(path.as_str(), "documents/report.txt");
     }
 
     #[test]
     fn encodes_google_names_that_are_not_safe_path_components() {
-        let path =
-            GoogleDriveProvider::entry_path(&RemotePath::root(), r#"Report: Q3/100% \ draft?.txt"#)
-                .unwrap();
+        let path = GoogleDriveProvider::entry_path(
+            &RemotePath::root(),
+            &file(r#"Report: Q3/100% \ draft?.txt"#, "text/plain"),
+        )
+        .unwrap();
 
         assert_eq!(path.as_str(), "Report%3A Q3%2F100%25 %5C draft%3F.txt");
         assert_eq!(
@@ -865,12 +1200,97 @@ mod tests {
             ("..", "%2E%2E"),
             ("räksmörgås.txt", "räksmörgås.txt"),
         ] {
-            let path = GoogleDriveProvider::entry_path(&RemotePath::root(), name).unwrap();
+            let path = GoogleDriveProvider::entry_path(
+                &RemotePath::root(),
+                &file(name, "application/octet-stream"),
+            )
+            .unwrap();
             assert_eq!(path.as_str(), encoded);
             assert_eq!(
                 GoogleDriveProvider::decode_path_component(encoded).unwrap(),
                 name
             );
         }
+    }
+
+    #[test]
+    fn workspace_files_have_unambiguous_office_names() {
+        let document = file("Project brief", GOOGLE_DOC_MIME_TYPE);
+        let binary_document = file("Project brief.docx", "application/octet-stream");
+
+        assert_eq!(
+            GoogleDriveProvider::entry_path(&RemotePath::root(), &document)
+                .unwrap()
+                .as_str(),
+            "Project brief.docx"
+        );
+        assert_eq!(
+            GoogleDriveProvider::entry_path(&RemotePath::root(), &binary_document)
+                .unwrap()
+                .as_str(),
+            "Project brief%2Edocx"
+        );
+
+        let (name, format) = GoogleDriveProvider::remote_file_name("Project brief.docx").unwrap();
+        assert_eq!(name, "Project brief");
+        assert_eq!(format.unwrap().google_mime_type, GOOGLE_DOC_MIME_TYPE);
+        let (name, format) = GoogleDriveProvider::remote_file_name("Project brief%2Edocx").unwrap();
+        assert_eq!(name, "Project brief.docx");
+        assert!(format.is_none());
+    }
+
+    #[test]
+    fn workspace_destinations_drop_only_the_virtual_extension() {
+        let format = GoogleDriveProvider::workspace_format(GOOGLE_DOC_MIME_TYPE).unwrap();
+
+        assert_eq!(
+            GoogleDriveProvider::remote_destination_name("Renamed.docx", Some(format)).unwrap(),
+            "Renamed"
+        );
+        assert_eq!(
+            GoogleDriveProvider::remote_destination_name("Uploaded.docx", None).unwrap(),
+            "Uploaded.docx"
+        );
+    }
+
+    #[test]
+    fn slices_cached_workspace_exports_for_filesystem_ranges() {
+        let content = Bytes::from_static(b"exported document");
+
+        assert_eq!(
+            GoogleDriveProvider::workspace_range(content.clone(), Some(9..17)).unwrap(),
+            Bytes::from_static(b"document")
+        );
+        assert!(GoogleDriveProvider::workspace_range(content, Some(30..40))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn workspace_cache_evicts_content_but_keeps_revision_baselines() {
+        let mut cache = HashMap::new();
+        let mut first = file("First", GOOGLE_DOC_MIME_TYPE);
+        first.id = "first".to_owned();
+        first.version = Some("1".to_owned());
+        let mut second = file("Second", GOOGLE_DOC_MIME_TYPE);
+        second.id = "second".to_owned();
+        second.version = Some("2".to_owned());
+
+        GoogleDriveProvider::cache_workspace_export(
+            &mut cache,
+            &first,
+            Bytes::from_static(b"1234"),
+            6,
+        );
+        GoogleDriveProvider::cache_workspace_export(
+            &mut cache,
+            &second,
+            Bytes::from_static(b"5678"),
+            6,
+        );
+
+        assert!(cache["first"].content.is_none());
+        assert_eq!(cache["first"].version.as_deref(), Some("1"));
+        assert_eq!(cache["second"].content.as_deref(), Some(b"5678".as_slice()));
     }
 }

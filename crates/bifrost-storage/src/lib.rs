@@ -116,6 +116,11 @@ pub trait StorageProvider: Send + Sync {
         })
     }
 
+    async fn replace(&self, from: &RemotePath, to: &RemotePath) -> Result<(), StorageError> {
+        self.delete(to).await?;
+        self.rename(from, to).await
+    }
+
     async fn copy(&self, _from: &RemotePath, _to: &RemotePath) -> Result<(), StorageError> {
         Err(StorageError::Unsupported {
             provider: self.kind(),

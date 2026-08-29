@@ -37,7 +37,15 @@ Bifrost refreshes the access token automatically when it expires. The refresh to
 
 The provider supports listing, metadata, streaming reads and writes, range reads, folder creation, rename, server-side copy, deletion, and storage quota reporting. Shared Drive operations use Google’s `supportsAllDrives` and `includeItemsFromAllDrives` settings.
 
-Google Workspace editor files that cannot be downloaded as binary media are not readable through this provider yet. A Google OAuth app in testing may also require the account to be listed as a test user.
+Google Workspace files appear as virtual Microsoft Office files so desktop applications can open them:
+
+- Google Docs use `.docx`.
+- Google Sheets use `.xlsx`.
+- Google Slides use `.pptx`.
+
+Bifrost exports the document on open and imports edited Office content into the same native Google file on save. Google limits exported Workspace documents to 10 MB. Export and import can lose features that do not have an equivalent in both formats. Bifrost refuses save-back when the Google file version changed after it was opened, preventing an edited Office copy from silently overwriting newer online changes.
+
+To keep virtual names unambiguous, an ordinary uploaded file whose name already ends in `.docx`, `.xlsx`, or `.pptx` is displayed with its final dot encoded as `%2E`. Other native Google Workspace types remain metadata-only until an editable export format is implemented. A Google OAuth app in testing may also require the account to be listed as a test user.
 
 ## Troubleshooting
 

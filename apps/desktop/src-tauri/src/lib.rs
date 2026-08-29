@@ -3169,6 +3169,10 @@ async fn drive_mount_register(
                 drive_letter: Some(format!("{drive_letter}:")),
             });
         }
+        let network_drive = configured_drive_type(&connection.configuration_json)?;
+        if network_drive {
+            cleanup_stale_bifrost_mount_points_for_share(&connection.name)?;
+        }
         let provider = provider_for_connection(&connection, credentials.inner()).await?;
         let data_dir = app
             .path()
@@ -3177,7 +3181,7 @@ async fn drive_mount_register(
         let handle = bifrost_windows_winfsp::mount(MountConfig {
             drive_letter,
             volume_label: connection.name.clone(),
-            network_drive: configured_drive_type(&connection.configuration_json)?,
+            network_drive,
             icon_source: configured_drive_icon(
                 &connection.configuration_json,
                 &data_dir,
@@ -3568,6 +3572,30 @@ fn cleanup_bifrost_mount_points() -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn cleanup_bifrost_mount_points_for_share(share: &str) -> Result<(), String> {
+    let share = normalized_bifrost_share(share);
+    cleanup_bifrost_mount_points_matching(|entry| {
+        is_bifrost_mount_point(entry) && entry.to_ascii_lowercase().ends_with(&format!("#{share}"))
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn cleanup_stale_bifrost_mount_points_for_share(share: &str) -> Result<(), String> {
+    let share = normalized_bifrost_share(share);
+    cleanup_bifrost_mount_points_matching(|entry| {
+        is_stale_bifrost_mount_point_for_share(entry, &share, std::process::id())
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn is_stale_bifrost_mount_point_for_share(entry: &str, share: &str, current_pid: u32) -> bool {
+    let entry = entry.to_ascii_lowercase();
+    is_bifrost_mount_point(&entry)
+        && !entry.starts_with(&format!("##bifrost-{current_pid}-"))
+        && entry.ends_with(&format!("#{share}"))
+}
+
+#[cfg(target_os = "windows")]
+fn normalized_bifrost_share(share: &str) -> String {
     let share = share
         .chars()
         .map(|character| match character {
@@ -3576,10 +3604,7 @@ fn cleanup_bifrost_mount_points_for_share(share: &str) -> Result<(), String> {
             character => character,
         })
         .collect::<String>();
-    let share = share.trim().trim_matches('.').to_ascii_lowercase();
-    cleanup_bifrost_mount_points_matching(|entry| {
-        is_bifrost_mount_point(entry) && entry.to_ascii_lowercase().ends_with(&format!("#{share}"))
-    })
+    share.trim().trim_matches('.').to_ascii_lowercase()
 }
 
 #[cfg(target_os = "windows")]
@@ -3669,7 +3694,8 @@ fn is_bifrost_mount_point(entry: &str) -> bool {
 #[cfg(all(test, target_os = "windows"))]
 mod registry_tests {
     use super::{
-        is_bifrost_mount_point, set_drive_presentation, shell32_icons, DriveMountRegistry,
+        is_bifrost_mount_point, is_stale_bifrost_mount_point_for_share, normalized_bifrost_share,
+        set_drive_presentation, shell32_icons, DriveMountRegistry,
     };
 
     #[test]
@@ -3683,6 +3709,30 @@ mod registry_tests {
         assert!(registry.0.is_poisoned());
         assert!(!registry.contains("missing"));
         assert!(!registry.0.is_poisoned());
+    }
+
+    #[test]
+    fn normalizes_network_share_names_like_winfsp() {
+        assert_eq!(normalized_bifrost_share(" Google:Drive. "), "google_drive");
+    }
+
+    #[test]
+    fn removes_only_prior_process_metadata_for_the_same_share() {
+        assert!(is_stale_bifrost_mount_point_for_share(
+            "##bifrost-1200-1#google drive",
+            "google drive",
+            3400,
+        ));
+        assert!(!is_stale_bifrost_mount_point_for_share(
+            "##bifrost-3400-2#google drive",
+            "google drive",
+            3400,
+        ));
+        assert!(!is_stale_bifrost_mount_point_for_share(
+            "##bifrost-1200-1#other drive",
+            "google drive",
+            3400,
+        ));
     }
 
     #[test]

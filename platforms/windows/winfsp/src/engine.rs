@@ -127,6 +127,7 @@ impl RemoteFilesystem {
             .await
             .get(path)
             .filter(|entry| entry.cached_at.elapsed() < METADATA_CACHE_TTL)
+            .filter(|entry| entry.value.is_directory || entry.value.size_bytes.is_some())
             .map(|entry| entry.value.clone())
         {
             return Ok(metadata);
@@ -559,7 +560,13 @@ impl RemoteFilesystem {
             Ok(metadata) if !replace_if_exists || metadata.is_directory => {
                 return Err(WinFspFilesystemError::AlreadyExists(destination));
             }
-            Ok(_) => self.provider.delete(&destination).await?,
+            Ok(_) => {
+                let source = handle.path().await;
+                self.provider.replace(&source, &destination).await?;
+                *handle.path.write().await = destination;
+                self.invalidate_caches().await;
+                return Ok(());
+            }
             Err(WinFspFilesystemError::Storage(StorageError::NotFound { .. })) => {}
             Err(error) => return Err(error),
         }
@@ -645,7 +652,9 @@ mod tests {
         list_calls: AtomicUsize,
         stat_calls: AtomicUsize,
         read_calls: AtomicUsize,
+        replace_calls: AtomicUsize,
         advertised_size: Option<usize>,
+        list_size_unknown: bool,
         read_chunk_size: usize,
         read_chunk_delay: Duration,
     }
@@ -738,10 +747,20 @@ mod tests {
                         .iter()
                         .filter(|(path, _)| Self::is_direct_child(path, prefix))
                         .map(|(path, data)| RemoteEntry {
-                            metadata: Self::metadata(
-                                path.clone(),
-                                self.advertised_size.unwrap_or(data.len()),
-                            ),
+                            metadata: if self.list_size_unknown {
+                                RemoteMetadata {
+                                    path: path.clone(),
+                                    is_directory: false,
+                                    size_bytes: None,
+                                    etag: None,
+                                    modified_at: None,
+                                }
+                            } else {
+                                Self::metadata(
+                                    path.clone(),
+                                    self.advertised_size.unwrap_or(data.len()),
+                                )
+                            },
                         }),
                 )
                 .collect::<Vec<_>>();
@@ -846,6 +865,12 @@ mod tests {
             }
             Err(StorageError::NotFound { path: from.clone() })
         }
+
+        async fn replace(&self, from: &RemotePath, to: &RemotePath) -> Result<(), StorageError> {
+            self.replace_calls.fetch_add(1, Ordering::Relaxed);
+            self.delete(to).await?;
+            self.rename(from, to).await
+        }
     }
 
     #[test]
@@ -877,6 +902,25 @@ mod tests {
 
         assert_eq!(provider.list_calls.load(Ordering::Relaxed), 1);
         assert_eq!(provider.stat_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn open_refreshes_listed_file_when_size_is_unknown() {
+        let provider = Arc::new(MemoryProvider {
+            list_size_unknown: true,
+            ..Default::default()
+        });
+        provider.insert("document.docx", b"exported document").await;
+        let filesystem = RemoteFilesystem::new(provider.clone());
+
+        filesystem.list(&RemotePath::root()).await.unwrap();
+        let handle = filesystem
+            .open(RemotePath::parse("document.docx").unwrap(), false)
+            .await
+            .unwrap();
+
+        assert_eq!(handle.size.load(Ordering::Acquire), 17);
+        assert_eq!(provider.stat_calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
@@ -1051,9 +1095,11 @@ mod tests {
             collision,
             Err(WinFspFilesystemError::AlreadyExists(_))
         ));
+        assert_eq!(provider.replace_calls.load(Ordering::Relaxed), 0);
 
         filesystem.rename(&handle, destination, true).await.unwrap();
         assert_eq!(provider.contents("destination.txt").await, b"source");
+        assert_eq!(provider.replace_calls.load(Ordering::Relaxed), 1);
     }
 
     #[cfg(all(target_os = "windows", feature = "native"))]
