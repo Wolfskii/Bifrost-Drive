@@ -3,12 +3,12 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bifrost_common::{RemoteMetadata, RemotePath};
 use bifrost_storage::StorageError;
-use tokio::runtime::Runtime;
+use tokio::{runtime::Runtime, sync::Notify};
 use windows::{
     core::{PCWSTR, PWSTR},
     Win32::{
@@ -36,6 +36,8 @@ use crate::{
 };
 
 const UNKNOWN_VOLUME_SIZE: u64 = 0;
+const CAPACITY_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const CAPACITY_REFRESH_MIN_INTERVAL_SECONDS: u64 = 15;
 static NEXT_MOUNT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct MountHandle {
@@ -213,6 +215,7 @@ struct BifrostFileSystem {
     volume_label: U16CString,
     volume_total_bytes: Arc<AtomicU64>,
     volume_available_bytes: Arc<AtomicU64>,
+    capacity_refresh: Arc<Notify>,
     security: SecurityDescriptor,
 }
 
@@ -312,6 +315,7 @@ impl FileSystemInterface for BifrostFileSystem {
 
     const GET_VOLUME_INFO_DEFINED: bool = true;
     fn get_volume_info(&self) -> Result<VolumeInfo, NTSTATUS> {
+        self.capacity_refresh.notify_one();
         VolumeInfo::new(
             self.volume_total_bytes.load(Ordering::Relaxed),
             self.volume_available_bytes.load(Ordering::Relaxed),
@@ -579,12 +583,36 @@ pub fn mount(config: MountConfig) -> Result<MountHandle, WinFspError> {
     let capacity_provider = Arc::clone(&config.provider);
     let capacity_total = Arc::clone(&volume_total_bytes);
     let capacity_available = Arc::clone(&volume_available_bytes);
+    let capacity_refresh = Arc::new(Notify::new());
+    let capacity_refresh_task = Arc::clone(&capacity_refresh);
+    let last_capacity_refresh = Arc::new(AtomicU64::new(0));
+    let last_capacity_refresh_task = Arc::clone(&last_capacity_refresh);
     runtime.spawn(async move {
-        if let Ok(Ok(Some(capacity))) =
-            tokio::time::timeout(Duration::from_secs(10), capacity_provider.capacity()).await
-        {
-            capacity_total.store(capacity.total_bytes, Ordering::Relaxed);
-            capacity_available.store(capacity.available_bytes, Ordering::Relaxed);
+        let mut interval = tokio::time::interval(CAPACITY_REFRESH_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = capacity_refresh_task.notified() => {}
+            }
+
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_secs());
+            let last = last_capacity_refresh_task.load(Ordering::Relaxed);
+            if now.saturating_sub(last) < CAPACITY_REFRESH_MIN_INTERVAL_SECONDS
+                || last_capacity_refresh_task
+                    .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_err()
+            {
+                continue;
+            }
+
+            if let Ok(Ok(Some(capacity))) =
+                tokio::time::timeout(Duration::from_secs(10), capacity_provider.capacity()).await
+            {
+                capacity_total.store(capacity.total_bytes, Ordering::Relaxed);
+                capacity_available.store(capacity.available_bytes, Ordering::Relaxed);
+            }
         }
     });
 
@@ -614,6 +642,7 @@ pub fn mount(config: MountConfig) -> Result<MountHandle, WinFspError> {
         volume_label,
         volume_total_bytes,
         volume_available_bytes,
+        capacity_refresh,
         security,
     };
     let filesystem = FileSystem::start(

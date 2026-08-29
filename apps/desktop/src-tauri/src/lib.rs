@@ -1934,12 +1934,7 @@ async fn connections_create_google_photos(
                 .map(str::to_owned)
         });
     let legacy_folder_id = match legacy_folder_id {
-        Some(folder_id)
-            if request
-                .legacy_folder_id
-                .as_deref()
-                .is_some_and(|id| !id.trim().is_empty()) =>
-        {
+        Some(folder_id) if request.legacy_folder_id.as_deref().is_some_and(|id| !id.trim().is_empty()) => {
             Some(folder_id)
         }
         Some(path) => {
@@ -2215,9 +2210,9 @@ async fn test_connection(
                 })
                 .transpose()?;
             HybridGooglePhotosProvider::new(photos, legacy)
-                .test_connection()
-                .await
-                .map_err(|error| error.to_string())
+            .test_connection()
+            .await
+            .map_err(|error| error.to_string())
         }
         ProviderKind::WebDav | ProviderKind::Nextcloud => {
             let endpoint = url::Url::parse(&request.endpoint)
@@ -2432,16 +2427,16 @@ async fn provider_for_connection<C: CredentialStore>(
             let endpoint = url::Url::parse(&connection.endpoint)
                 .map_err(|_| "Google Photos endpoint must be a valid URL".to_owned())?;
             let photos = GooglePhotosProvider::connect_with_credentials(
-                GooglePhotosConfig { endpoint },
-                GooglePhotosCredentials {
-                    access_token: stored.access_token.clone(),
-                    refresh_token: stored.refresh_token.clone(),
-                    client_id: stored.client_id.clone().or(configuration.client_id.clone()),
-                    client_secret: Some(google_oauth_client_secret()?.to_owned()),
-                    expires_at: stored.expires_at,
-                },
-            )
-            .map_err(|error| error.to_string())?;
+                    GooglePhotosConfig { endpoint },
+                    GooglePhotosCredentials {
+                        access_token: stored.access_token.clone(),
+                        refresh_token: stored.refresh_token.clone(),
+                        client_id: stored.client_id.clone().or(configuration.client_id.clone()),
+                        client_secret: Some(google_oauth_client_secret()?.to_owned()),
+                        expires_at: stored.expires_at,
+                    },
+                )
+                .map_err(|error| error.to_string())?;
             let legacy = configuration
                 .legacy_folder_id
                 .map(|root_folder_id| {
