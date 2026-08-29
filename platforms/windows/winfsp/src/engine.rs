@@ -652,6 +652,7 @@ mod tests {
         list_calls: AtomicUsize,
         stat_calls: AtomicUsize,
         read_calls: AtomicUsize,
+        write_calls: AtomicUsize,
         replace_calls: AtomicUsize,
         advertised_size: Option<usize>,
         list_size_unknown: bool,
@@ -823,6 +824,7 @@ mod tests {
         }
 
         async fn write(&self, mut request: WriteRequest) -> Result<RemoteMetadata, StorageError> {
+            self.write_calls.fetch_add(1, Ordering::Relaxed);
             let mut data = Vec::new();
             while let Some(chunk) = request.content.next().await {
                 data.extend_from_slice(&chunk?);
@@ -1061,6 +1063,22 @@ mod tests {
 
         filesystem.flush(&handle).await.unwrap();
         assert_eq!(provider.contents("notes.txt").await, b"hello Rust!");
+    }
+
+    #[tokio::test]
+    async fn opening_without_changes_does_not_upload() {
+        let provider = Arc::new(MemoryProvider::default());
+        provider.insert("document.docx", b"original export").await;
+        let filesystem = RemoteFilesystem::new(provider.clone());
+        let handle = filesystem
+            .open(RemotePath::parse("document.docx").unwrap(), true)
+            .await
+            .unwrap();
+
+        filesystem.flush(&handle).await.unwrap();
+
+        assert_eq!(provider.write_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(provider.contents("document.docx").await, b"original export");
     }
 
     #[tokio::test]

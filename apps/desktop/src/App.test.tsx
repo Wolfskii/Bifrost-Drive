@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { App, parseReleaseNotes } from "./App";
+import { App, ConnectionProviderIcon, parseReleaseNotes } from "./App";
 
 describe("App", () => {
     afterEach(() => cleanup());
@@ -14,6 +14,16 @@ describe("App", () => {
         expect(
             screen.getByRole("button", { name: /add connection/i }),
         ).toBeTruthy();
+    });
+
+    it("uses provider icons for saved connections", () => {
+        const { rerender } = render(
+            <ConnectionProviderIcon kind="GoogleDrive" />,
+        );
+        expect(screen.getByLabelText("Google Drive")).toBeTruthy();
+
+        rerender(<ConnectionProviderIcon kind="S3" />);
+        expect(screen.getByLabelText("S3 object storage")).toBeTruthy();
     });
 
     it("hides native mount controls when no filesystem integration is available", () => {
@@ -100,6 +110,13 @@ describe("App", () => {
         expect(
             screen.getByRole("button", { name: "Sign in with Google" }),
         ).toBeTruthy();
+        expect(
+            (
+                screen.getByRole("checkbox", {
+                    name: "Open Google Workspace files in OS native apps",
+                }) as HTMLInputElement
+            ).checked,
+        ).toBe(true);
         expect(
             (
                 screen.getByRole("button", {

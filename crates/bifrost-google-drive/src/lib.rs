@@ -14,8 +14,9 @@ use tokio::sync::Mutex;
 
 const FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 const FILE_FIELDS: &str =
-    "nextPageToken,files(id,name,mimeType,size,modifiedTime,md5Checksum,version)";
-const SINGLE_FILE_FIELDS: &str = "id,name,mimeType,size,modifiedTime,md5Checksum,version";
+    "nextPageToken,files(id,name,mimeType,size,modifiedTime,md5Checksum,version,webViewLink)";
+const SINGLE_FILE_FIELDS: &str =
+    "id,name,mimeType,size,modifiedTime,md5Checksum,version,webViewLink";
 const MAX_WORKSPACE_EXPORT_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const GOOGLE_DOC_MIME_TYPE: &str = "application/vnd.google-apps.document";
 const GOOGLE_SHEET_MIME_TYPE: &str = "application/vnd.google-apps.spreadsheet";
@@ -26,6 +27,13 @@ struct WorkspaceFormat {
     google_mime_type: &'static str,
     office_mime_type: &'static str,
     extension: &'static str,
+}
+
+#[derive(Clone, Copy)]
+enum WorkspaceSelector {
+    Binary,
+    Any,
+    Format(WorkspaceFormat),
 }
 
 const WORKSPACE_FORMATS: [WorkspaceFormat; 3] = [
@@ -47,10 +55,19 @@ const WORKSPACE_FORMATS: [WorkspaceFormat; 3] = [
     },
 ];
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceOpenMode {
+    #[default]
+    NativeApps,
+    Browser,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoogleDriveConfig {
     pub endpoint: Url,
     pub shared_drive_id: Option<String>,
+    pub workspace_open_mode: WorkspaceOpenMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +91,7 @@ pub struct GoogleDriveProvider {
     client: Client,
     endpoint: Url,
     shared_drive_id: Option<String>,
+    workspace_open_mode: WorkspaceOpenMode,
     session: Arc<Mutex<GoogleDriveSession>>,
     workspace_exports: Arc<Mutex<HashMap<String, CachedWorkspaceExport>>>,
 }
@@ -103,6 +121,8 @@ struct DriveFile {
     #[serde(rename = "md5Checksum")]
     md5_checksum: Option<String>,
     version: Option<String>,
+    #[serde(rename = "webViewLink")]
+    web_view_link: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -168,6 +188,7 @@ impl GoogleDriveProvider {
             client,
             endpoint: config.endpoint,
             shared_drive_id: config.shared_drive_id,
+            workspace_open_mode: config.workspace_open_mode,
             session: Arc::new(Mutex::new(GoogleDriveSession {
                 access_token: credentials.access_token,
                 refresh_token: credentials.refresh_token,
@@ -344,8 +365,10 @@ impl GoogleDriveProvider {
             });
         }
         let mut components = path.as_str().rsplitn(2, '/');
-        let (name, workspace_format) =
-            Self::remote_file_name(components.next().unwrap_or_default())?;
+        let (name, workspace_selector) = Self::remote_file_name(
+            components.next().unwrap_or_default(),
+            self.workspace_open_mode,
+        )?;
         let parent_path = components.next().unwrap_or_default();
         let parent = RemotePath::parse(parent_path).map_err(|error| StorageError::Provider {
             provider: ProviderKind::GoogleDrive,
@@ -359,11 +382,10 @@ impl GoogleDriveProvider {
         .await?
         .entries
         .into_iter()
-        .find(|file| {
-            workspace_format.map_or_else(
-                || Self::workspace_format(&file.mime_type).is_none(),
-                |format| file.mime_type == format.google_mime_type,
-            )
+        .find(|file| match workspace_selector {
+            WorkspaceSelector::Binary => Self::workspace_format(&file.mime_type).is_none(),
+            WorkspaceSelector::Any => Self::workspace_format(&file.mime_type).is_some(),
+            WorkspaceSelector::Format(format) => file.mime_type == format.google_mime_type,
         })
         .ok_or_else(|| StorageError::NotFound { path: path.clone() })
     }
@@ -372,8 +394,12 @@ impl GoogleDriveProvider {
         value.replace('\\', "\\\\").replace('\'', "\\'")
     }
 
-    fn entry_path(prefix: &RemotePath, file: &DriveFile) -> Result<RemotePath, StorageError> {
-        let name = Self::virtual_file_name(file);
+    fn entry_path(
+        prefix: &RemotePath,
+        file: &DriveFile,
+        open_mode: WorkspaceOpenMode,
+    ) -> Result<RemotePath, StorageError> {
+        let name = Self::virtual_file_name(file, open_mode);
         let path = if prefix.as_str().is_empty() {
             name
         } else {
@@ -392,18 +418,26 @@ impl GoogleDriveProvider {
             .find(|format| format.google_mime_type == mime_type)
     }
 
-    fn virtual_file_name(file: &DriveFile) -> String {
+    fn virtual_file_name(file: &DriveFile, open_mode: WorkspaceOpenMode) -> String {
         let mut name = Self::encode_path_component(&file.name);
         if let Some(format) = Self::workspace_format(&file.mime_type) {
-            name.push_str(format.extension);
+            name.push_str(match open_mode {
+                WorkspaceOpenMode::NativeApps => format.extension,
+                WorkspaceOpenMode::Browser => ".url",
+            });
             return name;
         }
         let lowercase = name.to_ascii_lowercase();
-        if let Some(format) = WORKSPACE_FORMATS
-            .iter()
-            .find(|format| lowercase.ends_with(format.extension))
-        {
-            let extension_start = name.len() - format.extension.len();
+        let collision_extension = match open_mode {
+            WorkspaceOpenMode::NativeApps => WORKSPACE_FORMATS.iter().find_map(|format| {
+                lowercase
+                    .ends_with(format.extension)
+                    .then_some(format.extension)
+            }),
+            WorkspaceOpenMode::Browser => lowercase.ends_with(".url").then_some(".url"),
+        };
+        if let Some(extension) = collision_extension {
+            let extension_start = name.len() - extension.len();
             name.replace_range(extension_start..extension_start + 1, "%2E");
         }
         name
@@ -411,29 +445,48 @@ impl GoogleDriveProvider {
 
     fn remote_file_name(
         component: &str,
-    ) -> Result<(String, Option<WorkspaceFormat>), StorageError> {
+        open_mode: WorkspaceOpenMode,
+    ) -> Result<(String, WorkspaceSelector), StorageError> {
         let lowercase = component.to_ascii_lowercase();
-        if let Some(format) = WORKSPACE_FORMATS
-            .iter()
-            .copied()
-            .find(|format| lowercase.ends_with(format.extension))
-        {
-            let name = &component[..component.len() - format.extension.len()];
-            return Ok((Self::decode_path_component(name)?, Some(format)));
+        match open_mode {
+            WorkspaceOpenMode::NativeApps => {
+                if let Some(format) = WORKSPACE_FORMATS
+                    .iter()
+                    .copied()
+                    .find(|format| lowercase.ends_with(format.extension))
+                {
+                    let name = &component[..component.len() - format.extension.len()];
+                    return Ok((
+                        Self::decode_path_component(name)?,
+                        WorkspaceSelector::Format(format),
+                    ));
+                }
+            }
+            WorkspaceOpenMode::Browser if lowercase.ends_with(".url") => {
+                let name = &component[..component.len() - ".url".len()];
+                return Ok((Self::decode_path_component(name)?, WorkspaceSelector::Any));
+            }
+            WorkspaceOpenMode::Browser => {}
         }
-        Ok((Self::decode_path_component(component)?, None))
+        Ok((
+            Self::decode_path_component(component)?,
+            WorkspaceSelector::Binary,
+        ))
     }
 
     fn remote_destination_name(
         component: &str,
         workspace_format: Option<WorkspaceFormat>,
+        open_mode: WorkspaceOpenMode,
     ) -> Result<String, StorageError> {
-        if let Some(format) = workspace_format
-            .filter(|format| component.to_ascii_lowercase().ends_with(format.extension))
+        let virtual_extension = workspace_format.map(|format| match open_mode {
+            WorkspaceOpenMode::NativeApps => format.extension,
+            WorkspaceOpenMode::Browser => ".url",
+        });
+        if let Some(extension) = virtual_extension
+            .filter(|extension| component.to_ascii_lowercase().ends_with(extension))
         {
-            return Self::decode_path_component(
-                &component[..component.len() - format.extension.len()],
-            );
+            return Self::decode_path_component(&component[..component.len() - extension.len()]);
         }
         Self::decode_path_component(component)
     }
@@ -629,6 +682,16 @@ impl GoogleDriveProvider {
         Ok(content.slice(start..end.max(start)))
     }
 
+    fn workspace_browser_shortcut(file: &DriveFile) -> Bytes {
+        let url = file.web_view_link.clone().unwrap_or_else(|| {
+            let mut url =
+                Url::parse("https://drive.google.com/open").expect("Google Drive URL is valid");
+            url.query_pairs_mut().append_pair("id", &file.id);
+            url.into()
+        });
+        Bytes::from(format!("[InternetShortcut]\r\nURL={url}\r\n"))
+    }
+
     fn metadata(file: DriveFile, path: RemotePath) -> RemoteMetadata {
         RemoteMetadata {
             path,
@@ -670,7 +733,8 @@ impl GoogleDriveProvider {
     ) -> Result<(String, String), StorageError> {
         let mut components = path.as_str().rsplitn(2, '/');
         let component = components.next().unwrap_or_default();
-        let name = Self::remote_destination_name(component, workspace_format)?;
+        let name =
+            Self::remote_destination_name(component, workspace_format, self.workspace_open_mode)?;
         let parent_path =
             RemotePath::parse(components.next().unwrap_or_default()).map_err(|error| {
                 StorageError::Provider {
@@ -731,7 +795,7 @@ impl StorageProvider for GoogleDriveProvider {
             .entries
             .into_iter()
             .map(|file| {
-                let path = Self::entry_path(prefix, &file)?;
+                let path = Self::entry_path(prefix, &file, self.workspace_open_mode)?;
                 Ok(RemoteEntry {
                     metadata: Self::metadata(file, path),
                 })
@@ -755,7 +819,10 @@ impl StorageProvider for GoogleDriveProvider {
         }
         let file = self.resolve_file(path).await?;
         let export_size = if let Some(format) = Self::workspace_format(&file.mime_type) {
-            Some(self.workspace_export(&file, format).await?.len() as u64)
+            Some(match self.workspace_open_mode {
+                WorkspaceOpenMode::NativeApps => self.workspace_export(&file, format).await?.len(),
+                WorkspaceOpenMode::Browser => Self::workspace_browser_shortcut(&file).len(),
+            } as u64)
         } else {
             None
         };
@@ -776,8 +843,11 @@ impl StorageProvider for GoogleDriveProvider {
             });
         }
         if let Some(format) = Self::workspace_format(&file.mime_type) {
-            let content =
-                Self::workspace_range(self.workspace_export(&file, format).await?, request.range)?;
+            let content = match self.workspace_open_mode {
+                WorkspaceOpenMode::NativeApps => self.workspace_export(&file, format).await?,
+                WorkspaceOpenMode::Browser => Self::workspace_browser_shortcut(&file),
+            };
+            let content = Self::workspace_range(content, request.range)?;
             return Ok(Box::pin(stream::once(async move { Ok(content) })));
         }
         let mut request_builder = self.authorized(
@@ -820,6 +890,12 @@ impl StorageProvider for GoogleDriveProvider {
         let workspace_format = existing
             .as_ref()
             .and_then(|file| Self::workspace_format(&file.mime_type));
+        if workspace_format.is_some() && self.workspace_open_mode == WorkspaceOpenMode::Browser {
+            return Err(StorageError::Unsupported {
+                provider: ProviderKind::GoogleDrive,
+                capability: "write_workspace_browser_shortcut".to_owned(),
+            });
+        }
         if let (Some(file), Some(_)) = (existing.as_ref(), workspace_format) {
             let exports = self.workspace_exports.lock().await;
             let unchanged = exports
@@ -1046,6 +1122,12 @@ impl StorageProvider for GoogleDriveProvider {
             self.delete(to).await?;
             return self.rename(from, to).await;
         };
+        if self.workspace_open_mode == WorkspaceOpenMode::Browser {
+            return Err(StorageError::Unsupported {
+                provider: ProviderKind::GoogleDrive,
+                capability: "replace_workspace_browser_shortcut".to_owned(),
+            });
+        }
         let unchanged = self
             .workspace_exports
             .lock()
@@ -1142,7 +1224,7 @@ impl StorageProvider for GoogleDriveProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{DriveFile, GoogleDriveProvider, GOOGLE_DOC_MIME_TYPE};
+    use super::{DriveFile, GoogleDriveProvider, WorkspaceOpenMode, GOOGLE_DOC_MIME_TYPE};
     use bifrost_common::RemotePath;
     use bytes::Bytes;
     use std::collections::HashMap;
@@ -1156,6 +1238,7 @@ mod tests {
             modified_time: None,
             md5_checksum: None,
             version: None,
+            web_view_link: None,
         }
     }
 
@@ -1172,6 +1255,7 @@ mod tests {
         let path = GoogleDriveProvider::entry_path(
             &RemotePath::parse("documents").unwrap(),
             &file("report.txt", "text/plain"),
+            WorkspaceOpenMode::NativeApps,
         )
         .unwrap();
         assert_eq!(path.as_str(), "documents/report.txt");
@@ -1182,6 +1266,7 @@ mod tests {
         let path = GoogleDriveProvider::entry_path(
             &RemotePath::root(),
             &file(r#"Report: Q3/100% \ draft?.txt"#, "text/plain"),
+            WorkspaceOpenMode::NativeApps,
         )
         .unwrap();
 
@@ -1203,6 +1288,7 @@ mod tests {
             let path = GoogleDriveProvider::entry_path(
                 &RemotePath::root(),
                 &file(name, "application/octet-stream"),
+                WorkspaceOpenMode::NativeApps,
             )
             .unwrap();
             assert_eq!(path.as_str(), encoded);
@@ -1219,24 +1305,82 @@ mod tests {
         let binary_document = file("Project brief.docx", "application/octet-stream");
 
         assert_eq!(
-            GoogleDriveProvider::entry_path(&RemotePath::root(), &document)
-                .unwrap()
-                .as_str(),
+            GoogleDriveProvider::entry_path(
+                &RemotePath::root(),
+                &document,
+                WorkspaceOpenMode::NativeApps,
+            )
+            .unwrap()
+            .as_str(),
             "Project brief.docx"
         );
         assert_eq!(
-            GoogleDriveProvider::entry_path(&RemotePath::root(), &binary_document)
-                .unwrap()
-                .as_str(),
+            GoogleDriveProvider::entry_path(
+                &RemotePath::root(),
+                &binary_document,
+                WorkspaceOpenMode::NativeApps,
+            )
+            .unwrap()
+            .as_str(),
             "Project brief%2Edocx"
         );
 
-        let (name, format) = GoogleDriveProvider::remote_file_name("Project brief.docx").unwrap();
+        let (name, selector) = GoogleDriveProvider::remote_file_name(
+            "Project brief.docx",
+            WorkspaceOpenMode::NativeApps,
+        )
+        .unwrap();
         assert_eq!(name, "Project brief");
-        assert_eq!(format.unwrap().google_mime_type, GOOGLE_DOC_MIME_TYPE);
-        let (name, format) = GoogleDriveProvider::remote_file_name("Project brief%2Edocx").unwrap();
+        assert!(
+            matches!(selector, super::WorkspaceSelector::Format(format) if format.google_mime_type == GOOGLE_DOC_MIME_TYPE)
+        );
+        let (name, selector) = GoogleDriveProvider::remote_file_name(
+            "Project brief%2Edocx",
+            WorkspaceOpenMode::NativeApps,
+        )
+        .unwrap();
         assert_eq!(name, "Project brief.docx");
-        assert!(format.is_none());
+        assert!(matches!(selector, super::WorkspaceSelector::Binary));
+    }
+
+    #[test]
+    fn browser_mode_exposes_workspace_files_as_google_shortcuts() {
+        let mut document = file("Project brief", GOOGLE_DOC_MIME_TYPE);
+        document.web_view_link = Some("https://docs.google.com/document/d/file-id/edit".to_owned());
+        let binary_shortcut = file("Project brief.url", "application/internet-shortcut");
+
+        assert_eq!(
+            GoogleDriveProvider::entry_path(
+                &RemotePath::root(),
+                &document,
+                WorkspaceOpenMode::Browser,
+            )
+            .unwrap()
+            .as_str(),
+            "Project brief.url"
+        );
+        assert_eq!(
+            GoogleDriveProvider::entry_path(
+                &RemotePath::root(),
+                &binary_shortcut,
+                WorkspaceOpenMode::Browser,
+            )
+            .unwrap()
+            .as_str(),
+            "Project brief%2Eurl"
+        );
+        assert_eq!(
+            GoogleDriveProvider::workspace_browser_shortcut(&document),
+            Bytes::from_static(
+                b"[InternetShortcut]\r\nURL=https://docs.google.com/document/d/file-id/edit\r\n"
+            )
+        );
+
+        let (name, selector) =
+            GoogleDriveProvider::remote_file_name("Project brief.url", WorkspaceOpenMode::Browser)
+                .unwrap();
+        assert_eq!(name, "Project brief");
+        assert!(matches!(selector, super::WorkspaceSelector::Any));
     }
 
     #[test]
@@ -1244,12 +1388,31 @@ mod tests {
         let format = GoogleDriveProvider::workspace_format(GOOGLE_DOC_MIME_TYPE).unwrap();
 
         assert_eq!(
-            GoogleDriveProvider::remote_destination_name("Renamed.docx", Some(format)).unwrap(),
+            GoogleDriveProvider::remote_destination_name(
+                "Renamed.docx",
+                Some(format),
+                WorkspaceOpenMode::NativeApps,
+            )
+            .unwrap(),
             "Renamed"
         );
         assert_eq!(
-            GoogleDriveProvider::remote_destination_name("Uploaded.docx", None).unwrap(),
+            GoogleDriveProvider::remote_destination_name(
+                "Uploaded.docx",
+                None,
+                WorkspaceOpenMode::NativeApps,
+            )
+            .unwrap(),
             "Uploaded.docx"
+        );
+        assert_eq!(
+            GoogleDriveProvider::remote_destination_name(
+                "Renamed.url",
+                Some(format),
+                WorkspaceOpenMode::Browser,
+            )
+            .unwrap(),
+            "Renamed"
         );
     }
 

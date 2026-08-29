@@ -88,6 +88,12 @@ pub struct CreateGoogleDriveConnectionRequest {
     pub drive_type: String,
     #[serde(default)]
     pub drive_icon: Option<String>,
+    #[serde(default = "default_google_workspace_open_mode")]
+    pub workspace_open_mode: String,
+}
+
+fn default_google_workspace_open_mode() -> String {
+    "native_apps".to_owned()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

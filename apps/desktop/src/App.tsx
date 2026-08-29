@@ -178,6 +178,29 @@ function ReleaseNotes({ body }: { body: string }) {
     );
 }
 
+export function ConnectionProviderIcon({
+    kind,
+}: {
+    kind: ConnectionSummary["kind"];
+}) {
+    switch (kind) {
+        case "GoogleDrive":
+            return <SiGoogledrive size={20} aria-label="Google Drive" />;
+        case "Nextcloud":
+            return <SiNextcloud size={20} aria-label="Nextcloud" />;
+        case "S3":
+            return <Database size={20} aria-label="S3 object storage" />;
+        case "Sftp":
+            return <LockKeyhole size={20} aria-label="SFTP" />;
+        case "WebDav":
+            return <Globe2 size={20} aria-label="WebDAV" />;
+        case "Ftp":
+            return <Server size={20} aria-label="FTP" />;
+        case "Smb":
+            return <Network size={20} aria-label="SMB" />;
+    }
+}
+
 function CommandBox({ label, command }: { label: string; command: string }) {
     const [copied, setCopied] = useState(false);
 
@@ -962,6 +985,8 @@ export function App() {
                     : "",
                 mountOnStartup: configuration.mount_on_startup !== false,
                 mountRoot: String(configuration.mount_root ?? defaultMountRoot),
+                openWorkspaceInNativeApps:
+                    configuration.workspace_open_mode !== "browser",
             });
             const configuredIcon = String(configuration.drive_icon ?? "system");
             const builtInIcon =
@@ -1047,6 +1072,10 @@ export function App() {
             values.get("mountRoot") ?? mountRoot,
         ).trim();
         const mountOnStartup = values.get("mountOnStartup") === "on";
+        const workspaceOpenMode =
+            values.get("openWorkspaceInNativeApps") === "on"
+                ? "native_apps"
+                : "browser";
         const selectedDriveType = String(
             values.get("driveType") ?? "network",
         ) as "network" | "local";
@@ -1063,7 +1092,11 @@ export function App() {
             driveType: selectedDriveType,
             driveIcon: selectedDriveIcon,
         };
-        if (providerChoice === "GoogleDrive" && !googleAuthorization) {
+        if (
+            providerChoice === "GoogleDrive" &&
+            !googleAuthorization &&
+            !editingConnection
+        ) {
             setError("Sign in with Google before mounting this connection.");
             return;
         }
@@ -1120,14 +1153,16 @@ export function App() {
                 };
             } else if (providerChoice === "GoogleDrive") {
                 updateEndpoint = "https://www.googleapis.com/drive/v3";
-                configuration = {};
-                credentials = {
-                    access_token:
-                        googleAuthorization?.access_token ??
-                        String(values.get("accessToken") ?? ""),
-                    refresh_token: googleAuthorization?.refresh_token ?? "",
-                    expires_at: googleAuthorization?.expires_at ?? null,
+                configuration = {
+                    workspace_open_mode: workspaceOpenMode,
                 };
+                credentials = googleAuthorization
+                    ? {
+                          access_token: googleAuthorization.access_token,
+                          refresh_token: googleAuthorization.refresh_token,
+                          expires_at: googleAuthorization.expires_at,
+                      }
+                    : {};
             } else {
                 configuration = {
                     region: String(values.get("region") ?? "").trim(),
@@ -1207,6 +1242,7 @@ export function App() {
                 mountRoot: selectedMountRoot,
                 driveType: selectedDriveType,
                 driveIcon: selectedDriveIcon,
+                workspaceOpenMode,
             };
             connectionOperation = createGoogleDriveConnection(form);
         } else {
@@ -1590,7 +1626,11 @@ export function App() {
                                                             alt=""
                                                         />
                                                     ) : (
-                                                        <Cloud size={20} />
+                                                        <ConnectionProviderIcon
+                                                            kind={
+                                                                connection.kind
+                                                            }
+                                                        />
                                                     )}
                                                 </div>
                                                 <div>
@@ -2488,6 +2528,20 @@ export function App() {
                                 )}
                             {providerChoice === "GoogleDrive" && (
                                 <>
+                                    <label className="checkbox-row settings-option">
+                                        <input
+                                            name="openWorkspaceInNativeApps"
+                                            type="checkbox"
+                                            defaultChecked={
+                                                formDefaults.openWorkspaceInNativeApps !==
+                                                false
+                                            }
+                                        />
+                                        <span>
+                                            Open Google Workspace files in OS
+                                            native apps
+                                        </span>
+                                    </label>
                                     <button
                                         className="secondary-button"
                                         type="button"
@@ -2586,7 +2640,8 @@ export function App() {
                                     disabled={
                                         saving ||
                                         (providerChoice === "GoogleDrive" &&
-                                            !googleAuthorization)
+                                            !googleAuthorization &&
+                                            !editingConnection)
                                     }
                                     type="submit"
                                 >

@@ -71,6 +71,7 @@ export interface GoogleDriveConnectionForm {
     mountRoot: string;
     driveType: "network" | "local";
     driveIcon: string;
+    workspaceOpenMode: "native_apps" | "browser";
 }
 
 export interface GoogleDriveAuthorization {
@@ -376,6 +377,7 @@ export async function createGoogleDriveConnection(
             mount_root: form.mountRoot || null,
             drive_type: form.driveType,
             drive_icon: form.driveIcon || null,
+            workspace_open_mode: form.workspaceOpenMode,
         },
     });
 }

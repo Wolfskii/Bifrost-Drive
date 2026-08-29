@@ -45,6 +45,10 @@ Google Workspace files appear as virtual Microsoft Office files so desktop appli
 
 Bifrost exports the document on open and imports edited Office content into the same native Google file on save. Google limits exported Workspace documents to 10 MB. Export and import can lose features that do not have an equivalent in both formats. Bifrost refuses save-back when the Google file version changed after it was opened, preventing an edited Office copy from silently overwriting newer online changes.
 
+The connection setting **Open Google Workspace files in OS native apps** is enabled by default. Disable it to expose Docs, Sheets, and Slides as read-only `.url` shortcuts instead; opening a shortcut launches the document's Google editor link in the default browser. Browser shortcuts are never imported into Google Drive.
+
+Opening and closing an Office alias without changing it does not upload or convert anything. Bifrost stages the exported file locally and only imports it after the operating system reports a content write, so the native Google document remains unchanged on a read-only open.
+
 To keep virtual names unambiguous, an ordinary uploaded file whose name already ends in `.docx`, `.xlsx`, or `.pptx` is displayed with its final dot encoded as `%2E`. Other native Google Workspace types remain metadata-only until an editable export format is implemented. A Google OAuth app in testing may also require the account to be listed as a test user.
 
 ## Troubleshooting

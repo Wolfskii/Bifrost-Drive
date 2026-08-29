@@ -18,7 +18,9 @@ use bifrost_core::Application;
 use bifrost_crypto::{CredentialError, CredentialRef, CredentialStore, SecretString};
 use bifrost_db::{ConflictRecord, ConnectionRecord, Database, SyncEntryRecord};
 use bifrost_ftp::{FtpConfig, FtpProvider};
-use bifrost_google_drive::{GoogleDriveConfig, GoogleDriveCredentials, GoogleDriveProvider};
+use bifrost_google_drive::{
+    GoogleDriveConfig, GoogleDriveCredentials, GoogleDriveProvider, WorkspaceOpenMode,
+};
 #[cfg(target_os = "linux")]
 use bifrost_linux_credentials::LinuxCredentialStore as WindowsCredentialStore;
 #[cfg(target_os = "linux")]
@@ -1842,6 +1844,9 @@ async fn connections_create_google_drive(
     }
     let endpoint = url::Url::parse(GOOGLE_DRIVE_ENDPOINT).expect("Google Drive endpoint is valid");
     let mut configuration = serde_json::json!({});
+    configuration["workspace_open_mode"] = serde_json::json!(parse_google_workspace_open_mode(
+        &request.workspace_open_mode
+    )?);
     if let Some(shared_drive_id) = request
         .shared_drive_id
         .as_deref()
@@ -1897,6 +1902,16 @@ struct GoogleDriveConfiguration {
     shared_drive_id: Option<String>,
     #[serde(default)]
     client_id: Option<String>,
+    #[serde(default)]
+    workspace_open_mode: WorkspaceOpenMode,
+}
+
+fn parse_google_workspace_open_mode(value: &str) -> Result<WorkspaceOpenMode, String> {
+    match value.trim() {
+        "" | "native_apps" => Ok(WorkspaceOpenMode::NativeApps),
+        "browser" => Ok(WorkspaceOpenMode::Browser),
+        _ => Err("Google Workspace open mode must be native_apps or browser".to_owned()),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2005,6 +2020,7 @@ async fn test_connection(
                 GoogleDriveConfig {
                     endpoint,
                     shared_drive_id: configuration.shared_drive_id,
+                    workspace_open_mode: configuration.workspace_open_mode,
                 },
                 GoogleDriveCredentials {
                     access_token: stored.access_token,
@@ -2208,6 +2224,7 @@ async fn provider_for_connection<C: CredentialStore>(
                     GoogleDriveConfig {
                         endpoint,
                         shared_drive_id: configuration.shared_drive_id,
+                        workspace_open_mode: configuration.workspace_open_mode,
                     },
                     GoogleDriveCredentials {
                         access_token: stored.access_token,
@@ -3798,9 +3815,10 @@ mod linux_mount_tests {
 #[cfg(test)]
 mod preferences_tests {
     use super::{
-        google_oauth_error_message, is_uninstall_quit_request, load_preferences, save_preferences,
-        AppPreferences,
+        google_oauth_error_message, is_uninstall_quit_request, load_preferences,
+        parse_google_workspace_open_mode, save_preferences, AppPreferences,
     };
+    use bifrost_google_drive::WorkspaceOpenMode;
 
     #[test]
     fn start_minimized_preference_round_trips() {
@@ -3831,6 +3849,19 @@ mod preferences_tests {
         assert!(message.contains("invalid_client"));
         assert!(message.contains("Desktop app"));
         assert!(!message.contains("authorization code="));
+    }
+
+    #[test]
+    fn google_workspace_open_mode_defaults_to_native_apps() {
+        assert_eq!(
+            parse_google_workspace_open_mode("").unwrap(),
+            WorkspaceOpenMode::NativeApps
+        );
+        assert_eq!(
+            parse_google_workspace_open_mode("browser").unwrap(),
+            WorkspaceOpenMode::Browser
+        );
+        assert!(parse_google_workspace_open_mode("embedded").is_err());
     }
 
     #[test]
