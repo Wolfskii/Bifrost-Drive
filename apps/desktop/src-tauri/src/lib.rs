@@ -14,7 +14,7 @@ use bifrost_api::{
     SyncRunResponse, TestConnectionRequest,
 };
 use bifrost_cache::{CacheManager, CacheRecord};
-use bifrost_common::{ConnectionState, ProviderKind};
+use bifrost_common::{ConnectionState, ProviderKind, RemotePath};
 use bifrost_core::Application;
 use bifrost_crypto::{CredentialError, CredentialRef, CredentialStore, SecretString};
 use bifrost_db::{ConflictRecord, ConnectionRecord, Database, SyncEntryRecord};
@@ -23,7 +23,8 @@ use bifrost_google_drive::{
     GoogleDriveConfig, GoogleDriveCredentials, GoogleDriveProvider, WorkspaceOpenMode,
 };
 use bifrost_google_photos::{
-    GooglePhotosConfig, GooglePhotosCredentials, GooglePhotosProvider, GOOGLE_PHOTOS_ENDPOINT,
+    GooglePhotosConfig, GooglePhotosCredentials, GooglePhotosProvider, HybridGooglePhotosProvider,
+    GOOGLE_PHOTOS_ENDPOINT,
 };
 #[cfg(target_os = "linux")]
 use bifrost_linux_credentials::LinuxCredentialStore as WindowsCredentialStore;
@@ -72,7 +73,7 @@ const GOOGLE_AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth
 const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 const GOOGLE_DRIVE_ENDPOINT: &str = "https://www.googleapis.com/drive/v3";
-const GOOGLE_PHOTOS_SCOPES: &str = "https://www.googleapis.com/auth/photoslibrary.appendonly https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata";
+const GOOGLE_PHOTOS_SCOPES: &str = "https://www.googleapis.com/auth/photoslibrary.appendonly https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata https://www.googleapis.com/auth/drive";
 
 #[cfg(target_os = "windows")]
 struct SyncRootRegistry(Mutex<HashMap<String, SyncRoot>>);
@@ -1918,6 +1919,64 @@ async fn connections_create_google_photos(
     let mut configuration = serde_json::json!({
         "client_id": google_oauth_client_id()?,
     });
+    let legacy_folder_id = request
+        .legacy_folder_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|folder_id| !folder_id.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            request
+                .legacy_folder_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+        });
+    let legacy_folder_id = match legacy_folder_id {
+        Some(folder_id)
+            if request
+                .legacy_folder_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty()) =>
+        {
+            Some(folder_id)
+        }
+        Some(path) => {
+            let resolver = GoogleDriveProvider::connect_with_credentials(
+                GoogleDriveConfig {
+                    endpoint: url::Url::parse(GOOGLE_DRIVE_ENDPOINT)
+                        .expect("Google Drive endpoint is valid"),
+                    shared_drive_id: None,
+                    root_folder_id: None,
+                    excluded_folder_ids: std::collections::BTreeSet::new(),
+                    workspace_open_mode: WorkspaceOpenMode::NativeApps,
+                },
+                GoogleDriveCredentials {
+                    access_token: request.access_token.clone(),
+                    refresh_token: request.refresh_token.clone(),
+                    client_id: Some(google_oauth_client_id()?.to_owned()),
+                    client_secret: Some(google_oauth_client_secret()?.to_owned()),
+                    expires_at: request.expires_at,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            let path = RemotePath::parse(&path).map_err(|error| error.to_string())?;
+            Some(
+                resolver
+                    .resolve_folder_path(&path)
+                    .await
+                    .map_err(|_| {
+                        "The legacy Google Photos folder was not found. Enter its Google Drive folder ID or leave the archive path blank."
+                            .to_owned()
+                    })?,
+            )
+        }
+        None => None,
+    };
+    if let Some(folder_id) = legacy_folder_id {
+        configuration["legacy_folder_id"] = serde_json::json!(folder_id);
+    }
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
     set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
@@ -1978,6 +2037,8 @@ struct GoogleDriveConfiguration {
 struct GooglePhotosConfiguration {
     #[serde(default)]
     client_id: Option<String>,
+    #[serde(default)]
+    legacy_folder_id: Option<String>,
 }
 
 fn parse_google_workspace_open_mode(value: &str) -> Result<WorkspaceOpenMode, String> {
@@ -2119,20 +2180,44 @@ async fn test_connection(
                     .map_err(|_| "Google Photos configuration is invalid".to_owned())?;
             let endpoint = url::Url::parse(&request.endpoint)
                 .map_err(|_| "Google Photos endpoint must be a valid URL".to_owned())?;
-            GooglePhotosProvider::connect_with_credentials(
+            let photos = GooglePhotosProvider::connect_with_credentials(
                 GooglePhotosConfig { endpoint },
                 GooglePhotosCredentials {
-                    access_token: stored.access_token,
-                    refresh_token: stored.refresh_token,
-                    client_id: stored.client_id.or(configuration.client_id),
+                    access_token: stored.access_token.clone(),
+                    refresh_token: stored.refresh_token.clone(),
+                    client_id: stored.client_id.clone().or(configuration.client_id.clone()),
                     client_secret: Some(google_oauth_client_secret()?.to_owned()),
                     expires_at: stored.expires_at,
                 },
             )
-            .map_err(|error| error.to_string())?
-            .test_connection()
-            .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+            let legacy = configuration
+                .legacy_folder_id
+                .map(|root_folder_id| {
+                    GoogleDriveProvider::connect_with_credentials(
+                        GoogleDriveConfig {
+                            endpoint: url::Url::parse(GOOGLE_DRIVE_ENDPOINT)
+                                .expect("Google Drive endpoint is valid"),
+                            shared_drive_id: None,
+                            root_folder_id: Some(root_folder_id),
+                            excluded_folder_ids: std::collections::BTreeSet::new(),
+                            workspace_open_mode: WorkspaceOpenMode::NativeApps,
+                        },
+                        GoogleDriveCredentials {
+                            access_token: stored.access_token.clone(),
+                            refresh_token: stored.refresh_token.clone(),
+                            client_id: stored.client_id.clone().or(configuration.client_id.clone()),
+                            client_secret: Some(google_oauth_client_secret()?.to_owned()),
+                            expires_at: stored.expires_at,
+                        },
+                    )
+                    .map_err(|error| error.to_string())
+                })
+                .transpose()?;
+            HybridGooglePhotosProvider::new(photos, legacy)
+                .test_connection()
+                .await
+                .map_err(|error| error.to_string())
         }
         ProviderKind::WebDav | ProviderKind::Nextcloud => {
             let endpoint = url::Url::parse(&request.endpoint)
@@ -2346,19 +2431,41 @@ async fn provider_for_connection<C: CredentialStore>(
                     .map_err(|_| "Google Photos configuration is invalid".to_owned())?;
             let endpoint = url::Url::parse(&connection.endpoint)
                 .map_err(|_| "Google Photos endpoint must be a valid URL".to_owned())?;
-            Ok(Box::new(
-                GooglePhotosProvider::connect_with_credentials(
-                    GooglePhotosConfig { endpoint },
-                    GooglePhotosCredentials {
-                        access_token: stored.access_token,
-                        refresh_token: stored.refresh_token,
-                        client_id: stored.client_id.or(configuration.client_id),
-                        client_secret: Some(google_oauth_client_secret()?.to_owned()),
-                        expires_at: stored.expires_at,
-                    },
-                )
-                .map_err(|error| error.to_string())?,
-            ))
+            let photos = GooglePhotosProvider::connect_with_credentials(
+                GooglePhotosConfig { endpoint },
+                GooglePhotosCredentials {
+                    access_token: stored.access_token.clone(),
+                    refresh_token: stored.refresh_token.clone(),
+                    client_id: stored.client_id.clone().or(configuration.client_id.clone()),
+                    client_secret: Some(google_oauth_client_secret()?.to_owned()),
+                    expires_at: stored.expires_at,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            let legacy = configuration
+                .legacy_folder_id
+                .map(|root_folder_id| {
+                    GoogleDriveProvider::connect_with_credentials(
+                        GoogleDriveConfig {
+                            endpoint: url::Url::parse(GOOGLE_DRIVE_ENDPOINT)
+                                .expect("Google Drive endpoint is valid"),
+                            shared_drive_id: None,
+                            root_folder_id: Some(root_folder_id),
+                            excluded_folder_ids: std::collections::BTreeSet::new(),
+                            workspace_open_mode: WorkspaceOpenMode::NativeApps,
+                        },
+                        GoogleDriveCredentials {
+                            access_token: stored.access_token.clone(),
+                            refresh_token: stored.refresh_token.clone(),
+                            client_id: stored.client_id.clone().or(configuration.client_id.clone()),
+                            client_secret: Some(google_oauth_client_secret()?.to_owned()),
+                            expires_at: stored.expires_at,
+                        },
+                    )
+                    .map_err(|error| error.to_string())
+                })
+                .transpose()?;
+            Ok(Box::new(HybridGooglePhotosProvider::new(photos, legacy)))
         }
         ProviderKind::WebDav | ProviderKind::Nextcloud => {
             let stored: WebDavCredentials = serde_json::from_str(secret.expose())

@@ -1013,6 +1013,7 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "bifrost-common",
+ "bifrost-google-drive",
  "bifrost-storage",
  "bytes",
  "chrono",

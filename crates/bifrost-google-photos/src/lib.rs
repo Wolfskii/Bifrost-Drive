@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use bifrost_common::{Capability, CapabilitySet, ProviderKind, RemoteMetadata, RemotePath};
+use bifrost_google_drive::GoogleDriveProvider;
 use bifrost_storage::{
     ByteStream, Page, ReadRequest, RemoteEntry, StorageError, StorageProvider, WriteRequest,
 };
@@ -15,6 +16,7 @@ use url::Url;
 pub const GOOGLE_PHOTOS_ENDPOINT: &str = "https://photoslibrary.googleapis.com/v1";
 pub const ALL_PHOTOS_DIRECTORY: &str = "All Photos";
 pub const ALBUMS_DIRECTORY: &str = "Albums";
+pub const LEGACY_DIRECTORY: &str = "Legacy";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GooglePhotosConfig {
@@ -42,6 +44,46 @@ pub struct GooglePhotosProvider {
     client: Client,
     endpoint: Url,
     session: Arc<Mutex<GooglePhotosSession>>,
+}
+
+pub struct HybridGooglePhotosProvider {
+    photos: GooglePhotosProvider,
+    legacy: Option<GoogleDriveProvider>,
+}
+
+impl HybridGooglePhotosProvider {
+    pub fn new(photos: GooglePhotosProvider, legacy: Option<GoogleDriveProvider>) -> Self {
+        Self { photos, legacy }
+    }
+
+    fn legacy_path(path: &RemotePath) -> Result<RemotePath, StorageError> {
+        let mut components = path.as_str().split('/');
+        if components.next() != Some(LEGACY_DIRECTORY) {
+            return Err(StorageError::NotFound { path: path.clone() });
+        }
+        RemotePath::parse(&components.collect::<Vec<_>>().join("/"))
+            .map_err(|error| GooglePhotosProvider::provider_error(error.to_string()))
+    }
+
+    fn prefixed_legacy_metadata(metadata: RemoteMetadata) -> Result<RemoteMetadata, StorageError> {
+        Ok(RemoteMetadata {
+            path: RemotePath::parse(LEGACY_DIRECTORY)
+                .unwrap()
+                .join(metadata.path.as_str())
+                .map_err(|error| GooglePhotosProvider::provider_error(error.to_string()))?,
+            ..metadata
+        })
+    }
+
+    fn is_legacy(path: &RemotePath) -> bool {
+        path.as_str() == LEGACY_DIRECTORY || path.as_str().starts_with("Legacy/")
+    }
+
+    fn legacy_provider(&self, path: &RemotePath) -> Result<&GoogleDriveProvider, StorageError> {
+        self.legacy
+            .as_ref()
+            .ok_or_else(|| StorageError::NotFound { path: path.clone() })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -792,6 +834,179 @@ impl StorageProvider for GooglePhotosProvider {
         )
         .await?;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl StorageProvider for HybridGooglePhotosProvider {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::GooglePhotos
+    }
+
+    fn capabilities(&self) -> CapabilitySet {
+        let mut capabilities = self.photos.capabilities();
+        if let Some(legacy) = self.legacy.as_ref() {
+            capabilities = CapabilitySet::with(
+                capabilities
+                    .iter()
+                    .copied()
+                    .chain(legacy.capabilities().iter().copied()),
+            );
+        }
+        capabilities
+    }
+
+    fn capabilities_for_path(&self, path: &RemotePath) -> CapabilitySet {
+        if Self::is_legacy(path) {
+            return self
+                .legacy
+                .as_ref()
+                .map(|legacy| {
+                    legacy.capabilities_for_path(
+                        &Self::legacy_path(path).unwrap_or_else(|_| RemotePath::root()),
+                    )
+                })
+                .unwrap_or_default();
+        }
+        self.photos.capabilities_for_path(path)
+    }
+
+    async fn test_connection(&self) -> Result<(), StorageError> {
+        self.photos.test_connection().await?;
+        if let Some(legacy) = self.legacy.as_ref() {
+            legacy.test_connection().await?;
+        }
+        Ok(())
+    }
+
+    async fn list(
+        &self,
+        prefix: &RemotePath,
+        cursor: Option<&str>,
+    ) -> Result<Page<RemoteEntry>, StorageError> {
+        if prefix == &RemotePath::root() {
+            let mut page = self.photos.list(prefix, cursor).await?;
+            if self.legacy.is_some() && cursor.is_none() {
+                page.entries.push(RemoteEntry {
+                    metadata: GooglePhotosProvider::root_metadata(
+                        RemotePath::parse(LEGACY_DIRECTORY).unwrap(),
+                    ),
+                });
+            }
+            return Ok(page);
+        }
+        if Self::is_legacy(prefix) {
+            let legacy = self.legacy_provider(prefix)?;
+            let path = Self::legacy_path(prefix)?;
+            let page = legacy.list(&path, cursor).await?;
+            return Ok(Page {
+                entries: page
+                    .entries
+                    .into_iter()
+                    .map(|entry| {
+                        Ok(RemoteEntry {
+                            metadata: Self::prefixed_legacy_metadata(entry.metadata)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, StorageError>>()?,
+                next_cursor: page.next_cursor,
+            });
+        }
+        self.photos.list(prefix, cursor).await
+    }
+
+    async fn stat(&self, path: &RemotePath) -> Result<RemoteMetadata, StorageError> {
+        if path.as_str() == LEGACY_DIRECTORY {
+            self.legacy_provider(path)?;
+            return Ok(GooglePhotosProvider::root_metadata(path.clone()));
+        }
+        if Self::is_legacy(path) {
+            return Self::prefixed_legacy_metadata(
+                self.legacy_provider(path)?
+                    .stat(&Self::legacy_path(path)?)
+                    .await?,
+            );
+        }
+        self.photos.stat(path).await
+    }
+
+    async fn read(&self, request: ReadRequest) -> Result<ByteStream, StorageError> {
+        if Self::is_legacy(&request.path) {
+            return self
+                .legacy_provider(&request.path)?
+                .read(ReadRequest {
+                    path: Self::legacy_path(&request.path)?,
+                    range: request.range,
+                })
+                .await;
+        }
+        self.photos.read(request).await
+    }
+
+    async fn write(&self, request: WriteRequest) -> Result<RemoteMetadata, StorageError> {
+        if Self::is_legacy(&request.path) {
+            let path = Self::legacy_path(&request.path)?;
+            let metadata = self
+                .legacy_provider(&request.path)?
+                .write(WriteRequest {
+                    path,
+                    content: request.content,
+                    size_bytes: request.size_bytes,
+                    modified_at: request.modified_at,
+                })
+                .await?;
+            return Self::prefixed_legacy_metadata(metadata);
+        }
+        self.photos.write(request).await
+    }
+
+    async fn delete(&self, path: &RemotePath) -> Result<(), StorageError> {
+        if Self::is_legacy(path) {
+            return self
+                .legacy_provider(path)?
+                .delete(&Self::legacy_path(path)?)
+                .await;
+        }
+        self.photos.delete(path).await
+    }
+
+    async fn create_directory(&self, path: &RemotePath) -> Result<(), StorageError> {
+        if Self::is_legacy(path) {
+            return self
+                .legacy_provider(path)?
+                .create_directory(&Self::legacy_path(path)?)
+                .await;
+        }
+        self.photos.create_directory(path).await
+    }
+
+    async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), StorageError> {
+        if Self::is_legacy(from) && Self::is_legacy(to) {
+            return self
+                .legacy_provider(from)?
+                .rename(&Self::legacy_path(from)?, &Self::legacy_path(to)?)
+                .await;
+        }
+        if Self::is_legacy(from) || Self::is_legacy(to) {
+            return Err(StorageError::Unsupported {
+                provider: self.kind(),
+                capability: "cross_source_rename".to_owned(),
+            });
+        }
+        self.photos.rename(from, to).await
+    }
+
+    async fn copy(&self, from: &RemotePath, to: &RemotePath) -> Result<(), StorageError> {
+        if Self::is_legacy(from) && Self::is_legacy(to) {
+            return self
+                .legacy_provider(from)?
+                .copy(&Self::legacy_path(from)?, &Self::legacy_path(to)?)
+                .await;
+        }
+        Err(StorageError::Unsupported {
+            provider: self.kind(),
+            capability: "cross_source_copy".to_owned(),
+        })
     }
 }
 

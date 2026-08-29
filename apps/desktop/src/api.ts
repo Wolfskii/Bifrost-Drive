@@ -92,6 +92,8 @@ export interface GooglePhotosConnectionForm {
     accessToken: string;
     refreshToken: string | null;
     expiresAt: number | null;
+    legacyFolderId: string;
+    legacyFolderPath: string;
     driveLetter: string;
     mountOnStartup: boolean;
     mountRoot: string;
@@ -390,6 +392,8 @@ export async function createGoogleDriveConnection(
             access_token: form.accessToken,
             refresh_token: form.refreshToken,
             expires_at: form.expiresAt,
+            legacy_folder_id: form.legacyFolderId || null,
+            legacy_folder_path: form.legacyFolderPath || null,
             shared_drive_id: null,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,

@@ -177,6 +177,15 @@ describe("App", () => {
             screen.getByText(/only media and albums created by Bifrost/i),
         ).toBeTruthy();
         expect(screen.queryByLabelText("Endpoint")).toBeNull();
+        expect(screen.queryByLabelText("Username")).toBeNull();
+        expect(screen.queryByLabelText("Password")).toBeNull();
+        expect(
+            (
+                screen.getByLabelText(
+                    "Legacy Google Drive folder path",
+                ) as HTMLInputElement
+            ).value,
+        ).toBe("Fritid/Google Foto");
     });
 
     it("shows the start-minimized tray setting", () => {

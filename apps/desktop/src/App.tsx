@@ -1011,6 +1011,8 @@ export function App() {
                 mountRoot: String(configuration.mount_root ?? defaultMountRoot),
                 openWorkspaceInNativeApps:
                     configuration.workspace_open_mode !== "browser",
+                legacyFolderId: String(configuration.legacy_folder_id ?? ""),
+                legacyFolderPath: "",
             });
             const configuredIcon = String(configuration.drive_icon ?? "system");
             const builtInIcon =
@@ -1272,6 +1274,8 @@ export function App() {
                     String(values.get("accessToken") ?? ""),
                 refreshToken: googleAuthorization?.refresh_token ?? null,
                 expiresAt: googleAuthorization?.expires_at ?? null,
+                legacyFolderId: String(values.get("legacyFolderId") ?? "").trim(),
+                legacyFolderPath: String(values.get("legacyFolderPath") ?? "").trim(),
                 driveLetter,
                 mountOnStartup,
                 mountRoot: selectedMountRoot,
@@ -2556,7 +2560,8 @@ export function App() {
                                 </>
                             )}
                             {providerChoice !== "S3" &&
-                                providerChoice !== "GoogleDrive" && (
+                                providerChoice !== "GoogleDrive" &&
+                                providerChoice !== "GooglePhotos" && (
                                     <div className="form-grid">
                                         <label>
                                             Username
@@ -2646,6 +2651,27 @@ export function App() {
                             )}
                             {providerChoice === "GooglePhotos" && (
                                 <>
+                                    <label>
+                                        Legacy Google Drive folder ID
+                                        <input
+                                            name="legacyFolderId"
+                                            defaultValue={
+                                                formDefaults.legacyFolderId as string
+                                            }
+                                            placeholder="Optional: old Google Photos archive folder ID"
+                                        />
+                                    </label>
+                                    <label>
+                                        Legacy Google Drive folder path
+                                        <input
+                                            name="legacyFolderPath"
+                                            defaultValue={
+                                                (formDefaults.legacyFolderPath as string) ??
+                                                "Fritid/Google Foto"
+                                            }
+                                            placeholder="Fritid/Google Foto"
+                                        />
+                                    </label>
                                     <button
                                         className="secondary-button"
                                         type="button"
@@ -2667,8 +2693,11 @@ export function App() {
                                     <p className="legal-notice">
                                         Bifrost accesses only media and albums
                                         created by Bifrost through the official
-                                        Google Photos API. Files you add count
-                                        toward your Google storage. Read the{" "}
+                                        Google Photos API. Optionally, a legacy
+                                        Google Drive folder appears under
+                                        Legacy and retains Google Drive file
+                                        behavior. Files you add count toward
+                                        your Google storage. Read the{" "}
                                         <a
                                             href={PRIVACY_POLICY_URL}
                                             target="_blank"

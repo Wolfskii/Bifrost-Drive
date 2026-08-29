@@ -372,6 +372,10 @@ impl GoogleDriveProvider {
         Ok(parent_id)
     }
 
+    pub async fn resolve_folder_path(&self, path: &RemotePath) -> Result<String, StorageError> {
+        self.resolve_directory_id(path).await
+    }
+
     async fn resolve_file(&self, path: &RemotePath) -> Result<DriveFile, StorageError> {
         if path == &RemotePath::root() {
             return Err(StorageError::Provider {

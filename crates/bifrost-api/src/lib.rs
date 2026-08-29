@@ -109,6 +109,10 @@ pub struct CreateGooglePhotosConnectionRequest {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub expires_at: Option<i64>,
+    #[serde(default)]
+    pub legacy_folder_id: Option<String>,
+    #[serde(default)]
+    pub legacy_folder_path: Option<String>,
     pub drive_letter: Option<String>,
     pub mount_on_startup: bool,
     #[serde(default)]
