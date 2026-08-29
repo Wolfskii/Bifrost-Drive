@@ -638,10 +638,9 @@ mod tests {
 
     #[test]
     fn parses_storage_capacity_response() {
-        let storage: StorageResponse = serde_json::from_str(
-            r#"{"diskSizeRaw":1000,"diskAvailableRaw":750,"diskUseRaw":250}"#,
-        )
-        .unwrap();
+        let storage: StorageResponse =
+            serde_json::from_str(r#"{"diskSizeRaw":1000,"diskAvailableRaw":750,"diskUseRaw":250}"#)
+                .unwrap();
         assert_eq!(storage.disk_size_raw, 1_000);
         assert_eq!(storage.disk_available_raw, 750);
     }
