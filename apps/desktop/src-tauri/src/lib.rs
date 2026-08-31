@@ -928,7 +928,10 @@ fn set_drive_presentation(
 }
 
 #[cfg(target_os = "windows")]
-fn configured_drive_type(configuration_json: &str) -> Result<bool, String> {
+fn configured_drive_type(kind: ProviderKind, configuration_json: &str) -> Result<bool, String> {
+    if matches!(kind, ProviderKind::GoogleDrive | ProviderKind::Immich) {
+        return Ok(false);
+    }
     let configuration: serde_json::Value = serde_json::from_str(configuration_json)
         .map_err(|_| "Connection configuration is invalid".to_owned())?;
     Ok(configuration
@@ -1587,7 +1590,7 @@ async fn connections_update(
         }
     }
     #[cfg(target_os = "windows")]
-    if !configured_drive_type(&updated.configuration_json)? {
+    if !configured_drive_type(updated.kind, &updated.configuration_json)? {
         tokio::time::sleep(Duration::from_millis(150)).await;
         if let Err(error) = cleanup_bifrost_mount_points_for_share(&existing.name) {
             tracing::warn!(%error, "could not remove stale network metadata after local conversion");
@@ -2188,6 +2191,12 @@ struct WebDavCredentials {
 }
 
 #[derive(Debug, Deserialize)]
+struct WebDavConfiguration {
+    #[serde(default)]
+    root_path: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct SftpConfiguration {
     host: String,
     port: u16,
@@ -2365,12 +2374,15 @@ async fn test_connection(
         ProviderKind::WebDav | ProviderKind::Nextcloud => {
             let endpoint = url::Url::parse(&request.endpoint)
                 .map_err(|_| "WebDAV endpoint must be a valid URL".to_owned())?;
+            let configuration: WebDavConfiguration = serde_json::from_value(request.configuration)
+                .map_err(|_| "WebDAV configuration is invalid".to_owned())?;
             let stored: WebDavCredentials = serde_json::from_str(secret.expose())
                 .map_err(|_| "Stored WebDAV credential payload is invalid".to_owned())?;
             WebDavProvider::connect(
                 WebDavConfig {
                     endpoint,
                     username: stored.username,
+                    root_path: configuration.root_path,
                 },
                 stored.password,
             )
@@ -2628,6 +2640,9 @@ async fn provider_for_connection<C: CredentialStore>(
             ))
         }
         ProviderKind::WebDav | ProviderKind::Nextcloud => {
+            let configuration: WebDavConfiguration =
+                serde_json::from_str(&connection.configuration_json)
+                    .map_err(|_| "WebDAV configuration is invalid".to_owned())?;
             let stored: WebDavCredentials = serde_json::from_str(secret.expose())
                 .map_err(|_| "Stored WebDAV credential payload is invalid".to_owned())?;
             let endpoint = url::Url::parse(&connection.endpoint)
@@ -2637,6 +2652,7 @@ async fn provider_for_connection<C: CredentialStore>(
                     WebDavConfig {
                         endpoint,
                         username: stored.username,
+                        root_path: configuration.root_path,
                     },
                     stored.password,
                 )
@@ -2727,7 +2743,7 @@ async fn connections_create_webdav(
     ensure_drive_letter_unassigned(&database, request.drive_letter.as_deref(), None).await?;
     let endpoint = url::Url::parse(&request.endpoint)
         .map_err(|_| "WebDAV endpoint must be a valid URL".to_owned())?;
-    let mut configuration = serde_json::json!({});
+    let mut configuration = serde_json::json!({ "root_path": request.root_path.trim() });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
     set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
@@ -3576,10 +3592,8 @@ async fn drive_mount_register(
                 drive_letter: Some(format!("{drive_letter}:")),
             });
         }
-        let network_drive = configured_drive_type(&connection.configuration_json)?;
-        if network_drive {
-            cleanup_stale_bifrost_mount_points_for_share(&connection.name)?;
-        }
+        let network_drive = configured_drive_type(connection.kind, &connection.configuration_json)?;
+        cleanup_stale_bifrost_mount_points_for_share(&connection.name)?;
         let provider = provider_for_connection(&connection, credentials.inner()).await?;
         let data_dir = app
             .path()
@@ -4104,9 +4118,10 @@ fn is_bifrost_mount_point(entry: &str) -> bool {
 #[cfg(all(test, target_os = "windows"))]
 mod registry_tests {
     use super::{
-        is_bifrost_mount_point, is_stale_bifrost_mount_point_for_share, normalized_bifrost_share,
-        set_drive_presentation, shell32_icons, DriveMountRegistry,
+        configured_drive_type, is_bifrost_mount_point, is_stale_bifrost_mount_point_for_share,
+        normalized_bifrost_share, set_drive_presentation, shell32_icons, DriveMountRegistry,
     };
+    use bifrost_common::ProviderKind;
 
     #[test]
     fn drive_registry_recovers_from_poisoning() {
@@ -4152,6 +4167,15 @@ mod registry_tests {
         assert_eq!(configuration["drive_type"], "local");
         assert_eq!(configuration["drive_icon"], "bifrost");
         assert!(set_drive_presentation(&mut configuration, "portable", None).is_err());
+    }
+
+    #[test]
+    fn cloud_and_photo_providers_use_suffix_free_local_drives() {
+        let network_configuration = r#"{"drive_type":"network"}"#;
+
+        assert!(!configured_drive_type(ProviderKind::GoogleDrive, network_configuration).unwrap());
+        assert!(!configured_drive_type(ProviderKind::Immich, network_configuration).unwrap());
+        assert!(configured_drive_type(ProviderKind::S3, network_configuration).unwrap());
     }
 
     #[test]

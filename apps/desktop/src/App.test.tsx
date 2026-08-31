@@ -125,6 +125,21 @@ describe("App", () => {
         expect(screen.queryByLabelText("Private key path")).toBeNull();
 
         fireEvent.click(
+            screen.getByRole("combobox", { name: /storage type/i }),
+        );
+        fireEvent.click(screen.getByRole("option", { name: /WebDAV server/i }));
+
+        expect(
+            screen.getByRole("heading", { name: "Connect to WebDAV server" }),
+        ).toBeTruthy();
+        expect(screen.getByLabelText("Start path")).toBeTruthy();
+
+        fireEvent.click(
+            screen.getByRole("combobox", { name: /storage type/i }),
+        );
+        fireEvent.click(screen.getByRole("option", { name: /SFTP server/i }));
+
+        fireEvent.click(
             screen.getByRole("combobox", { name: /authentication/i }),
         );
         fireEvent.click(screen.getByRole("option", { name: /Private key/i }));

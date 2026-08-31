@@ -148,6 +148,8 @@ pub struct CreateImmichConnectionRequest {
 pub struct CreateWebDavConnectionRequest {
     pub name: String,
     pub endpoint: String,
+    #[serde(default)]
+    pub root_path: String,
     pub username: String,
     pub password: String,
     pub drive_letter: Option<String>,

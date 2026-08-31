@@ -16,6 +16,7 @@ fn integration_provider() -> Option<WebDavProvider> {
             WebDavConfig {
                 endpoint: Url::parse(&endpoint).unwrap(),
                 username: env::var("WEBDAV_USERNAME").unwrap_or_else(|_| "test".to_owned()),
+                root_path: env::var("WEBDAV_ROOT_PATH").unwrap_or_default(),
             },
             env::var("WEBDAV_PASSWORD").unwrap_or_else(|_| "test".to_owned()),
         )

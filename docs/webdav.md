@@ -1,3 +1,7 @@
 # WebDAV
 
 The WebDAV adapter is implemented with HTTPS/TLS verification by default, Basic Auth, PROPFIND metadata listing and quota capacity, streamed GET/PUT, DELETE, MOVE, MKCOL, COPY, LOCK/UNLOCK, and range reads. Capacity uses the RFC 4331 `quota-used-bytes` and `quota-available-bytes` properties when the server exposes both; otherwise capacity remains unknown. The pinned rclone integration fixture verifies connection testing, listing, upload, rename, directory creation, copy, lock acquisition/release, range download, and deletion. The desktop wizard can create and test WebDAV connections.
+
+The optional start path scopes the mounted Bifrost root to a directory below the WebDAV endpoint. For example, endpoint `https://dav.example.com/` with start path `data/projects` mounts `https://dav.example.com/data/projects`. Existing endpoint paths are preserved, leading and trailing slashes are normalized, and parent traversal is rejected.
+
+Drive capacity uses the standard WebDAV `quota-used-bytes` and `quota-available-bytes` properties. Servers that omit either property cannot expose a truthful total through WebDAV, so capacity remains unknown. For SFTPGo, configure a size quota for the user and run a quota scan to publish these properties; SFTP can report underlying filesystem capacity independently through `statvfs`.

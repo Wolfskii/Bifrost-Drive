@@ -6,6 +6,7 @@ use bifrost_storage::{
 };
 use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
+use percent_encoding::percent_decode_str;
 use quick_xml::{events::Event, Reader};
 use reqwest::{header, Client, Method, StatusCode, Url};
 use std::ops::Range;
@@ -14,6 +15,7 @@ use std::ops::Range;
 pub struct WebDavConfig {
     pub endpoint: Url,
     pub username: String,
+    pub root_path: String,
 }
 
 pub struct WebDavProvider {
@@ -34,6 +36,7 @@ impl WebDavProvider {
                 message: "WebDAV endpoint must use HTTP or HTTPS".to_owned(),
             });
         }
+        let endpoint = Self::endpoint_with_root_path(config.endpoint, &config.root_path)?;
         let client = Client::builder()
             .build()
             .map_err(|error| StorageError::Provider {
@@ -42,10 +45,33 @@ impl WebDavProvider {
             })?;
         Ok(Self {
             client,
-            endpoint: config.endpoint,
+            endpoint,
             username: config.username,
             password: password.into(),
         })
+    }
+
+    fn endpoint_with_root_path(mut endpoint: Url, root_path: &str) -> Result<Url, StorageError> {
+        let normalized = root_path.trim().replace('\\', "/");
+        let root = RemotePath::parse(normalized.trim_matches('/')).map_err(|error| {
+            StorageError::Provider {
+                provider: ProviderKind::WebDav,
+                message: format!("invalid WebDAV start path: {error}"),
+            }
+        })?;
+        if root.as_str().is_empty() {
+            return Ok(endpoint);
+        }
+        let mut segments = endpoint
+            .path_segments_mut()
+            .map_err(|_| StorageError::Provider {
+                provider: ProviderKind::WebDav,
+                message: "WebDAV endpoint cannot be used as a base path".to_owned(),
+            })?;
+        segments.pop_if_empty();
+        segments.extend(root.as_str().split('/'));
+        drop(segments);
+        Ok(endpoint)
     }
 
     fn url_for(&self, path: &RemotePath) -> Result<Url, StorageError> {
@@ -279,7 +305,30 @@ impl ParsedEntry {
         if relative.is_empty() {
             return Ok(None);
         }
-        let remote_path = RemotePath::parse(relative).map_err(|error| StorageError::Provider {
+        let decoded = relative
+            .split('/')
+            .map(|segment| {
+                percent_decode_str(segment)
+                    .decode_utf8()
+                    .map(|value| value.into_owned())
+                    .map_err(|error| StorageError::Provider {
+                        provider: ProviderKind::WebDav,
+                        message: format!("invalid UTF-8 in WebDAV href: {error}"),
+                    })
+                    .and_then(|value| {
+                        if value.contains(['/', '\\']) {
+                            return Err(StorageError::Provider {
+                                provider: ProviderKind::WebDav,
+                                message: "WebDAV href segment contains an encoded separator"
+                                    .to_owned(),
+                            });
+                        }
+                        Ok(value)
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join("/");
+        let remote_path = RemotePath::parse(&decoded).map_err(|error| StorageError::Provider {
             provider: ProviderKind::WebDav,
             message: error.to_string(),
         })?;
@@ -588,6 +637,27 @@ mod tests {
     }
 
     #[test]
+    fn decodes_percent_encoded_utf8_href_segments() {
+        let xml = br#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>https://dav.test/files/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response><d:response><d:href>https://dav.test/files/Bokm%C3%A4rken/Bl%C3%A5.txt</d:href><d:propstat><d:prop><d:getcontentlength>12</d:getcontentlength></d:prop></d:propstat></d:response></d:multistatus>"#;
+        let entries =
+            WebDavProvider::parse_multistatus(xml, &Url::parse("https://dav.test/files/").unwrap())
+                .unwrap();
+
+        assert_eq!(entries[0].metadata.path.as_str(), "Bokmärken/Blå.txt");
+    }
+
+    #[test]
+    fn rejects_percent_encoded_path_separators() {
+        let xml = br#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>https://dav.test/files/folder%2Fsecret.txt</d:href><d:propstat><d:prop><d:getcontentlength>12</d:getcontentlength></d:prop></d:propstat></d:response></d:multistatus>"#;
+
+        assert!(WebDavProvider::parse_multistatus(
+            xml,
+            &Url::parse("https://dav.test/files/").unwrap()
+        )
+        .is_err());
+    }
+
+    #[test]
     fn parses_dav_quota_capacity() {
         let xml = br#"<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop><d:quota-used-bytes>100</d:quota-used-bytes><d:quota-available-bytes>900</d:quota-available-bytes></d:prop></d:propstat></d:response></d:multistatus>"#;
         let capacity = WebDavProvider::parse_capacity(xml).unwrap().unwrap();
@@ -607,6 +677,7 @@ mod tests {
             WebDavConfig {
                 endpoint: Url::parse("sftp://dav.test").unwrap(),
                 username: "user".to_owned(),
+                root_path: String::new(),
             },
             "secret",
         );
@@ -619,6 +690,7 @@ mod tests {
             WebDavConfig {
                 endpoint: Url::parse("https://dav.test/files").unwrap(),
                 username: "user".to_owned(),
+                root_path: String::new(),
             },
             "secret",
         )
@@ -629,5 +701,44 @@ mod tests {
         assert_eq!(metadata.path, RemotePath::root());
         assert!(metadata.is_directory);
         assert_eq!(metadata.size_bytes, None);
+    }
+
+    #[test]
+    fn appends_normalized_start_path_to_existing_endpoint_path() {
+        let provider = WebDavProvider::connect(
+            WebDavConfig {
+                endpoint: Url::parse("https://dav.test/webdav/").unwrap(),
+                username: "user".to_owned(),
+                root_path: "/data/projects/".to_owned(),
+            },
+            "secret",
+        )
+        .unwrap();
+
+        assert_eq!(
+            provider.endpoint.as_str(),
+            "https://dav.test/webdav/data/projects"
+        );
+        assert_eq!(
+            provider
+                .url_for(&RemotePath::parse("report.txt").unwrap())
+                .unwrap()
+                .as_str(),
+            "https://dav.test/webdav/data/projects/report.txt"
+        );
+    }
+
+    #[test]
+    fn rejects_parent_traversal_in_start_path() {
+        let result = WebDavProvider::connect(
+            WebDavConfig {
+                endpoint: Url::parse("https://dav.test/").unwrap(),
+                username: "user".to_owned(),
+                root_path: "data/../private".to_owned(),
+            },
+            "secret",
+        );
+
+        assert!(result.is_err());
     }
 }

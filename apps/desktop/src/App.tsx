@@ -1057,7 +1057,12 @@ export function App() {
                 configuredIcon.startsWith("stock:") ||
                 configuredIcon.startsWith("shell32:");
             setDriveType(
-                configuration.drive_type === "local" ? "local" : "network",
+                connection.kind === "GoogleDrive" ||
+                    connection.kind === "Immich"
+                    ? "local"
+                    : configuration.drive_type === "local"
+                      ? "local"
+                      : "network",
             );
             setDriveIcon(builtInIcon ? configuredIcon : "custom");
             setCustomDriveIcon(builtInIcon ? "" : configuredIcon);
@@ -1139,9 +1144,11 @@ export function App() {
             values.get("openWorkspaceInNativeApps") === "on"
                 ? "native_apps"
                 : "browser";
-        const selectedDriveType = String(
-            values.get("driveType") ?? "network",
-        ) as "network" | "local";
+        const selectedDriveType =
+            providerChoice === "GoogleDrive" || providerChoice === "Immich"
+                ? "local"
+                : (String(values.get("driveType") ?? "network") as
+                      "network" | "local");
         const selectedDriveIcon =
             String(values.get("driveIcon") ?? "system") === "custom"
                 ? customDriveIcon
@@ -1185,7 +1192,9 @@ export function App() {
                     password: common.password,
                 };
             } else if (providerChoice === "WebDAV") {
-                configuration = {};
+                configuration = {
+                    root_path: String(values.get("rootPath") ?? "").trim(),
+                };
                 credentials = {
                     username: common.username,
                     password: common.password,
@@ -1297,6 +1306,7 @@ export function App() {
             connectionOperation = createWebDavConnection({
                 ...common,
                 endpoint: String(values.get("endpoint") ?? "").trim(),
+                rootPath: String(values.get("rootPath") ?? "").trim(),
                 driveLetter,
             });
         } else if (providerChoice === "SFTP") {
@@ -1339,8 +1349,12 @@ export function App() {
                     String(values.get("accessToken") ?? ""),
                 refreshToken: googleAuthorization?.refresh_token ?? null,
                 expiresAt: googleAuthorization?.expires_at ?? null,
-                legacyFolderId: String(values.get("legacyFolderId") ?? "").trim(),
-                legacyFolderPath: String(values.get("legacyFolderPath") ?? "").trim(),
+                legacyFolderId: String(
+                    values.get("legacyFolderId") ?? "",
+                ).trim(),
+                legacyFolderPath: String(
+                    values.get("legacyFolderPath") ?? "",
+                ).trim(),
                 driveLetter,
                 mountOnStartup,
                 mountRoot: selectedMountRoot,
@@ -2206,9 +2220,15 @@ export function App() {
                                 options={providerOptions}
                                 onChange={(value) => {
                                     setProviderSelection(value);
-                                    setProviderChoice(
-                                        providerChoiceFromSelection(value),
-                                    );
+                                    const choice =
+                                        providerChoiceFromSelection(value);
+                                    setProviderChoice(choice);
+                                    if (
+                                        choice === "GoogleDrive" ||
+                                        choice === "Immich"
+                                    ) {
+                                        setDriveType("local");
+                                    }
                                 }}
                             />
                             <label>
@@ -2232,24 +2252,35 @@ export function App() {
                                     onChange={setDriveLetter}
                                 />
                                 <div className="form-grid">
-                                    <CustomSelect
-                                        label="Drive type"
-                                        name="driveType"
-                                        value={driveType}
-                                        options={[
-                                            {
-                                                value: "network",
-                                                label: "Network location",
-                                                icon: <Network size={18} />,
-                                            },
-                                            {
-                                                value: "local",
-                                                label: "Local drive",
-                                                icon: <HardDrive size={18} />,
-                                            },
-                                        ]}
-                                        onChange={setDriveType}
-                                    />
+                                    {providerChoice !== "GoogleDrive" &&
+                                        providerChoice !== "Immich" && (
+                                            <CustomSelect
+                                                label="Drive type"
+                                                name="driveType"
+                                                value={driveType}
+                                                options={[
+                                                    {
+                                                        value: "network",
+                                                        label: "Network location",
+                                                        icon: (
+                                                            <Network
+                                                                size={18}
+                                                            />
+                                                        ),
+                                                    },
+                                                    {
+                                                        value: "local",
+                                                        label: "Local drive",
+                                                        icon: (
+                                                            <HardDrive
+                                                                size={18}
+                                                            />
+                                                        ),
+                                                    },
+                                                ]}
+                                                onChange={setDriveType}
+                                            />
+                                        )}
                                     <div
                                         className="drive-icon-field"
                                         ref={iconPickerRef}
@@ -2567,22 +2598,25 @@ export function App() {
                                     />
                                 </label>
                             )}
-                            {providerChoice === "SFTP" && (
+                            {(providerChoice === "SFTP" ||
+                                providerChoice === "WebDAV") && (
                                 <div className="form-grid">
-                                    <label>
-                                        Port
-                                        <input
-                                            name="port"
-                                            type="number"
-                                            min="1"
-                                            max="65535"
-                                            defaultValue={
-                                                (formDefaults.port as number) ??
-                                                22
-                                            }
-                                            required
-                                        />
-                                    </label>
+                                    {providerChoice === "SFTP" && (
+                                        <label>
+                                            Port
+                                            <input
+                                                name="port"
+                                                type="number"
+                                                min="1"
+                                                max="65535"
+                                                defaultValue={
+                                                    (formDefaults.port as number) ??
+                                                    22
+                                                }
+                                                required
+                                            />
+                                        </label>
+                                    )}
                                     <label>
                                         Start path
                                         <input
@@ -2590,7 +2624,11 @@ export function App() {
                                             defaultValue={
                                                 formDefaults.rootPath as string
                                             }
-                                            placeholder="documents/projects"
+                                            placeholder={
+                                                providerChoice === "WebDAV"
+                                                    ? "data"
+                                                    : "documents/projects"
+                                            }
                                         />
                                     </label>
                                 </div>
@@ -2745,7 +2783,9 @@ export function App() {
                                                 <input
                                                     name="password"
                                                     type="password"
-                                                    required={!editingConnection}
+                                                    required={
+                                                        !editingConnection
+                                                    }
                                                     placeholder={
                                                         editingConnection
                                                             ? "Leave blank to keep the current password"
@@ -2856,10 +2896,10 @@ export function App() {
                                         Bifrost accesses only media and albums
                                         created by Bifrost through the official
                                         Google Photos API. Optionally, a legacy
-                                        Google Drive folder appears under
-                                        Legacy and retains Google Drive file
-                                        behavior. Files you add count toward
-                                        your Google storage. Read the{" "}
+                                        Google Drive folder appears under Legacy
+                                        and retains Google Drive file behavior.
+                                        Files you add count toward your Google
+                                        storage. Read the{" "}
                                         <a
                                             href={PRIVACY_POLICY_URL}
                                             target="_blank"
@@ -2949,7 +2989,8 @@ export function App() {
                                     disabled={
                                         saving ||
                                         ((providerChoice === "GoogleDrive" ||
-                                            providerChoice === "GooglePhotos") &&
+                                            providerChoice ===
+                                                "GooglePhotos") &&
                                             !googleAuthorization &&
                                             !editingConnection)
                                     }

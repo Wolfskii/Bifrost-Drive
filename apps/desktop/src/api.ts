@@ -119,6 +119,7 @@ export interface ImmichConnectionForm {
 export interface WebDavConnectionForm {
     name: string;
     endpoint: string;
+    rootPath: string;
     username: string;
     password: string;
     driveLetter: string;
@@ -491,6 +492,7 @@ export async function createWebDavConnection(
     return invoke<ConnectionSummary>("connections_create_webdav", {
         request: {
             ...form,
+            root_path: form.rootPath,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
             mount_root: form.mountRoot || null,

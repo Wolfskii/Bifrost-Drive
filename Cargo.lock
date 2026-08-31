@@ -1184,6 +1184,7 @@ dependencies = [
  "bytes",
  "chrono",
  "futures-util",
+ "percent-encoding",
  "quick-xml 0.38.4",
  "reqwest 0.12.28",
  "tokio",
