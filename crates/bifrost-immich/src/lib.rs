@@ -333,7 +333,13 @@ impl ImmichProvider {
     }
 
     fn asset_name(asset: &Asset) -> String {
-        format!("{}--{}", encode_name(&asset.original_file_name), asset.id)
+        let name = encode_name(&asset.original_file_name);
+        match name.rsplit_once('.') {
+            Some((stem, extension)) if !stem.is_empty() && !extension.is_empty() => {
+                format!("{stem}--{}.{extension}", asset.id)
+            }
+            _ => format!("{name}--{}", asset.id),
+        }
     }
 
     fn album_name(album: &Album) -> String {
@@ -341,7 +347,8 @@ impl ImmichProvider {
     }
 
     fn id_from_component(component: &str) -> Option<&str> {
-        component.rsplit_once("--").map(|(_, id)| id)
+        let (_, suffix) = component.rsplit_once("--")?;
+        Some(suffix.split_once('.').map_or(suffix, |(id, _)| id))
     }
 
     fn range_header(range: Option<Range<u64>>) -> Result<Option<String>, StorageError> {
@@ -611,8 +618,8 @@ fn encode_name(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        encode_name, has_explicit_scheme, normalize_endpoint, ImmichCredentials, ImmichProvider,
-        SearchResponse, StorageResponse,
+        encode_name, has_explicit_scheme, normalize_endpoint, Asset, ImmichCredentials,
+        ImmichProvider, SearchResponse, StorageResponse,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -638,6 +645,27 @@ mod tests {
         assert_eq!(
             encode_name("holiday/100%\\original.jpg"),
             "holiday%2F100%25%5Coriginal.jpg"
+        );
+    }
+
+    #[test]
+    fn keeps_asset_identity_before_the_real_file_extension() {
+        let asset = Asset {
+            id: "a79bff4f-1455-4a2c-813a-eedf578d911d".to_owned(),
+            original_file_name: "IMG_0239.PNG".to_owned(),
+            original_file_size: None,
+            file_created_at: None,
+        };
+        let name = ImmichProvider::asset_name(&asset);
+
+        assert_eq!(name, "IMG_0239--a79bff4f-1455-4a2c-813a-eedf578d911d.PNG");
+        assert_eq!(
+            ImmichProvider::id_from_component(&name),
+            Some("a79bff4f-1455-4a2c-813a-eedf578d911d")
+        );
+        assert_eq!(
+            ImmichProvider::id_from_component("IMG_0239.PNG--a79bff4f-1455-4a2c-813a-eedf578d911d"),
+            Some("a79bff4f-1455-4a2c-813a-eedf578d911d")
         );
     }
 

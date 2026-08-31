@@ -22,6 +22,6 @@ The root contains:
 - `Photos`, containing all assets returned by Immich metadata search.
 - `Albums`, containing Immich albums and their assets.
 
-Asset names include the original filename and Immich asset ID so duplicate filenames remain addressable. Original asset downloads are streamed and range reads are supported.
+Asset names include the original filename and Immich asset ID so duplicate filenames remain addressable. The ID appears before the original extension, for example `IMG_0239--a79bff4f-1455-4a2c-813a-eedf578d911d.PNG`, so Explorer preserves the correct media type. Names from earlier releases with the ID after the extension remain readable. Original asset downloads are streamed and range reads are supported.
 
 Immich connections are read-only in this release. Creating, deleting, renaming, copying, moving, and replacing remote items are unsupported.

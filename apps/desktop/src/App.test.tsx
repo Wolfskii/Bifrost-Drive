@@ -4,6 +4,7 @@ import {
     App,
     ConnectionProviderIcon,
     parseReleaseNotes,
+    providerSelectionForKind,
     webUiUrlForConnection,
 } from "./App";
 
@@ -41,6 +42,13 @@ describe("App", () => {
 
         rerender(<ConnectionProviderIcon kind="S3" />);
         expect(screen.getByLabelText("S3 object storage")).toBeTruthy();
+    });
+
+    it("maps saved providers to connection wizard options", () => {
+        expect(providerSelectionForKind("GoogleDrive")).toBe("google-drive");
+        expect(providerSelectionForKind("Immich")).toBe("immich");
+        expect(providerSelectionForKind("Sftp")).toBe("SFTP");
+        expect(providerSelectionForKind("WebDav")).toBe("WebDAV");
     });
 
     it("maps browser-capable providers to their web interfaces", () => {

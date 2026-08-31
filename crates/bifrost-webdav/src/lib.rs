@@ -21,6 +21,7 @@ pub struct WebDavConfig {
 pub struct WebDavProvider {
     client: Client,
     endpoint: Url,
+    capacity_endpoint: Url,
     username: String,
     password: String,
 }
@@ -36,6 +37,7 @@ impl WebDavProvider {
                 message: "WebDAV endpoint must use HTTP or HTTPS".to_owned(),
             });
         }
+        let capacity_endpoint = config.endpoint.clone();
         let endpoint = Self::endpoint_with_root_path(config.endpoint, &config.root_path)?;
         let client = Client::builder()
             .build()
@@ -46,6 +48,7 @@ impl WebDavProvider {
         Ok(Self {
             client,
             endpoint,
+            capacity_endpoint,
             username: config.username,
             password: password.into(),
         })
@@ -495,7 +498,7 @@ impl StorageProvider for WebDavProvider {
             .send(
                 self.request(
                     Method::from_bytes(b"PROPFIND").unwrap(),
-                    self.endpoint.clone(),
+                    self.capacity_endpoint.clone(),
                 )
                 .header("Depth", "0")
                 .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
@@ -718,6 +721,10 @@ mod tests {
         assert_eq!(
             provider.endpoint.as_str(),
             "https://dav.test/webdav/data/projects"
+        );
+        assert_eq!(
+            provider.capacity_endpoint.as_str(),
+            "https://dav.test/webdav/"
         );
         assert_eq!(
             provider

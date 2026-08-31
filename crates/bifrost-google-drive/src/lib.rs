@@ -97,10 +97,10 @@ pub struct GoogleDriveProvider {
     client: Client,
     endpoint: Url,
     shared_drive_id: Option<String>,
-    root_folder_id: Option<String>,
     excluded_folder_ids: BTreeSet<String>,
     workspace_open_mode: WorkspaceOpenMode,
     session: Arc<Mutex<GoogleDriveSession>>,
+    directory_ids: Arc<Mutex<HashMap<String, String>>>,
     workspace_exports: Arc<Mutex<HashMap<String, CachedWorkspaceExport>>>,
 }
 
@@ -192,11 +192,18 @@ impl GoogleDriveProvider {
                 provider: ProviderKind::GoogleDrive,
                 message: error.to_string(),
             })?;
+        let root_id = config.root_folder_id.clone().unwrap_or_else(|| {
+            config
+                .shared_drive_id
+                .clone()
+                .unwrap_or_else(|| "root".to_owned())
+        });
+        let mut directory_ids = HashMap::new();
+        directory_ids.insert(String::new(), root_id);
         Ok(Self {
             client,
             endpoint: config.endpoint,
             shared_drive_id: config.shared_drive_id,
-            root_folder_id: config.root_folder_id,
             excluded_folder_ids: config.excluded_folder_ids,
             workspace_open_mode: config.workspace_open_mode,
             session: Arc::new(Mutex::new(GoogleDriveSession {
@@ -206,6 +213,7 @@ impl GoogleDriveProvider {
                 client_secret: credentials.client_secret,
                 expires_at: credentials.expires_at,
             })),
+            directory_ids: Arc::new(Mutex::new(directory_ids)),
             workspace_exports: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -324,7 +332,7 @@ impl GoogleDriveProvider {
             query_parameters.push(("corpora", "drive".to_owned()));
             query_parameters.push(("driveId", shared_drive_id.clone()));
         } else {
-            query_parameters.push(("corpora", "allDrives".to_owned()));
+            query_parameters.push(("corpora", "user".to_owned()));
         }
         let mut request = self
             .authorized(Method::GET, self.api_url("files")?, &access_token)
@@ -350,16 +358,30 @@ impl GoogleDriveProvider {
     }
 
     async fn resolve_directory_id(&self, path: &RemotePath) -> Result<String, StorageError> {
-        let mut parent_id = self.root_folder_id.clone().unwrap_or_else(|| {
-            self.shared_drive_id
-                .clone()
-                .unwrap_or_else(|| "root".to_owned())
-        });
+        if let Some(id) = self.directory_ids.lock().await.get(path.as_str()).cloned() {
+            return Ok(id);
+        }
+        let mut parent_id = self
+            .directory_ids
+            .lock()
+            .await
+            .get("")
+            .cloned()
+            .expect("Google Drive root ID is initialized");
+        let mut current_path = String::new();
         for component in path
             .as_str()
             .split('/')
             .filter(|component| !component.is_empty())
         {
+            if !current_path.is_empty() {
+                current_path.push('/');
+            }
+            current_path.push_str(component);
+            if let Some(id) = self.directory_ids.lock().await.get(&current_path).cloned() {
+                parent_id = id;
+                continue;
+            }
             let name = Self::decode_path_component(component)?;
             let page = self.list_children(&parent_id, Some(&name), None).await?;
             let folder = page
@@ -368,8 +390,22 @@ impl GoogleDriveProvider {
                 .find(|file| file.mime_type == FOLDER_MIME_TYPE)
                 .ok_or_else(|| StorageError::NotFound { path: path.clone() })?;
             parent_id = folder.id;
+            self.directory_ids
+                .lock()
+                .await
+                .insert(current_path.clone(), parent_id.clone());
         }
         Ok(parent_id)
+    }
+
+    async fn clear_directory_cache(&self) {
+        let mut cache = self.directory_ids.lock().await;
+        let root_id = cache
+            .get("")
+            .cloned()
+            .expect("Google Drive root ID is initialized");
+        cache.clear();
+        cache.insert(String::new(), root_id);
     }
 
     pub async fn resolve_folder_path(&self, path: &RemotePath) -> Result<String, StorageError> {
@@ -999,6 +1035,7 @@ impl StorageProvider for GoogleDriveProvider {
     async fn delete(&self, path: &RemotePath) -> Result<(), StorageError> {
         let access_token = self.access_token().await?;
         let file = self.resolve_file(path).await?;
+        let is_directory = file.mime_type == FOLDER_MIME_TYPE;
         let file_id = file.id;
         self.send(
             self.authorized(
@@ -1013,6 +1050,9 @@ impl StorageProvider for GoogleDriveProvider {
         )
         .await?;
         self.workspace_exports.lock().await.remove(&file_id);
+        if is_directory {
+            self.clear_directory_cache().await;
+        }
         Ok(())
     }
 
@@ -1069,20 +1109,30 @@ impl StorageProvider for GoogleDriveProvider {
                 message: "a remote item already exists at the destination".to_owned(),
             });
         }
-        self.send(
-            self.authorized(Method::POST, self.api_url("files")?, &access_token)
-                .query(&[("supportsAllDrives", "true")])
-                .json(&FileMutation {
-                    name: &name,
-                    mime_type: Some(FOLDER_MIME_TYPE),
-                    parents: Some(vec![&parent_id]),
-                })
-                .send()
-                .await
-                .map_err(Self::network_error)?,
-        )
-        .await
-        .map(|_| ())
+        let response = self
+            .send(
+                self.authorized(Method::POST, self.api_url("files")?, &access_token)
+                    .query(&[("supportsAllDrives", "true")])
+                    .query(&[("fields", SINGLE_FILE_FIELDS)])
+                    .json(&FileMutation {
+                        name: &name,
+                        mime_type: Some(FOLDER_MIME_TYPE),
+                        parents: Some(vec![&parent_id]),
+                    })
+                    .send()
+                    .await
+                    .map_err(Self::network_error)?,
+            )
+            .await?;
+        let directory = response
+            .json::<DriveFile>()
+            .await
+            .map_err(Self::network_error)?;
+        self.directory_ids
+            .lock()
+            .await
+            .insert(path.as_str().to_owned(), directory.id);
+        Ok(())
     }
 
     async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), StorageError> {
@@ -1131,8 +1181,11 @@ impl StorageProvider for GoogleDriveProvider {
                 request.query(&[("addParents", parent_id), ("removeParents", current_parent)]);
         }
         self.send(request.send().await.map_err(Self::network_error)?)
-            .await
-            .map(|_| ())
+            .await?;
+        if file.mime_type == FOLDER_MIME_TYPE {
+            self.clear_directory_cache().await;
+        }
+        Ok(())
     }
 
     async fn replace(&self, from: &RemotePath, to: &RemotePath) -> Result<(), StorageError> {
@@ -1220,6 +1273,7 @@ impl StorageProvider for GoogleDriveProvider {
                 message: "a remote item already exists at the destination".to_owned(),
             });
         }
+        let is_directory = file.mime_type == FOLDER_MIME_TYPE;
         self.send(
             self.authorized(
                 Method::POST,
@@ -1236,17 +1290,23 @@ impl StorageProvider for GoogleDriveProvider {
             .await
             .map_err(Self::network_error)?,
         )
-        .await
-        .map(|_| ())
+        .await?;
+        if is_directory {
+            self.clear_directory_cache().await;
+        }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DriveFile, GoogleDriveProvider, WorkspaceOpenMode, GOOGLE_DOC_MIME_TYPE};
+    use super::{
+        DriveFile, GoogleDriveConfig, GoogleDriveProvider, WorkspaceOpenMode, GOOGLE_DOC_MIME_TYPE,
+    };
     use bifrost_common::RemotePath;
     use bytes::Bytes;
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
+    use url::Url;
 
     fn file(name: &str, mime_type: &str) -> DriveFile {
         DriveFile {
@@ -1486,5 +1546,40 @@ mod tests {
         assert!(cache["first"].content.is_none());
         assert_eq!(cache["first"].version.as_deref(), Some("1"));
         assert_eq!(cache["second"].content.as_deref(), Some(b"5678".as_slice()));
+    }
+
+    #[tokio::test]
+    async fn resolves_cached_directory_ids_without_network_requests() {
+        let provider = GoogleDriveProvider::connect(
+            GoogleDriveConfig {
+                endpoint: Url::parse("https://www.googleapis.com/drive/v3").unwrap(),
+                shared_drive_id: None,
+                root_folder_id: Some("custom-root".to_owned()),
+                excluded_folder_ids: BTreeSet::new(),
+                workspace_open_mode: WorkspaceOpenMode::NativeApps,
+            },
+            "access-token",
+        )
+        .unwrap();
+        provider
+            .directory_ids
+            .lock()
+            .await
+            .insert("Projects/Bifrost".to_owned(), "bifrost-id".to_owned());
+
+        assert_eq!(
+            provider
+                .resolve_directory_id(&RemotePath::root())
+                .await
+                .unwrap(),
+            "custom-root"
+        );
+        assert_eq!(
+            provider
+                .resolve_directory_id(&RemotePath::parse("Projects/Bifrost").unwrap())
+                .await
+                .unwrap(),
+            "bifrost-id"
+        );
     }
 }

@@ -525,6 +525,30 @@ function providerChoiceFromSelection(value: string): ProviderChoice {
     return "S3";
 }
 
+export function providerSelectionForKind(
+    kind: ConnectionSummary["kind"],
+): string {
+    switch (kind) {
+        case "S3":
+            return "s3-0";
+        case "GoogleDrive":
+            return "google-drive";
+        case "GooglePhotos":
+            return "google-photos";
+        case "Immich":
+            return "immich";
+        case "Sftp":
+            return "SFTP";
+        case "WebDav":
+        case "Nextcloud":
+            return "WebDAV";
+        case "Ftp":
+            return "FTP";
+        case "Smb":
+            return "SMB";
+    }
+}
+
 export function App() {
     const [activeView, setActiveView] = useState<AppView>("connections");
     const [connections, setConnections] = useState<ConnectionSummary[]>([]);
@@ -1071,11 +1095,7 @@ export function App() {
             );
             setProviderChoice(providerChoiceFor(connection.kind));
             setGoogleAuthorization(null);
-            setProviderSelection(
-                connection.kind === "S3"
-                    ? "s3-0"
-                    : providerChoiceFor(connection.kind),
-            );
+            setProviderSelection(providerSelectionForKind(connection.kind));
             setDriveLetter(
                 configuration.drive_letter
                     ? `${String(configuration.drive_letter)}:`

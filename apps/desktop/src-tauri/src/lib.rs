@@ -63,7 +63,7 @@ use std::{
 };
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, State,
 };
 use tauri_plugin_opener::OpenerExt;
@@ -3835,11 +3835,28 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let open = MenuItemBuilder::with_id("open", "Open Bifrost Drive").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
-            let mut tray = TrayIconBuilder::new().menu(&menu);
+            let mut tray = TrayIconBuilder::new()
+                .menu(&menu)
+                .show_menu_on_left_click(false);
             if let Some(icon) = app.default_window_icon().cloned() {
                 tray = tray.icon(icon);
             }
-            tray.on_menu_event(|app, event| match event.id().as_ref() {
+            tray.on_tray_icon_event(|tray, event| {
+                if matches!(
+                    event,
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    }
+                ) {
+                    if let Some(window) = tray.app_handle().get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            })
+            .on_menu_event(|app, event| match event.id().as_ref() {
                 "open" => {
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();

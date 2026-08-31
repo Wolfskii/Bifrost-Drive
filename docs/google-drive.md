@@ -47,6 +47,8 @@ Bifrost exports the document on open and imports edited Office content into the 
 
 The connection setting **Open Google Workspace files in OS native apps** is enabled by default. Disable it to expose Docs, Sheets, and Slides as read-only `.url` shortcuts instead; opening a shortcut launches the document's Google editor link in the default browser. Browser shortcuts are never imported into Google Drive.
 
+Bifrost caches resolved Google Drive directory IDs for the lifetime of the connection, avoiding repeated API walks for every file operation in deep folders. Directory-changing mutations invalidate the cache. My Drive searches use the narrower user corpus; shared drives retain drive-scoped queries.
+
 Opening and closing an Office alias without changing it does not upload or convert anything. Bifrost stages the exported file locally and only imports it after the operating system reports a content write, so the native Google document remains unchanged on a read-only open.
 
 To keep virtual names unambiguous, an ordinary uploaded file whose name already ends in `.docx`, `.xlsx`, or `.pptx` is displayed with its final dot encoded as `%2E`. Other native Google Workspace types remain metadata-only until an editable export format is implemented. A Google OAuth app in testing may also require the account to be listed as a test user.
