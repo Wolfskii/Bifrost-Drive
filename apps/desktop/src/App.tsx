@@ -70,6 +70,7 @@ import {
     createGoogleDriveConnection,
     createGooglePhotosConnection,
     createImmichConnection,
+    createMegaConnection,
     createS3Connection,
     createSftpConnection,
     createSmbConnection,
@@ -105,6 +106,7 @@ import {
     GoogleDriveAuthorization,
     GooglePhotosConnectionForm,
     ImmichConnectionForm,
+    MegaConnectionForm,
     FilesystemIntegration,
     StockDriveIcon,
     UpdateInfo,
@@ -118,6 +120,7 @@ type ProviderChoice =
     | "GoogleDrive"
     | "GooglePhotos"
     | "Immich"
+    | "Mega"
     | "SFTP"
     | "WebDAV"
     | "FTP"
@@ -205,6 +208,8 @@ export function ConnectionProviderIcon({
             return <SiGooglephotos size={20} aria-label="Google Photos" />;
         case "Immich":
             return <SiImmich size={20} aria-label="Immich" />;
+        case "Mega":
+            return <SiMega size={20} aria-label="MEGA" />;
         case "Nextcloud":
             return <SiNextcloud size={20} aria-label="Nextcloud" />;
         case "S3":
@@ -503,7 +508,9 @@ const providerOptions: CustomSelectOption<string>[] = [
         label: label as string,
         group: "Cloud services",
         icon,
-        ...planned,
+        ...(value === "mega"
+            ? { description: "Encrypted cloud storage with email login" }
+            : planned),
     })),
     ...[
         ["github", "GitHub", <SiGithub size={19} />],
@@ -524,6 +531,7 @@ function providerChoiceFromSelection(value: string): ProviderChoice {
     if (value === "google-drive") return "GoogleDrive";
     if (value === "google-photos") return "GooglePhotos";
     if (value === "immich") return "Immich";
+    if (value === "mega") return "Mega";
     if (["SFTP", "WebDAV", "FTP", "SMB"].includes(value)) {
         return value as ProviderChoice;
     }
@@ -542,6 +550,8 @@ export function providerSelectionForKind(
             return "google-photos";
         case "Immich":
             return "immich";
+        case "Mega":
+            return "mega";
         case "Sftp":
             return "SFTP";
         case "WebDav":
@@ -1302,6 +1312,15 @@ export function App() {
                     email: String(values.get("email") ?? "").trim(),
                     password: String(values.get("password") ?? ""),
                 };
+            } else if (providerChoice === "Mega") {
+                updateEndpoint = "https://g.api.mega.co.nz";
+                configuration = {
+                    root_path: String(values.get("rootPath") ?? "").trim(),
+                };
+                credentials = {
+                    username: common.username,
+                    password: common.password,
+                };
             } else {
                 configuration = {
                     region: String(values.get("region") ?? "").trim(),
@@ -1333,6 +1352,19 @@ export function App() {
                 configuration,
                 credentials,
             });
+        } else if (providerChoice === "Mega") {
+            const form: MegaConnectionForm = {
+                name,
+                rootPath: String(values.get("rootPath") ?? "").trim(),
+                email: common.username,
+                password: common.password,
+                driveLetter,
+                mountOnStartup,
+                mountRoot: selectedMountRoot,
+                driveType: selectedDriveType,
+                driveIcon: selectedDriveIcon,
+            };
+            connectionOperation = createMegaConnection(form);
         } else if (providerChoice === "FTP") {
             connectionOperation = createFtpConnection({
                 ...common,
@@ -2598,6 +2630,7 @@ export function App() {
                             )}
                             {providerChoice !== "SFTP" &&
                                 providerChoice !== "FTP" &&
+                                providerChoice !== "Mega" &&
                                 providerChoice !== "GoogleDrive" &&
                                 providerChoice !== "GooglePhotos" && (
                                     <label>
@@ -2686,6 +2719,18 @@ export function App() {
                                         />
                                     </label>
                                 </>
+                            )}
+                            {providerChoice === "Mega" && (
+                                <label>
+                                    Start path
+                                    <input
+                                        name="rootPath"
+                                        defaultValue={
+                                            formDefaults.rootPath as string
+                                        }
+                                        placeholder="documents/projects"
+                                    />
+                                </label>
                             )}
                             {providerChoice === "SFTP" && (
                                 <label>
@@ -2811,7 +2856,9 @@ export function App() {
                                 providerChoice !== "Immich" && (
                                     <div className="form-grid">
                                         <label>
-                                            Username
+                                            {providerChoice === "Mega"
+                                                ? "Email"
+                                                : "Username"}
                                             <input
                                                 name="username"
                                                 required
@@ -3247,5 +3294,7 @@ function providerChoiceFor(kind: ConnectionSummary["kind"]): ProviderChoice {
             return "GooglePhotos";
         case "Immich":
             return "Immich";
+        case "Mega":
+            return "Mega";
     }
 }

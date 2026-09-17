@@ -13,6 +13,7 @@ Start with [architecture.md](architecture.md), then [development.md](development
 - [S3](s3.md)
 - [SFTP](sftp.md)
 - [FTP](ftp.md)
+- [MEGA](mega.md)
 - [SMB](smb.md)
 - [WebDAV](webdav.md)
 - [Nextcloud](nextcloud.md)

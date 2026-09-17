@@ -5,9 +5,10 @@ use base64::Engine;
 use bifrost_api::{
     ActivitySummary, AppStatus, ConnectionIdRequest, ConnectionSummary, CreateConnectionRequest,
     CreateFtpConnectionRequest, CreateGoogleDriveConnectionRequest,
-    CreateGooglePhotosConnectionRequest, CreateImmichConnectionRequest, CreateS3ConnectionRequest,
-    CreateSftpConnectionRequest, CreateSmbConnectionRequest, CreateWebDavConnectionRequest,
-    CredentialStoreStatus, CredentialSummary, DriveIconPreviewRequest, DriveMountRegisterRequest,
+    CreateGooglePhotosConnectionRequest, CreateImmichConnectionRequest,
+    CreateMegaConnectionRequest, CreateS3ConnectionRequest, CreateSftpConnectionRequest,
+    CreateSmbConnectionRequest, CreateWebDavConnectionRequest, CredentialStoreStatus,
+    CredentialSummary, DriveIconPreviewRequest, DriveMountRegisterRequest,
     DriveMountRegisterResponse, DriveMountStartupRequest, FilePage, FileSummary,
     GoogleDriveAuthorization, HydrateFileRequest, HydrateFileResponse, ListFilesRequest,
     StoreS3CredentialRequest, SyncReconcileRequest, SyncReconcileResponse, SyncRunRequest,
@@ -33,6 +34,7 @@ use bifrost_linux_credentials::LinuxCredentialStore as WindowsCredentialStore;
 use bifrost_linux_fuse::{FuseConfig, MountHandle};
 #[cfg(target_os = "macos")]
 use bifrost_macos_credentials::MacosCredentialStore as WindowsCredentialStore;
+use bifrost_mega::{MegaConfig, MegaProvider};
 use bifrost_s3::{S3Config, S3Provider};
 use bifrost_sftp::{SftpConfig, SftpProvider};
 use bifrost_smb::{SmbConfig, SmbProvider};
@@ -1440,6 +1442,11 @@ async fn connections_details(
             .map_err(|_| "Stored Immich credential payload is invalid".to_owned())?
             .email
             .unwrap_or_default(),
+        ProviderKind::Mega => {
+            serde_json::from_str::<WebDavCredentials>(secret.expose())
+                .map_err(|_| "Stored MEGA credential payload is invalid".to_owned())?
+                .username
+        }
         ProviderKind::S3 | ProviderKind::GoogleDrive | ProviderKind::GooglePhotos => String::new(),
     };
     #[cfg(target_os = "windows")]
@@ -2197,6 +2204,12 @@ struct WebDavConfiguration {
 }
 
 #[derive(Debug, Deserialize)]
+struct MegaConfiguration {
+    #[serde(default)]
+    root_path: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct FtpConfiguration {
     #[serde(default)]
     root_path: String,
@@ -2397,6 +2410,21 @@ async fn test_connection(
                 .test_connection()
                 .await
                 .map_err(|error| error.to_string())
+        }
+        ProviderKind::Mega => {
+            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored MEGA credential payload is invalid".to_owned())?;
+            let configuration: MegaConfiguration = serde_json::from_value(request.configuration)
+                .map_err(|_| "MEGA configuration is invalid".to_owned())?;
+            MegaProvider::connect(MegaConfig {
+                email: stored.username,
+                password: stored.password,
+                root_path: configuration.root_path,
+            })
+            .map_err(|error| error.to_string())?
+            .test_connection()
+            .await
+            .map_err(|error| error.to_string())
         }
         ProviderKind::WebDav | ProviderKind::Nextcloud => {
             let endpoint = url::Url::parse(&request.endpoint)
@@ -2669,6 +2697,21 @@ async fn provider_for_connection<C: CredentialStore>(
                 .map_err(|error| error.to_string())?,
             ))
         }
+        ProviderKind::Mega => {
+            let stored: WebDavCredentials = serde_json::from_str(secret.expose())
+                .map_err(|_| "Stored MEGA credential payload is invalid".to_owned())?;
+            let configuration: MegaConfiguration =
+                serde_json::from_str(&connection.configuration_json)
+                    .map_err(|_| "MEGA configuration is invalid".to_owned())?;
+            Ok(Box::new(
+                MegaProvider::connect(MegaConfig {
+                    email: stored.username,
+                    password: stored.password,
+                    root_path: configuration.root_path,
+                })
+                .map_err(|error| error.to_string())?,
+            ))
+        }
         ProviderKind::WebDav | ProviderKind::Nextcloud => {
             let configuration: WebDavConfiguration =
                 serde_json::from_str(&connection.configuration_json)
@@ -2829,6 +2872,40 @@ async fn connections_create_ftp(
         endpoint.to_string(),
         configuration,
         serde_json::json!({ "username": request.username, "password": request.password }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn connections_create_mega(
+    database: State<'_, Database>,
+    credentials: State<'_, WindowsCredentialStore>,
+    request: CreateMegaConnectionRequest,
+) -> Result<ConnectionSummary, String> {
+    ensure_drive_letter_unassigned(&database, request.drive_letter.as_deref(), None).await?;
+    if request.name.trim().is_empty()
+        || request.email.trim().is_empty()
+        || request.password.is_empty()
+    {
+        return Err("MEGA connection name, email, and password are required".to_owned());
+    }
+    let mut configuration = serde_json::json!({ "root_path": request.root_path.trim() });
+    set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
+    set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
+    set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
+    set_drive_presentation(
+        &mut configuration,
+        &request.drive_type,
+        request.drive_icon.as_deref(),
+    )?;
+    create_tested_connection(
+        &database,
+        &credentials,
+        request.name,
+        ProviderKind::Mega,
+        "https://g.api.mega.co.nz".to_owned(),
+        configuration,
+        serde_json::json!({ "username": request.email, "password": request.password }),
     )
     .await
 }
@@ -3935,6 +4012,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             connections_create_google_photos,
             connections_google_photos_authorize,
             connections_create_immich,
+            connections_create_mega,
             connections_create_s3,
             connections_create_ftp,
             connections_create_smb,

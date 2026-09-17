@@ -112,7 +112,6 @@ describe("App", () => {
         fireEvent.click(
             screen.getByRole("combobox", { name: /storage type/i }),
         );
-        fireEvent.click(screen.getByRole("option", { name: /SFTP server/i }));
 
         expect(
             screen.getByText("Web Distributed Authoring and Versioning"),
@@ -123,6 +122,8 @@ describe("App", () => {
         expect(
             screen.getByText("Windows network file sharing"),
         ).toBeTruthy();
+
+        fireEvent.click(screen.getByRole("option", { name: /SFTP server/i }));
 
         expect(
             screen.getByRole("heading", { name: "Connect to SFTP server" }),
@@ -160,6 +161,19 @@ describe("App", () => {
         expect(screen.getByLabelText("Start path")).toBeTruthy();
         expect(screen.queryByLabelText("Endpoint")).toBeNull();
         expect(screen.queryByLabelText("Bucket")).toBeNull();
+
+        fireEvent.click(
+            screen.getByRole("combobox", { name: /storage type/i }),
+        );
+        fireEvent.click(screen.getByRole("option", { name: /^MEGA$/i }));
+
+        expect(
+            screen.getByRole("heading", { name: "Connect to MEGA" }),
+        ).toBeTruthy();
+        expect(screen.getByLabelText("Email")).toBeTruthy();
+        expect(screen.getByLabelText("Password")).toBeTruthy();
+        expect(screen.getByLabelText("Start path")).toBeTruthy();
+        expect(screen.queryByLabelText("Endpoint")).toBeNull();
 
         fireEvent.click(
             screen.getByRole("combobox", { name: /storage type/i }),

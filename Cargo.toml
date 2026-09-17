@@ -13,6 +13,7 @@ members = [
     "crates/bifrost-google-drive",
     "crates/bifrost-google-photos",
     "crates/bifrost-immich",
+    "crates/bifrost-mega",
     "crates/bifrost-smb",
     "crates/bifrost-storage",
     "crates/bifrost-transfer",

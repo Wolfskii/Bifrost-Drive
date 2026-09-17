@@ -1,0 +1,18 @@
+[package]
+name = "bifrost-mega"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+async-std = "1.13"
+bifrost-common = { path = "../bifrost-common" }
+bifrost-storage = { path = "../bifrost-storage" }
+bytes.workspace = true
+chrono.workspace = true
+futures-util = "0.3"
+mega = "0.8"
+reqwest.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

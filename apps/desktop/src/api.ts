@@ -20,6 +20,7 @@ export type ProviderKind =
     | "GoogleDrive"
     | "GooglePhotos"
     | "Immich"
+    | "Mega"
     | "Ftp"
     | "Smb";
 
@@ -107,6 +108,18 @@ export interface ImmichConnectionForm {
     endpoint: string;
     authentication: "api_key" | "password";
     apiKey: string;
+    email: string;
+    password: string;
+    driveLetter: string;
+    mountOnStartup: boolean;
+    mountRoot: string;
+    driveType: "network" | "local";
+    driveIcon: string;
+}
+
+export interface MegaConnectionForm {
+    name: string;
+    rootPath: string;
     email: string;
     password: string;
     driveLetter: string;
@@ -477,6 +490,25 @@ export async function createImmichConnection(
             api_key: form.apiKey || null,
             email: form.email || null,
             password: form.password || null,
+            drive_letter: form.driveLetter || null,
+            mount_on_startup: form.mountOnStartup,
+            mount_root: form.mountRoot || null,
+            drive_type: form.driveType,
+            drive_icon: form.driveIcon || null,
+        },
+    });
+}
+
+export async function createMegaConnection(
+    form: MegaConnectionForm,
+): Promise<ConnectionSummary> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    return invoke<ConnectionSummary>("connections_create_mega", {
+        request: {
+            ...form,
+            root_path: form.rootPath,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
             mount_root: form.mountRoot || null,

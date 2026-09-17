@@ -145,6 +145,23 @@ pub struct CreateImmichConnectionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateMegaConnectionRequest {
+    pub name: String,
+    #[serde(default)]
+    pub root_path: String,
+    pub email: String,
+    pub password: String,
+    pub drive_letter: Option<String>,
+    pub mount_on_startup: bool,
+    #[serde(default)]
+    pub mount_root: Option<String>,
+    #[serde(default)]
+    pub drive_type: String,
+    #[serde(default)]
+    pub drive_icon: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateWebDavConnectionRequest {
     pub name: String,
     pub endpoint: String,
