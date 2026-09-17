@@ -15,6 +15,7 @@ fn integration_provider() -> Option<FtpProvider> {
                     .unwrap_or_else(|_| "ftp://127.0.0.1:2121".to_owned()),
             )
             .unwrap(),
+            root_path: String::new(),
             username: env::var("BIFROST_FTP_USERNAME").unwrap_or_else(|_| "bifrost-dev".to_owned()),
             password: env::var("BIFROST_FTP_PASSWORD")
                 .unwrap_or_else(|_| "bifrost-dev-secret".to_owned()),

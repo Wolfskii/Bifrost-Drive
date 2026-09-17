@@ -2197,6 +2197,12 @@ struct WebDavConfiguration {
 }
 
 #[derive(Debug, Deserialize)]
+struct FtpConfiguration {
+    #[serde(default)]
+    root_path: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct SftpConfiguration {
     host: String,
     port: u16,
@@ -2221,6 +2227,27 @@ fn default_sftp_known_hosts() -> String {
         .map(PathBuf::from)
         .map(|path| path.join(".ssh").join("known_hosts").display().to_string())
         .unwrap_or_default()
+}
+
+fn ftp_endpoint(protocol: &str, host: &str, port: u16) -> Result<url::Url, String> {
+    let protocol = protocol.trim().to_ascii_lowercase();
+    if !matches!(protocol.as_str(), "ftp" | "ftps") {
+        return Err("FTP protocol must be ftp or ftps".to_owned());
+    }
+    let host = host.trim();
+    if host.is_empty() {
+        return Err("FTP host is required".to_owned());
+    }
+    if port == 0 {
+        return Err("FTP port must be between 1 and 65535".to_owned());
+    }
+    let endpoint_host = if host.starts_with('[') && host.ends_with(']') || !host.contains(':') {
+        host.to_owned()
+    } else {
+        format!("[{host}]")
+    };
+    url::Url::parse(&format!("{protocol}://{endpoint_host}:{port}"))
+        .map_err(|_| "FTP host is invalid".to_owned())
 }
 
 #[derive(Debug, Deserialize)]
@@ -2427,10 +2454,13 @@ async fn test_connection(
         ProviderKind::Ftp => {
             let stored: WebDavCredentials = serde_json::from_str(secret.expose())
                 .map_err(|_| "Stored FTP credential payload is invalid".to_owned())?;
+            let configuration: FtpConfiguration = serde_json::from_value(request.configuration)
+                .map_err(|_| "FTP configuration is invalid".to_owned())?;
             let endpoint = url::Url::parse(&request.endpoint)
                 .map_err(|_| "FTP endpoint must be a valid URL".to_owned())?;
             FtpProvider::connect(FtpConfig {
                 endpoint,
+                root_path: configuration.root_path,
                 username: stored.username,
                 password: stored.password,
             })
@@ -2701,11 +2731,15 @@ async fn provider_for_connection<C: CredentialStore>(
         ProviderKind::Ftp => {
             let stored: WebDavCredentials = serde_json::from_str(secret.expose())
                 .map_err(|_| "Stored FTP credential payload is invalid".to_owned())?;
+            let configuration: FtpConfiguration =
+                serde_json::from_str(&connection.configuration_json)
+                    .map_err(|_| "FTP configuration is invalid".to_owned())?;
             let endpoint = url::Url::parse(&connection.endpoint)
                 .map_err(|_| "FTP endpoint must be a valid URL".to_owned())?;
             Ok(Box::new(
                 FtpProvider::connect(FtpConfig {
                     endpoint,
+                    root_path: configuration.root_path,
                     username: stored.username,
                     password: stored.password,
                 })
@@ -2777,12 +2811,8 @@ async fn connections_create_ftp(
     {
         return Err("FTP connection name, username, and password are required".to_owned());
     }
-    let endpoint = url::Url::parse(&request.endpoint)
-        .map_err(|_| "FTP endpoint must be a valid URL".to_owned())?;
-    if !matches!(endpoint.scheme(), "ftp" | "ftps") {
-        return Err("FTP endpoint must use ftp:// or ftps://".to_owned());
-    }
-    let mut configuration = serde_json::json!({});
+    let endpoint = ftp_endpoint(&request.protocol, &request.host, request.port)?;
+    let mut configuration = serde_json::json!({ "root_path": request.root_path.trim() });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
     set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;

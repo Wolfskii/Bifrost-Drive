@@ -15,6 +15,7 @@ use url::Url;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FtpConfig {
     pub endpoint: Url,
+    pub root_path: String,
     pub username: String,
     pub password: String,
 }
@@ -29,7 +30,7 @@ enum Session {
 }
 
 impl FtpProvider {
-    pub fn connect(config: FtpConfig) -> Result<Self, StorageError> {
+    pub fn connect(mut config: FtpConfig) -> Result<Self, StorageError> {
         let scheme = config.endpoint.scheme();
         if scheme != "ftp" && scheme != "ftps" {
             return Err(Self::error("endpoint must use ftp:// or ftps://"));
@@ -40,6 +41,7 @@ impl FtpProvider {
         if host.trim().is_empty() || config.username.trim().is_empty() {
             return Err(Self::error("FTP host and username are required"));
         }
+        config.root_path = Self::normalize_root_path(&config.root_path)?;
         Ok(Self { config })
     }
 
@@ -91,11 +93,36 @@ impl FtpProvider {
         }
     }
 
-    fn remote_path(path: &RemotePath) -> &str {
+    fn normalize_root_path(value: &str) -> Result<String, StorageError> {
+        let normalized = value.trim().replace('\\', "/");
+        let absolute = normalized.starts_with('/');
+        let mut components = Vec::new();
+        for component in normalized.split('/') {
+            match component {
+                "" | "." => continue,
+                ".." => return Err(Self::error("FTP start path cannot contain '..'")),
+                component => components.push(component),
+            }
+        }
+        let path = components.join("/");
+        Ok(if absolute { format!("/{path}") } else { path })
+    }
+
+    fn remote_path(&self, path: &RemotePath) -> String {
+        if self.config.root_path.is_empty() {
+            return if path.as_str().is_empty() {
+                ".".to_owned()
+            } else {
+                path.as_str().to_owned()
+            };
+        }
         if path.as_str().is_empty() {
-            "."
+            return self.config.root_path.clone();
+        }
+        if self.config.root_path == "/" {
+            format!("/{}", path.as_str())
         } else {
-            path.as_str()
+            format!("{}/{}", self.config.root_path, path.as_str())
         }
     }
 
@@ -115,10 +142,11 @@ impl FtpProvider {
         path: &RemotePath,
         mut content: bifrost_storage::WriteStream,
     ) -> Result<(), StorageError> {
+        let remote_path = self.remote_path(path);
         match self.session().await? {
             Session::Plain(mut ftp) => {
                 let mut data = ftp
-                    .put_with_stream(Self::remote_path(path))
+                    .put_with_stream(&remote_path)
                     .await
                     .map_err(|error| Self::error(error.to_string()))?;
                 while let Some(chunk) = content.next().await {
@@ -132,7 +160,7 @@ impl FtpProvider {
             }
             Session::Secure(mut ftp) => {
                 let mut data = ftp
-                    .put_with_stream(Self::remote_path(path))
+                    .put_with_stream(&remote_path)
                     .await
                     .map_err(|error| Self::error(error.to_string()))?;
                 while let Some(chunk) = content.next().await {
@@ -169,12 +197,12 @@ impl StorageProvider for FtpProvider {
         let mut session = self.session().await?;
         match &mut session {
             Session::Plain(ftp) => ftp
-                .feat()
+                .pwd()
                 .await
                 .map(|_| ())
                 .map_err(|error| Self::error(error.to_string())),
             Session::Secure(ftp) => ftp
-                .feat()
+                .pwd()
                 .await
                 .map(|_| ())
                 .map_err(|error| Self::error(error.to_string())),
@@ -186,16 +214,15 @@ impl StorageProvider for FtpProvider {
         prefix: &RemotePath,
         _cursor: Option<&str>,
     ) -> Result<Page<RemoteEntry>, StorageError> {
+        let listing_path = if prefix.as_str().is_empty() {
+            (!self.config.root_path.is_empty()).then(|| self.config.root_path.clone())
+        } else {
+            Some(self.remote_path(prefix))
+        };
         let mut session = self.session().await?;
         let lines = match &mut session {
-            Session::Plain(ftp) => {
-                ftp.mlsd((!prefix.as_str().is_empty()).then_some(prefix.as_str()))
-                    .await
-            }
-            Session::Secure(ftp) => {
-                ftp.mlsd((!prefix.as_str().is_empty()).then_some(prefix.as_str()))
-                    .await
-            }
+            Session::Plain(ftp) => ftp.mlsd(listing_path.as_deref()).await,
+            Session::Secure(ftp) => ftp.mlsd(listing_path.as_deref()).await,
         }
         .map_err(|error| Self::error(error.to_string()))?;
         let entries = lines
@@ -219,10 +246,11 @@ impl StorageProvider for FtpProvider {
     }
 
     async fn stat(&self, path: &RemotePath) -> Result<RemoteMetadata, StorageError> {
+        let remote_path = self.remote_path(path);
         let mut session = self.session().await?;
         let line = match &mut session {
-            Session::Plain(ftp) => ftp.mlst(Some(Self::remote_path(path))).await,
-            Session::Secure(ftp) => ftp.mlst(Some(Self::remote_path(path))).await,
+            Session::Plain(ftp) => ftp.mlst(Some(&remote_path)).await,
+            Session::Secure(ftp) => ftp.mlst(Some(&remote_path)).await,
         }
         .map_err(|error| Self::error(error.to_string()))?;
         let entry = suppaftp::list::File::from_mlsx_line(&line)
@@ -235,11 +263,12 @@ impl StorageProvider for FtpProvider {
         let session = self.session().await?;
         let (sender, receiver) = async_channel::bounded::<Result<Bytes, StorageError>>(2);
         let path = request.path;
+        let remote_path = self.remote_path(&path);
         async_std::task::spawn(async move {
             let mut source_offset = 0u64;
             match session {
                 Session::Plain(mut ftp) => {
-                    let mut data = match ftp.retr_as_stream(Self::remote_path(&path)).await {
+                    let mut data = match ftp.retr_as_stream(&remote_path).await {
                         Ok(data) => data,
                         Err(error) => {
                             let _ = sender.send(Err(Self::error(error.to_string()))).await;
@@ -273,7 +302,7 @@ impl StorageProvider for FtpProvider {
                     }
                 }
                 Session::Secure(mut ftp) => {
-                    let mut data = match ftp.retr_as_stream(Self::remote_path(&path)).await {
+                    let mut data = match ftp.retr_as_stream(&remote_path).await {
                         Ok(data) => data,
                         Err(error) => {
                             let _ = sender.send(Err(Self::error(error.to_string()))).await;
@@ -327,36 +356,34 @@ impl StorageProvider for FtpProvider {
     }
 
     async fn delete(&self, path: &RemotePath) -> Result<(), StorageError> {
+        let remote_path = self.remote_path(path);
         let mut session = self.session().await?;
         match &mut session {
-            Session::Plain(ftp) => ftp.rm(Self::remote_path(path)).await,
-            Session::Secure(ftp) => ftp.rm(Self::remote_path(path)).await,
+            Session::Plain(ftp) => ftp.rm(&remote_path).await,
+            Session::Secure(ftp) => ftp.rm(&remote_path).await,
         }
         .map(|_| ())
         .map_err(|error| Self::error(error.to_string()))
     }
 
     async fn create_directory(&self, path: &RemotePath) -> Result<(), StorageError> {
+        let remote_path = self.remote_path(path);
         let mut session = self.session().await?;
         match &mut session {
-            Session::Plain(ftp) => ftp.mkdir(Self::remote_path(path)).await,
-            Session::Secure(ftp) => ftp.mkdir(Self::remote_path(path)).await,
+            Session::Plain(ftp) => ftp.mkdir(&remote_path).await,
+            Session::Secure(ftp) => ftp.mkdir(&remote_path).await,
         }
         .map(|_| ())
         .map_err(|error| Self::error(error.to_string()))
     }
 
     async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), StorageError> {
+        let from_path = self.remote_path(from);
+        let to_path = self.remote_path(to);
         let mut session = self.session().await?;
         match &mut session {
-            Session::Plain(ftp) => {
-                ftp.rename(Self::remote_path(from), Self::remote_path(to))
-                    .await
-            }
-            Session::Secure(ftp) => {
-                ftp.rename(Self::remote_path(from), Self::remote_path(to))
-                    .await
-            }
+            Session::Plain(ftp) => ftp.rename(&from_path, &to_path).await,
+            Session::Secure(ftp) => ftp.rename(&from_path, &to_path).await,
         }
         .map(|_| ())
         .map_err(|error| Self::error(error.to_string()))
@@ -393,12 +420,14 @@ async fn send_selected(
 #[cfg(test)]
 mod tests {
     use super::{FtpConfig, FtpProvider};
+    use bifrost_common::RemotePath;
     use url::Url;
 
     #[test]
     fn accepts_only_ftp_schemes() {
         assert!(FtpProvider::connect(FtpConfig {
             endpoint: Url::parse("https://example.test").unwrap(),
+            root_path: String::new(),
             username: "user".to_owned(),
             password: "password".to_owned(),
         })
@@ -409,9 +438,41 @@ mod tests {
     fn accepts_explicit_ftps_configuration() {
         assert!(FtpProvider::connect(FtpConfig {
             endpoint: Url::parse("ftps://example.test").unwrap(),
+            root_path: String::new(),
             username: "user".to_owned(),
             password: "password".to_owned(),
         })
         .is_ok());
+    }
+
+    #[test]
+    fn applies_start_path_to_remote_operations() {
+        let provider = FtpProvider::connect(FtpConfig {
+            endpoint: Url::parse("ftp://example.test").unwrap(),
+            root_path: "documents/projects".to_owned(),
+            username: "user".to_owned(),
+            password: "password".to_owned(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            provider.remote_path(&RemotePath::root()),
+            "documents/projects"
+        );
+        assert_eq!(
+            provider.remote_path(&RemotePath::parse("report.txt").unwrap()),
+            "documents/projects/report.txt"
+        );
+    }
+
+    #[test]
+    fn rejects_parent_traversal_in_start_path() {
+        assert!(FtpProvider::connect(FtpConfig {
+            endpoint: Url::parse("ftp://example.test").unwrap(),
+            root_path: "documents/../private".to_owned(),
+            username: "user".to_owned(),
+            password: "password".to_owned(),
+        })
+        .is_err());
     }
 }

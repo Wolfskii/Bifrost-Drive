@@ -165,7 +165,11 @@ pub struct CreateWebDavConnectionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateFtpConnectionRequest {
     pub name: String,
-    pub endpoint: String,
+    pub protocol: String,
+    pub host: String,
+    pub port: u16,
+    #[serde(default)]
+    pub root_path: String,
     pub username: String,
     pub password: String,
     pub drive_letter: Option<String>,

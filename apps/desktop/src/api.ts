@@ -131,7 +131,10 @@ export interface WebDavConnectionForm {
 
 export interface FtpConnectionForm {
     name: string;
-    endpoint: string;
+    protocol: "ftp" | "ftps";
+    host: string;
+    port: number;
+    rootPath: string;
     username: string;
     password: string;
     driveLetter: string;
@@ -511,6 +514,7 @@ export async function createFtpConnection(
     return invoke<ConnectionSummary>("connections_create_ftp", {
         request: {
             ...form,
+            root_path: form.rootPath,
             drive_letter: form.driveLetter || null,
             mount_on_startup: form.mountOnStartup,
             mount_root: form.mountRoot || null,

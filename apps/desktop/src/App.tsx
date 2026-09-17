@@ -573,6 +573,7 @@ export function App() {
     const [sftpAuthentication, setSftpAuthentication] = useState<
         "password" | "private_key"
     >("password");
+    const [ftpProtocol, setFtpProtocol] = useState<"ftp" | "ftps">("ftp");
     const [immichAuthentication, setImmichAuthentication] = useState<
         "api_key" | "password"
     >("api_key");
@@ -1041,12 +1042,20 @@ export function App() {
                 connection.kind === "Sftp"
                     ? new URL(connection.endpoint)
                     : null;
+            const ftpUrl =
+                connection.kind === "Ftp" ? new URL(connection.endpoint) : null;
             setFormDefaults({
                 name: connection.name,
                 endpoint: connection.endpoint,
                 username: details.username ?? "",
                 host: sftpUrl?.hostname ?? "",
                 port: sftpUrl?.port ? Number(sftpUrl.port) : 22,
+                ftpHost: ftpUrl?.hostname ?? "",
+                ftpPort: ftpUrl?.port
+                    ? Number(ftpUrl.port)
+                    : ftpUrl?.protocol === "ftps:"
+                      ? 990
+                      : 21,
                 rootPath: String(configuration.root_path ?? ""),
                 domain: String(configuration.domain ?? ""),
                 bucket: String(configuration.bucket ?? ""),
@@ -1107,6 +1116,7 @@ export function App() {
                     ? "private_key"
                     : "password",
             );
+            setFtpProtocol(ftpUrl?.protocol === "ftps:" ? "ftps" : "ftp");
             setImmichAuthentication(
                 configuration.authentication === "password"
                     ? "password"
@@ -1198,7 +1208,16 @@ export function App() {
             let configuration: Record<string, unknown>;
             let credentials: Record<string, unknown>;
             if (providerChoice === "FTP") {
-                configuration = {};
+                const protocol = String(
+                    values.get("ftpProtocol") ?? ftpProtocol,
+                ) as "ftp" | "ftps";
+                const host = String(values.get("host") ?? "").trim();
+                const port = Number(values.get("port") ?? 21);
+                const endpointHost = host.includes(":") ? `[${host}]` : host;
+                updateEndpoint = `${protocol}://${endpointHost}:${port}`;
+                configuration = {
+                    root_path: String(values.get("rootPath") ?? "").trim(),
+                };
                 credentials = {
                     username: common.username,
                     password: common.password,
@@ -1312,7 +1331,11 @@ export function App() {
         } else if (providerChoice === "FTP") {
             connectionOperation = createFtpConnection({
                 ...common,
-                endpoint: String(values.get("endpoint") ?? "").trim(),
+                protocol: String(values.get("ftpProtocol") ?? ftpProtocol) as
+                    "ftp" | "ftps",
+                host: String(values.get("host") ?? "").trim(),
+                port: Number(values.get("port") ?? 21),
+                rootPath: String(values.get("rootPath") ?? "").trim(),
                 driveLetter,
             });
         } else if (providerChoice === "SMB") {
@@ -1506,6 +1529,7 @@ export function App() {
             setFormDefaults({});
             setGoogleAuthorization(null);
             setSftpAuthentication("password");
+            setFtpProtocol("ftp");
             setImmichAuthentication("api_key");
             setDriveType("network");
             setDriveIcon("system");
@@ -1656,6 +1680,7 @@ export function App() {
                                         setProviderChoice("S3");
                                         setGoogleAuthorization(null);
                                         setSftpAuthentication("password");
+                                        setFtpProtocol("ftp");
                                         setImmichAuthentication("api_key");
                                         setDriveType("network");
                                         setDriveIcon("system");
@@ -2567,6 +2592,7 @@ export function App() {
                                 </div>
                             )}
                             {providerChoice !== "SFTP" &&
+                                providerChoice !== "FTP" &&
                                 providerChoice !== "GoogleDrive" &&
                                 providerChoice !== "GooglePhotos" && (
                                     <label>
@@ -2593,6 +2619,69 @@ export function App() {
                                         />
                                     </label>
                                 )}
+                            {providerChoice === "FTP" && (
+                                <>
+                                    <CustomSelect
+                                        label="Protocol"
+                                        name="ftpProtocol"
+                                        value={ftpProtocol}
+                                        options={[
+                                            {
+                                                value: "ftp",
+                                                label: "FTP",
+                                                icon: <Server size={18} />,
+                                            },
+                                            {
+                                                value: "ftps",
+                                                label: "FTPS (explicit TLS)",
+                                                icon: <LockKeyhole size={18} />,
+                                            },
+                                        ]}
+                                        onChange={(value) =>
+                                            setFtpProtocol(
+                                                value as "ftp" | "ftps",
+                                            )
+                                        }
+                                    />
+                                    <div className="form-grid">
+                                        <label>
+                                            Host
+                                            <input
+                                                name="host"
+                                                required
+                                                defaultValue={
+                                                    formDefaults.ftpHost as string
+                                                }
+                                                placeholder="files.example.com"
+                                            />
+                                        </label>
+                                        <label>
+                                            Port
+                                            <input
+                                                name="port"
+                                                type="number"
+                                                min="1"
+                                                max="65535"
+                                                required
+                                                defaultValue={
+                                                    (formDefaults.ftpPort as number) ??
+                                                    21
+                                                }
+                                            />
+                                        </label>
+                                    </div>
+                                    <label>
+                                        Start path
+                                        <input
+                                            name="rootPath"
+                                            defaultValue={
+                                                formDefaults.rootPath as string
+                                            }
+                                            placeholder="documents/projects"
+                                        />
+                                    </label>
+                                </>
+                            )}
                             {providerChoice === "SFTP" && (
                                 <label>
                                     Host

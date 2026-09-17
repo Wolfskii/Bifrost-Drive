@@ -135,6 +135,25 @@ describe("App", () => {
         fireEvent.click(
             screen.getByRole("combobox", { name: /storage type/i }),
         );
+        fireEvent.click(
+            screen.getByRole("option", { name: /FTP \/ FTPS server/i }),
+        );
+
+        expect(
+            screen.getByRole("heading", {
+                name: "Connect to FTP / FTPS server",
+            }),
+        ).toBeTruthy();
+        expect(screen.getByLabelText("Protocol")).toBeTruthy();
+        expect(screen.getByLabelText("Host")).toBeTruthy();
+        expect(screen.getByLabelText("Port")).toBeTruthy();
+        expect(screen.getByLabelText("Start path")).toBeTruthy();
+        expect(screen.queryByLabelText("Endpoint")).toBeNull();
+        expect(screen.queryByLabelText("Bucket")).toBeNull();
+
+        fireEvent.click(
+            screen.getByRole("combobox", { name: /storage type/i }),
+        );
         fireEvent.click(screen.getByRole("option", { name: /WebDAV server/i }));
 
         expect(
