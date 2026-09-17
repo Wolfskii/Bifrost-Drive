@@ -115,6 +115,16 @@ describe("App", () => {
         fireEvent.click(screen.getByRole("option", { name: /SFTP server/i }));
 
         expect(
+            screen.getByText("Web Distributed Authoring and Versioning"),
+        ).toBeTruthy();
+        expect(
+            screen.getByText("File Transfer Protocol with optional TLS"),
+        ).toBeTruthy();
+        expect(
+            screen.getByText("Windows network file sharing"),
+        ).toBeTruthy();
+
+        expect(
             screen.getByRole("heading", { name: "Connect to SFTP server" }),
         ).toBeTruthy();
         expect(screen.queryByLabelText("Known hosts file")).toBeNull();

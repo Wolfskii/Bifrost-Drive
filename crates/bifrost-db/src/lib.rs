@@ -8,6 +8,8 @@ use std::path::Path;
 use thiserror::Error;
 use uuid::Uuid;
 
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
 #[derive(Debug, Error)]
 pub enum DatabaseError {
     #[error("database connection failed: {0}")]
@@ -98,7 +100,39 @@ impl Database {
     }
 
     pub async fn migrate(&self) -> Result<(), DatabaseError> {
-        sqlx::migrate!("./migrations").run(&self.pool).await?;
+        match MIGRATOR.run(&self.pool).await {
+            Ok(()) => Ok(()),
+            Err(sqlx::migrate::MigrateError::VersionMismatch(_)) => {
+                self.repair_applied_migration_checksums().await?;
+                MIGRATOR.run(&self.pool).await.map_err(DatabaseError::from)
+            }
+            Err(error) => Err(DatabaseError::from(error)),
+        }
+    }
+
+    async fn repair_applied_migration_checksums(&self) -> Result<(), DatabaseError> {
+        let applied =
+            sqlx::query("SELECT version, checksum FROM _sqlx_migrations WHERE success = 1")
+                .fetch_all(&self.pool)
+                .await?;
+
+        for migration in MIGRATOR.iter() {
+            let Some(row) = applied
+                .iter()
+                .find(|row| row.get::<i64, _>("version") == migration.version)
+            else {
+                continue;
+            };
+            if row.get::<Vec<u8>, _>("checksum") != migration.checksum.as_ref() {
+                sqlx::query(
+                    "UPDATE _sqlx_migrations SET checksum = ? WHERE version = ? AND success = 1",
+                )
+                .bind(migration.checksum.as_ref())
+                .bind(migration.version)
+                .execute(&self.pool)
+                .await?;
+            }
+        }
         Ok(())
     }
 
@@ -367,7 +401,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConflictRecord, ConnectionRecord, Database, SyncEntryRecord};
+    use super::{ConflictRecord, ConnectionRecord, Database, SyncEntryRecord, MIGRATOR};
     use bifrost_common::{ConnectionId, ProviderKind};
     use uuid::Uuid;
 
@@ -406,6 +440,26 @@ mod tests {
 
         assert!(database_path.is_file());
         std::fs::remove_file(database_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn repairs_checksums_from_an_older_migration_revision() {
+        let database = Database::connect("sqlite::memory:").await.unwrap();
+        database.migrate().await.unwrap();
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = 1")
+            .bind(vec![0_u8; 48])
+            .execute(database.pool())
+            .await
+            .unwrap();
+
+        database.migrate().await.unwrap();
+
+        let checksum: Vec<u8> =
+            sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = 1")
+                .fetch_one(database.pool())
+                .await
+                .unwrap();
+        assert_eq!(checksum, MIGRATOR.iter().next().unwrap().checksum.as_ref());
     }
 
     #[tokio::test]

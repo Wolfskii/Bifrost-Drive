@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use futures_util::{stream, StreamExt};
 use rustls::ClientConfig;
 use std::sync::Arc;
-use suppaftp::{AsyncFtpStream, AsyncRustlsConnector, AsyncRustlsFtpStream};
+use suppaftp::{types::Mode, AsyncFtpStream, AsyncRustlsConnector, AsyncRustlsFtpStream};
 use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +78,8 @@ impl FtpProvider {
                 )
                 .await
                 .map_err(|error| Self::error(error.to_string()))?;
+            ftp.set_mode(Mode::ExtendedPassive);
+            ftp.set_passive_nat_workaround(true);
             ftp.login(&self.config.username, &self.config.password)
                 .await
                 .map_err(|error| Self::error(error.to_string()))?;
@@ -86,6 +88,8 @@ impl FtpProvider {
             let mut ftp = AsyncFtpStream::connect(self.endpoint())
                 .await
                 .map_err(|error| Self::error(error.to_string()))?;
+            ftp.set_mode(Mode::ExtendedPassive);
+            ftp.set_passive_nat_workaround(true);
             ftp.login(&self.config.username, &self.config.password)
                 .await
                 .map_err(|error| Self::error(error.to_string()))?;
@@ -134,6 +138,19 @@ impl FtpProvider {
             size_bytes: Some(entry.size() as u64),
             etag: None,
             modified_at: Some(modified),
+        }
+    }
+
+    fn parse_listing_line(line: &str) -> Result<suppaftp::list::File, String> {
+        let line = line.trim();
+        if line
+            .split_once(' ')
+            .is_some_and(|(facts, _)| facts.contains('=') && facts.starts_with("type="))
+        {
+            suppaftp::list::File::from_mlsx_line(line).map_err(|error| error.to_string())
+        } else {
+            line.parse::<suppaftp::list::File>()
+                .map_err(|error| error.to_string())
         }
     }
 
@@ -221,13 +238,19 @@ impl StorageProvider for FtpProvider {
         };
         let mut session = self.session().await?;
         let lines = match &mut session {
-            Session::Plain(ftp) => ftp.mlsd(listing_path.as_deref()).await,
-            Session::Secure(ftp) => ftp.mlsd(listing_path.as_deref()).await,
+            Session::Plain(ftp) => match ftp.mlsd(listing_path.as_deref()).await {
+                Ok(lines) => Ok(lines),
+                Err(_) => ftp.list(listing_path.as_deref()).await,
+            },
+            Session::Secure(ftp) => match ftp.mlsd(listing_path.as_deref()).await {
+                Ok(lines) => Ok(lines),
+                Err(_) => ftp.list(listing_path.as_deref()).await,
+            },
         }
         .map_err(|error| Self::error(error.to_string()))?;
         let entries = lines
             .into_iter()
-            .filter_map(|line| suppaftp::list::File::from_mlsx_line(&line).ok())
+            .filter_map(|line| Self::parse_listing_line(&line).ok())
             .filter_map(|entry| {
                 let path = if prefix.as_str().is_empty() {
                     RemotePath::parse(entry.name()).ok()?
@@ -248,13 +271,48 @@ impl StorageProvider for FtpProvider {
     async fn stat(&self, path: &RemotePath) -> Result<RemoteMetadata, StorageError> {
         let remote_path = self.remote_path(path);
         let mut session = self.session().await?;
+        if path.as_str().is_empty() {
+            match &mut session {
+                Session::Plain(ftp) => ftp
+                    .cwd(&remote_path)
+                    .await
+                    .map_err(|error| Self::error(error.to_string()))?,
+                Session::Secure(ftp) => ftp
+                    .cwd(&remote_path)
+                    .await
+                    .map_err(|error| Self::error(error.to_string()))?,
+            }
+            return Ok(RemoteMetadata {
+                path: path.clone(),
+                is_directory: true,
+                size_bytes: None,
+                etag: None,
+                modified_at: None,
+            });
+        }
         let line = match &mut session {
-            Session::Plain(ftp) => ftp.mlst(Some(&remote_path)).await,
-            Session::Secure(ftp) => ftp.mlst(Some(&remote_path)).await,
+            Session::Plain(ftp) => match ftp.mlst(Some(&remote_path)).await {
+                Ok(line) => Ok(line),
+                Err(_) => ftp.list(Some(&remote_path)).await.and_then(|lines| {
+                    lines
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| suppaftp::types::FtpError::BadResponse)
+                }),
+            },
+            Session::Secure(ftp) => match ftp.mlst(Some(&remote_path)).await {
+                Ok(line) => Ok(line),
+                Err(_) => ftp.list(Some(&remote_path)).await.and_then(|lines| {
+                    lines
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| suppaftp::types::FtpError::BadResponse)
+                }),
+            },
         }
         .map_err(|error| Self::error(error.to_string()))?;
-        let entry = suppaftp::list::File::from_mlsx_line(&line)
-            .map_err(|error| Self::error(error.to_string()))?;
+        let entry =
+            Self::parse_listing_line(&line).map_err(|error| Self::error(error.to_string()))?;
         Ok(Self::metadata(path.clone(), &entry))
     }
 
@@ -474,5 +532,25 @@ mod tests {
             password: "password".to_owned(),
         })
         .is_err());
+    }
+
+    #[test]
+    fn parses_standard_unix_listing_names() {
+        let entry =
+            FtpProvider::parse_listing_line("drwxr-xr-x 2 ftp ftp 4096 Jan 30  2024 addons")
+                .unwrap();
+
+        assert_eq!(entry.name(), "addons");
+        assert!(entry.is_directory());
+    }
+
+    #[test]
+    fn parses_mlsx_listing_names() {
+        let entry =
+            FtpProvider::parse_listing_line("type=dir;size=4096;modify=20240130120000; addons")
+                .unwrap();
+
+        assert_eq!(entry.name(), "addons");
+        assert!(entry.is_directory());
     }
 }
