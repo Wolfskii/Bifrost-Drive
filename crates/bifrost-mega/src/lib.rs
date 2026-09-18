@@ -199,7 +199,7 @@ impl StorageProvider for MegaProvider {
         let node = Self::node_for_path(nodes, &path)?;
         let mut output = Vec::new();
         client
-            .download_node(&node, Cursor::new(&mut output))
+            .download_node(node, Cursor::new(&mut output))
             .await
             .map_err(|error| Self::error(error.to_string()))?;
         let bytes = request.range.map_or_else(
@@ -236,7 +236,7 @@ impl StorageProvider for MegaProvider {
         let parent = Self::node_for_path(nodes, &parent_path)?;
         client
             .upload_node(
-                &parent,
+                parent,
                 name,
                 content.len() as u64,
                 Cursor::new(content),
@@ -261,7 +261,7 @@ impl StorageProvider for MegaProvider {
             .ok_or_else(|| Self::error("MEGA session unavailable"))?;
         let node = Self::node_for_path(nodes, &path)?;
         client
-            .delete_node(&node)
+            .delete_node(node)
             .await
             .map_err(|error| Self::error(error.to_string()))
     }
@@ -296,7 +296,7 @@ impl StorageProvider for MegaProvider {
             .ok_or_else(|| Self::error("MEGA session unavailable"))?;
         let parent = Self::node_for_path(nodes, &parent_path)?;
         client
-            .create_folder(&parent, name)
+            .create_folder(parent, name)
             .await
             .map_err(|error| Self::error(error.to_string()))
     }
@@ -311,7 +311,7 @@ impl StorageProvider for MegaProvider {
             .ok_or_else(|| Self::error("MEGA session unavailable"))?;
         let node = Self::node_for_path(nodes, &from)?;
         client
-            .rename_node(&node, name)
+            .rename_node(node, name)
             .await
             .map_err(|error| Self::error(error.to_string()))
     }
