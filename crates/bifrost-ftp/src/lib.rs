@@ -298,7 +298,7 @@ impl StorageProvider for FtpProvider {
                     lines
                         .into_iter()
                         .next()
-                        .ok_or_else(|| suppaftp::types::FtpError::BadResponse)
+                        .ok_or(suppaftp::types::FtpError::BadResponse)
                 }),
             },
             Session::Secure(ftp) => match ftp.mlst(Some(&remote_path)).await {
@@ -307,7 +307,7 @@ impl StorageProvider for FtpProvider {
                     lines
                         .into_iter()
                         .next()
-                        .ok_or_else(|| suppaftp::types::FtpError::BadResponse)
+                        .ok_or(suppaftp::types::FtpError::BadResponse)
                 }),
             },
         }
