@@ -338,6 +338,22 @@ mod tests {
     }
 
     #[test]
+    fn root_start_path_is_the_cloud_drive() {
+        assert!(MegaProvider::connect(MegaConfig {
+            email: "user@example.com".to_owned(),
+            password: "password".to_owned(),
+            root_path: "/".to_owned(),
+        })
+        .is_ok());
+        assert!(MegaProvider::connect(MegaConfig {
+            email: "user@example.com".to_owned(),
+            password: "password".to_owned(),
+            root_path: String::new(),
+        })
+        .is_ok());
+    }
+
+    #[test]
     fn rejects_parent_traversal_in_start_path() {
         assert!(MegaProvider::connect(MegaConfig {
             email: "user@example.com".to_owned(),

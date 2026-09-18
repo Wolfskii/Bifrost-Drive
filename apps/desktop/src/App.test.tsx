@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
     App,
     ConnectionProviderIcon,
+    defaultStartPath,
     parseReleaseNotes,
     providerSelectionForKind,
     webUiUrlForConnection,
@@ -49,6 +50,16 @@ describe("App", () => {
         expect(providerSelectionForKind("Immich")).toBe("immich");
         expect(providerSelectionForKind("Sftp")).toBe("SFTP");
         expect(providerSelectionForKind("WebDav")).toBe("WebDAV");
+    });
+
+    it("defaults start paths to the provider root", () => {
+        expect(defaultStartPath()).toBe("/");
+        expect(defaultStartPath("")).toBe("/");
+        expect(defaultStartPath("  ")).toBe("/");
+        expect(defaultStartPath("/home/ubuntu")).toBe("/home/ubuntu");
+        expect(defaultStartPath("documents/projects")).toBe(
+            "documents/projects",
+        );
     });
 
     it("maps browser-capable providers to their web interfaces", () => {
@@ -119,9 +130,7 @@ describe("App", () => {
         expect(
             screen.getByText("File Transfer Protocol with optional TLS"),
         ).toBeTruthy();
-        expect(
-            screen.getByText("Windows network file sharing"),
-        ).toBeTruthy();
+        expect(screen.getByText("Windows network file sharing")).toBeTruthy();
 
         fireEvent.click(screen.getByRole("option", { name: /SFTP server/i }));
 
@@ -129,7 +138,13 @@ describe("App", () => {
             screen.getByRole("heading", { name: "Connect to SFTP server" }),
         ).toBeTruthy();
         expect(screen.queryByLabelText("Known hosts file")).toBeNull();
-        expect(screen.getByLabelText("Start path")).toBeTruthy();
+        expect(
+            (screen.getByLabelText("Start path") as HTMLInputElement).value,
+        ).toBe("/");
+        expect(
+            (screen.getByLabelText("Start path") as HTMLInputElement)
+                .placeholder,
+        ).toBe("/");
         expect(
             screen.getByLabelText("Trust a new server key on first use"),
         ).toBeTruthy();
@@ -158,21 +173,29 @@ describe("App", () => {
         expect(screen.getByLabelText("Protocol")).toBeTruthy();
         expect(screen.getByLabelText("Host")).toBeTruthy();
         expect(screen.getByLabelText("Port")).toBeTruthy();
-        expect(screen.getByLabelText("Start path")).toBeTruthy();
+        expect(
+            (screen.getByLabelText("Start path") as HTMLInputElement).value,
+        ).toBe("/");
+        expect(
+            (screen.getByLabelText("Start path") as HTMLInputElement)
+                .placeholder,
+        ).toBe("/");
         expect(screen.queryByLabelText("Endpoint")).toBeNull();
         expect(screen.queryByLabelText("Bucket")).toBeNull();
 
         fireEvent.click(
             screen.getByRole("combobox", { name: /storage type/i }),
         );
-        fireEvent.click(screen.getByRole("option", { name: /^MEGA$/i }));
+        fireEvent.click(screen.getByRole("option", { name: /MEGA/i }));
 
         expect(
             screen.getByRole("heading", { name: "Connect to MEGA" }),
         ).toBeTruthy();
         expect(screen.getByLabelText("Email")).toBeTruthy();
         expect(screen.getByLabelText("Password")).toBeTruthy();
-        expect(screen.getByLabelText("Start path")).toBeTruthy();
+        expect(
+            (screen.getByLabelText("Start path") as HTMLInputElement).value,
+        ).toBe("/");
         expect(screen.queryByLabelText("Endpoint")).toBeNull();
 
         fireEvent.click(
@@ -183,7 +206,9 @@ describe("App", () => {
         expect(
             screen.getByRole("heading", { name: "Connect to WebDAV server" }),
         ).toBeTruthy();
-        expect(screen.getByLabelText("Start path")).toBeTruthy();
+        expect(
+            (screen.getByLabelText("Start path") as HTMLInputElement).value,
+        ).toBe("/");
 
         fireEvent.click(
             screen.getByRole("combobox", { name: /storage type/i }),

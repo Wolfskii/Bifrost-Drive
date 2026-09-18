@@ -288,6 +288,9 @@ impl SftpProvider {
 
     fn normalize_root_path(value: &str) -> Result<String, StorageError> {
         let normalized = value.trim().replace('\\', "/");
+        if normalized.is_empty() {
+            return Ok("/".to_owned());
+        }
         let absolute = normalized.starts_with('/');
         let mut components = Vec::new();
         for component in normalized.split('/') {
@@ -304,20 +307,18 @@ impl SftpProvider {
     }
 
     fn path(&self, path: &RemotePath) -> String {
-        if self.config.root_path.is_empty() {
-            return if path.as_str().is_empty() {
-                ".".to_owned()
-            } else {
-                path.as_str().to_owned()
-            };
-        }
+        let root = if self.config.root_path.is_empty() {
+            "/"
+        } else {
+            self.config.root_path.as_str()
+        };
         if path.as_str().is_empty() {
-            return self.config.root_path.clone();
+            return root.to_owned();
         }
-        if self.config.root_path == "/" {
+        if root == "/" {
             format!("/{}", path.as_str())
         } else {
-            format!("{}/{}", self.config.root_path, path.as_str())
+            format!("{}/{}", root, path.as_str())
         }
     }
 
@@ -669,6 +670,9 @@ mod tests {
 
     #[test]
     fn accepts_absolute_start_paths_without_parent_traversal() {
+        assert_eq!(SftpProvider::normalize_root_path("").unwrap(), "/");
+        assert_eq!(SftpProvider::normalize_root_path(" / ").unwrap(), "/");
+        assert_eq!(SftpProvider::normalize_root_path("/").unwrap(), "/");
         assert_eq!(SftpProvider::normalize_root_path("/data").unwrap(), "/data");
         assert!(SftpProvider::normalize_root_path("/data/../etc").is_err());
     }

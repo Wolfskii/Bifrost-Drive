@@ -147,7 +147,7 @@ pub struct CreateImmichConnectionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateMegaConnectionRequest {
     pub name: String,
-    #[serde(default)]
+    #[serde(default = "default_root_path")]
     pub root_path: String,
     pub email: String,
     pub password: String,
@@ -165,7 +165,7 @@ pub struct CreateMegaConnectionRequest {
 pub struct CreateWebDavConnectionRequest {
     pub name: String,
     pub endpoint: String,
-    #[serde(default)]
+    #[serde(default = "default_root_path")]
     pub root_path: String,
     pub username: String,
     pub password: String,
@@ -185,7 +185,7 @@ pub struct CreateFtpConnectionRequest {
     pub protocol: String,
     pub host: String,
     pub port: u16,
-    #[serde(default)]
+    #[serde(default = "default_root_path")]
     pub root_path: String,
     pub username: String,
     pub password: String,
@@ -216,11 +216,16 @@ pub struct CreateSmbConnectionRequest {
     pub drive_icon: Option<String>,
 }
 
+fn default_root_path() -> String {
+    "/".to_owned()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSftpConnectionRequest {
     pub name: String,
     pub host: String,
     pub port: u16,
+    #[serde(default = "default_root_path")]
     pub root_path: String,
     pub username: String,
     pub password: String,
@@ -407,4 +412,62 @@ pub struct ApiError {
     pub code: String,
     pub message: String,
     pub retryable: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CreateFtpConnectionRequest, CreateMegaConnectionRequest, CreateSftpConnectionRequest,
+        CreateWebDavConnectionRequest,
+    };
+
+    #[test]
+    fn create_requests_default_missing_start_path_to_root() {
+        let sftp: CreateSftpConnectionRequest = serde_json::from_value(serde_json::json!({
+            "name": "Ubuntu",
+            "host": "example.test",
+            "port": 22,
+            "username": "ubuntu",
+            "password": "secret",
+            "authentication": "password",
+            "private_key_path": null,
+            "passphrase": null,
+            "drive_letter": null,
+            "mount_on_startup": true
+        }))
+        .unwrap();
+        let ftp: CreateFtpConnectionRequest = serde_json::from_value(serde_json::json!({
+            "name": "Files",
+            "protocol": "ftp",
+            "host": "example.test",
+            "port": 21,
+            "username": "ftp",
+            "password": "secret",
+            "drive_letter": null,
+            "mount_on_startup": true
+        }))
+        .unwrap();
+        let webdav: CreateWebDavConnectionRequest = serde_json::from_value(serde_json::json!({
+            "name": "Dav",
+            "endpoint": "https://dav.example.test/",
+            "username": "user",
+            "password": "secret",
+            "drive_letter": null,
+            "mount_on_startup": true
+        }))
+        .unwrap();
+        let mega: CreateMegaConnectionRequest = serde_json::from_value(serde_json::json!({
+            "name": "Mega",
+            "email": "user@example.test",
+            "password": "secret",
+            "drive_letter": null,
+            "mount_on_startup": true
+        }))
+        .unwrap();
+
+        assert_eq!(sftp.root_path, "/");
+        assert_eq!(ftp.root_path, "/");
+        assert_eq!(webdav.root_path, "/");
+        assert_eq!(mega.root_path, "/");
+    }
 }

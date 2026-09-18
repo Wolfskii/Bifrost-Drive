@@ -2199,19 +2199,19 @@ struct WebDavCredentials {
 
 #[derive(Debug, Deserialize)]
 struct WebDavConfiguration {
-    #[serde(default)]
+    #[serde(default = "default_root_path")]
     root_path: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct MegaConfiguration {
-    #[serde(default)]
+    #[serde(default = "default_root_path")]
     root_path: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct FtpConfiguration {
-    #[serde(default)]
+    #[serde(default = "default_root_path")]
     root_path: String,
 }
 
@@ -2219,7 +2219,7 @@ struct FtpConfiguration {
 struct SftpConfiguration {
     host: String,
     port: u16,
-    #[serde(default)]
+    #[serde(default = "default_root_path")]
     root_path: String,
     #[serde(default = "default_sftp_known_hosts")]
     known_hosts: String,
@@ -2228,6 +2228,19 @@ struct SftpConfiguration {
     #[serde(default = "default_sftp_authentication")]
     authentication: String,
     private_key_path: Option<String>,
+}
+
+fn default_root_path() -> String {
+    "/".to_owned()
+}
+
+fn normalized_root_path(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        default_root_path()
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 fn default_sftp_authentication() -> String {
@@ -2240,6 +2253,18 @@ fn default_sftp_known_hosts() -> String {
         .map(PathBuf::from)
         .map(|path| path.join(".ssh").join("known_hosts").display().to_string())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod root_path_tests {
+    use super::normalized_root_path;
+
+    #[test]
+    fn empty_start_path_defaults_to_filesystem_root() {
+        assert_eq!(normalized_root_path(""), "/");
+        assert_eq!(normalized_root_path("   "), "/");
+        assert_eq!(normalized_root_path("/home/ubuntu"), "/home/ubuntu");
+    }
 }
 
 fn ftp_endpoint(protocol: &str, host: &str, port: u16) -> Result<url::Url, String> {
@@ -2820,7 +2845,8 @@ async fn connections_create_webdav(
     ensure_drive_letter_unassigned(&database, request.drive_letter.as_deref(), None).await?;
     let endpoint = url::Url::parse(&request.endpoint)
         .map_err(|_| "WebDAV endpoint must be a valid URL".to_owned())?;
-    let mut configuration = serde_json::json!({ "root_path": request.root_path.trim() });
+    let mut configuration =
+        serde_json::json!({ "root_path": normalized_root_path(&request.root_path) });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
     set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
@@ -2855,7 +2881,8 @@ async fn connections_create_ftp(
         return Err("FTP connection name, username, and password are required".to_owned());
     }
     let endpoint = ftp_endpoint(&request.protocol, &request.host, request.port)?;
-    let mut configuration = serde_json::json!({ "root_path": request.root_path.trim() });
+    let mut configuration =
+        serde_json::json!({ "root_path": normalized_root_path(&request.root_path) });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
     set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
@@ -2889,7 +2916,8 @@ async fn connections_create_mega(
     {
         return Err("MEGA connection name, email, and password are required".to_owned());
     }
-    let mut configuration = serde_json::json!({ "root_path": request.root_path.trim() });
+    let mut configuration =
+        serde_json::json!({ "root_path": normalized_root_path(&request.root_path) });
     set_drive_letter(&mut configuration, request.drive_letter.as_deref())?;
     set_mount_on_startup(&mut configuration, request.mount_on_startup)?;
     set_linux_mount_root(&mut configuration, request.mount_root.as_deref())?;
@@ -2953,7 +2981,7 @@ async fn connections_create_sftp(
     request: CreateSftpConnectionRequest,
 ) -> Result<ConnectionSummary, String> {
     ensure_drive_letter_unassigned(&database, request.drive_letter.as_deref(), None).await?;
-    let root_path = request.root_path.trim().to_owned();
+    let root_path = normalized_root_path(&request.root_path);
     let known_hosts = request
         .known_hosts
         .filter(|path| !path.trim().is_empty())

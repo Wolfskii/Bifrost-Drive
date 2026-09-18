@@ -538,6 +538,21 @@ function providerChoiceFromSelection(value: string): ProviderChoice {
     return "S3";
 }
 
+export function defaultStartPath(value?: unknown): string {
+    const path = String(value ?? "").trim();
+    return path || "/";
+}
+
+function connectionUsesStartPath(kind: ConnectionSummary["kind"]): boolean {
+    return (
+        kind === "Sftp" ||
+        kind === "Ftp" ||
+        kind === "WebDav" ||
+        kind === "Nextcloud" ||
+        kind === "Mega"
+    );
+}
+
 export function providerSelectionForKind(
     kind: ConnectionSummary["kind"],
 ): string {
@@ -1071,7 +1086,9 @@ export function App() {
                     : ftpUrl?.protocol === "ftps:"
                       ? 990
                       : 21,
-                rootPath: String(configuration.root_path ?? ""),
+                rootPath: connectionUsesStartPath(connection.kind)
+                    ? defaultStartPath(configuration.root_path)
+                    : String(configuration.root_path ?? ""),
                 domain: String(configuration.domain ?? ""),
                 bucket: String(configuration.bucket ?? ""),
                 accessToken: "",
@@ -1231,7 +1248,7 @@ export function App() {
                 const endpointHost = host.includes(":") ? `[${host}]` : host;
                 updateEndpoint = `${protocol}://${endpointHost}:${port}`;
                 configuration = {
-                    root_path: String(values.get("rootPath") ?? "").trim(),
+                    root_path: defaultStartPath(values.get("rootPath")),
                 };
                 credentials = {
                     username: common.username,
@@ -1247,7 +1264,7 @@ export function App() {
                 };
             } else if (providerChoice === "WebDAV") {
                 configuration = {
-                    root_path: String(values.get("rootPath") ?? "").trim(),
+                    root_path: defaultStartPath(values.get("rootPath")),
                 };
                 credentials = {
                     username: common.username,
@@ -1260,7 +1277,7 @@ export function App() {
                 configuration = {
                     host,
                     port,
-                    root_path: String(values.get("rootPath") ?? "").trim(),
+                    root_path: defaultStartPath(values.get("rootPath")),
                     known_hosts: formDefaults.knownHosts ?? "",
                     authentication: String(
                         values.get("authentication") ?? "password",
@@ -1315,7 +1332,7 @@ export function App() {
             } else if (providerChoice === "Mega") {
                 updateEndpoint = "https://g.api.mega.co.nz";
                 configuration = {
-                    root_path: String(values.get("rootPath") ?? "").trim(),
+                    root_path: defaultStartPath(values.get("rootPath")),
                 };
                 credentials = {
                     username: common.username,
@@ -1355,7 +1372,7 @@ export function App() {
         } else if (providerChoice === "Mega") {
             const form: MegaConnectionForm = {
                 name,
-                rootPath: String(values.get("rootPath") ?? "").trim(),
+                rootPath: defaultStartPath(values.get("rootPath")),
                 email: common.username,
                 password: common.password,
                 driveLetter,
@@ -1372,7 +1389,7 @@ export function App() {
                     "ftp" | "ftps",
                 host: String(values.get("host") ?? "").trim(),
                 port: Number(values.get("port") ?? 21),
-                rootPath: String(values.get("rootPath") ?? "").trim(),
+                rootPath: defaultStartPath(values.get("rootPath")),
                 driveLetter,
             });
         } else if (providerChoice === "SMB") {
@@ -1386,7 +1403,7 @@ export function App() {
             connectionOperation = createWebDavConnection({
                 ...common,
                 endpoint: String(values.get("endpoint") ?? "").trim(),
-                rootPath: String(values.get("rootPath") ?? "").trim(),
+                rootPath: defaultStartPath(values.get("rootPath")),
                 driveLetter,
             });
         } else if (providerChoice === "SFTP") {
@@ -1394,7 +1411,7 @@ export function App() {
                 ...common,
                 host: String(values.get("host") ?? "").trim(),
                 port: Number(values.get("port") ?? 22),
-                rootPath: String(values.get("rootPath") ?? "").trim(),
+                rootPath: defaultStartPath(values.get("rootPath")),
                 authentication: String(
                     values.get("authentication") ?? "password",
                 ) as "password" | "private_key",
@@ -2711,11 +2728,12 @@ export function App() {
                                     <label>
                                         Start path
                                         <input
+                                            key="ftp-start-path"
                                             name="rootPath"
-                                            defaultValue={
-                                                formDefaults.rootPath as string
-                                            }
-                                            placeholder="documents/projects"
+                                            defaultValue={defaultStartPath(
+                                                formDefaults.rootPath,
+                                            )}
+                                            placeholder="/"
                                         />
                                     </label>
                                 </>
@@ -2724,11 +2742,12 @@ export function App() {
                                 <label>
                                     Start path
                                     <input
+                                        key="mega-start-path"
                                         name="rootPath"
-                                        defaultValue={
-                                            formDefaults.rootPath as string
-                                        }
-                                        placeholder="documents/projects"
+                                        defaultValue={defaultStartPath(
+                                            formDefaults.rootPath,
+                                        )}
+                                        placeholder="/"
                                     />
                                 </label>
                             )}
@@ -2779,15 +2798,12 @@ export function App() {
                                     <label>
                                         Start path
                                         <input
+                                            key={`start-path-${providerChoice}`}
                                             name="rootPath"
-                                            defaultValue={
-                                                formDefaults.rootPath as string
-                                            }
-                                            placeholder={
-                                                providerChoice === "WebDAV"
-                                                    ? "data"
-                                                    : "documents/projects"
-                                            }
+                                            defaultValue={defaultStartPath(
+                                                formDefaults.rootPath,
+                                            )}
+                                            placeholder="/"
                                         />
                                     </label>
                                 </div>

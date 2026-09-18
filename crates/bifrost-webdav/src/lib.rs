@@ -707,6 +707,21 @@ mod tests {
     }
 
     #[test]
+    fn root_start_path_keeps_the_endpoint_as_the_mount_root() {
+        let provider = WebDavProvider::connect(
+            WebDavConfig {
+                endpoint: Url::parse("https://dav.test/files").unwrap(),
+                username: "user".to_owned(),
+                root_path: "/".to_owned(),
+            },
+            "secret",
+        )
+        .unwrap();
+
+        assert_eq!(provider.endpoint.as_str(), "https://dav.test/files");
+    }
+
+    #[test]
     fn appends_normalized_start_path_to_existing_endpoint_path() {
         let provider = WebDavProvider::connect(
             WebDavConfig {
