@@ -47,6 +47,15 @@ pub struct LockToken {
     pub token: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChangeBatch {
+    /// Paths whose metadata, parent listing, and descendants are stale.
+    pub changed: Vec<RemotePath>,
+    /// Set when changes could not be mapped to paths and all cached state is stale.
+    pub reset: bool,
+    pub cursor: String,
+}
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("provider {provider} rejected authentication")]
@@ -148,6 +157,14 @@ pub trait StorageProvider: Send + Sync {
         Err(StorageError::Unsupported {
             provider: self.kind(),
             capability: "locking".to_owned(),
+        })
+    }
+
+    /// Returns remote changes since `cursor`; `None` returns a starting cursor and no changes.
+    async fn poll_changes(&self, _cursor: Option<&str>) -> Result<ChangeBatch, StorageError> {
+        Err(StorageError::Unsupported {
+            provider: self.kind(),
+            capability: "change_notifications".to_owned(),
         })
     }
 }

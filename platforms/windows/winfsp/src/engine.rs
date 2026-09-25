@@ -2,20 +2,22 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, Weak,
     },
     time::{Duration, Instant},
 };
 
 use bifrost_common::{RemoteMetadata, RemotePath};
 use bifrost_storage::{ReadRequest, RemoteEntry, StorageError, StorageProvider, WriteRequest};
+use bytes::{Buf, BytesMut};
 use futures_util::StreamExt;
 use tempfile::TempPath;
 use thiserror::Error;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::{watch, Mutex, RwLock},
+    sync::{watch, Mutex, Notify, RwLock},
+    task::JoinHandle,
 };
 use tokio_util::io::ReaderStream;
 
@@ -54,14 +56,18 @@ struct StagedFile {
 struct ReadCache {
     offset: u64,
     end: u64,
-    data: Vec<u8>,
+    data: BytesMut,
     generation: u64,
     complete: bool,
     error: Option<String>,
+    streaming: bool,
+    wanted_end: u64,
 }
 
 const INITIAL_READ_AHEAD_SIZE: usize = 1024 * 1024;
-const SEQUENTIAL_READ_AHEAD_SIZE: usize = 32 * 1024 * 1024;
+const STREAM_BUFFER_AHEAD: u64 = 32 * 1024 * 1024;
+// Keeps slightly out-of-order reads inside the streaming buffer.
+const STREAM_BUFFER_BEHIND: u64 = 4 * 1024 * 1024;
 
 pub struct OpenFile {
     path: RwLock<RemotePath>,
@@ -72,11 +78,28 @@ pub struct OpenFile {
     read_cache: Mutex<Option<ReadCache>>,
     read_generation: AtomicU64,
     read_progress: watch::Sender<u64>,
+    read_consumed: Arc<Notify>,
     dirty: AtomicBool,
     delete_pending: AtomicBool,
 }
 
 impl OpenFile {
+    fn new(path: RemotePath, is_directory: bool, size: u64, stage: Option<StagedFile>) -> Self {
+        Self {
+            path: RwLock::new(path),
+            is_directory,
+            size: AtomicU64::new(size),
+            stage,
+            read_request: Mutex::new(()),
+            read_cache: Mutex::new(None),
+            read_generation: AtomicU64::new(0),
+            read_progress: watch::channel(0).0,
+            read_consumed: Arc::new(Notify::new()),
+            dirty: AtomicBool::new(false),
+            delete_pending: AtomicBool::new(false),
+        }
+    }
+
     pub async fn path(&self) -> RemotePath {
         self.path.read().await.clone()
     }
@@ -100,8 +123,7 @@ impl OpenFile {
 
 pub struct RemoteFilesystem {
     provider: Arc<dyn StorageProvider>,
-    metadata_cache: RwLock<HashMap<RemotePath, Cached<RemoteMetadata>>>,
-    directory_cache: RwLock<HashMap<RemotePath, Cached<Vec<RemoteEntry>>>>,
+    caches: Arc<MetadataCaches>,
 }
 
 struct Cached<T> {
@@ -110,30 +132,126 @@ struct Cached<T> {
 }
 
 const METADATA_CACHE_TTL: Duration = Duration::from_secs(5);
+// Used while provider change polling is healthy, matching rclone's directory cache time.
+const WATCHED_METADATA_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const CHANGE_POLL_INTERVAL: Duration = Duration::from_secs(15);
+
+#[derive(Default)]
+struct MetadataCaches {
+    metadata: RwLock<HashMap<RemotePath, Cached<RemoteMetadata>>>,
+    directories: RwLock<HashMap<RemotePath, Cached<Vec<RemoteEntry>>>>,
+    watched: AtomicBool,
+}
+
+impl MetadataCaches {
+    fn ttl(&self) -> Duration {
+        if self.watched.load(Ordering::Acquire) {
+            WATCHED_METADATA_CACHE_TTL
+        } else {
+            METADATA_CACHE_TTL
+        }
+    }
+
+    /// Drops cached state for each changed path, its descendants, and its parent listing.
+    async fn invalidate(&self, paths: &[&RemotePath]) {
+        self.metadata
+            .write()
+            .await
+            .retain(|cached, _| !paths.iter().any(|path| Self::within(cached, path)));
+        self.directories.write().await.retain(|cached, _| {
+            !paths.iter().any(|path| {
+                Self::within(cached, path)
+                    || cached.as_str()
+                        == path
+                            .as_str()
+                            .rsplit_once('/')
+                            .map_or("", |(parent, _)| parent)
+            })
+        });
+    }
+
+    async fn clear(&self) {
+        self.metadata.write().await.clear();
+        self.directories.write().await.clear();
+    }
+
+    fn within(candidate: &RemotePath, path: &RemotePath) -> bool {
+        let (candidate, path) = (candidate.as_str(), path.as_str());
+        path.is_empty()
+            || candidate == path
+            || candidate
+                .strip_prefix(path)
+                .is_some_and(|rest| rest.starts_with('/'))
+    }
+}
 
 impl RemoteFilesystem {
     pub fn new(provider: Arc<dyn StorageProvider>) -> Self {
         Self {
             provider,
-            metadata_cache: RwLock::new(HashMap::new()),
-            directory_cache: RwLock::new(HashMap::new()),
+            caches: Arc::new(MetadataCaches::default()),
         }
+    }
+
+    /// Polls provider change notifications and lengthens cache lifetimes while they work.
+    /// Must be called inside a Tokio runtime; providers without change support end the task.
+    pub fn watch_changes(&self) -> JoinHandle<()> {
+        self.watch_changes_every(CHANGE_POLL_INTERVAL)
+    }
+
+    fn watch_changes_every(&self, interval: Duration) -> JoinHandle<()> {
+        let provider = Arc::clone(&self.provider);
+        let caches = Arc::downgrade(&self.caches);
+        tokio::spawn(async move {
+            let mut cursor: Option<String> = None;
+            loop {
+                let result = provider.poll_changes(cursor.as_deref()).await;
+                let Some(caches) = caches.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok(batch) => {
+                        // Entries cached before the first cursor may predate it.
+                        if batch.reset || cursor.is_none() {
+                            caches.clear().await;
+                        } else if !batch.changed.is_empty() {
+                            caches
+                                .invalidate(&batch.changed.iter().collect::<Vec<_>>())
+                                .await;
+                        }
+                        caches.watched.store(true, Ordering::Release);
+                        cursor = Some(batch.cursor);
+                    }
+                    Err(StorageError::Unsupported { .. }) => {
+                        caches.watched.store(false, Ordering::Release);
+                        return;
+                    }
+                    Err(error) => {
+                        caches.watched.store(false, Ordering::Release);
+                        tracing::debug!(%error, "remote change polling failed");
+                    }
+                }
+                drop(caches);
+                tokio::time::sleep(interval).await;
+            }
+        })
     }
 
     pub async fn stat(&self, path: &RemotePath) -> Result<RemoteMetadata, WinFspFilesystemError> {
         if let Some(metadata) = self
-            .metadata_cache
+            .caches
+            .metadata
             .read()
             .await
             .get(path)
-            .filter(|entry| entry.cached_at.elapsed() < METADATA_CACHE_TTL)
+            .filter(|entry| entry.cached_at.elapsed() < self.caches.ttl())
             .filter(|entry| entry.value.is_directory || entry.value.size_bytes.is_some())
             .map(|entry| entry.value.clone())
         {
             return Ok(metadata);
         }
         let metadata = self.provider.stat(path).await?;
-        self.metadata_cache.write().await.insert(
+        self.caches.metadata.write().await.insert(
             path.clone(),
             Cached {
                 value: metadata.clone(),
@@ -178,11 +296,12 @@ impl RemoteFilesystem {
 
     pub async fn list(&self, path: &RemotePath) -> Result<Vec<RemoteEntry>, WinFspFilesystemError> {
         if let Some(entries) = self
-            .directory_cache
+            .caches
+            .directories
             .read()
             .await
             .get(path)
-            .filter(|entry| entry.cached_at.elapsed() < METADATA_CACHE_TTL)
+            .filter(|entry| entry.cached_at.elapsed() < self.caches.ttl())
             .map(|entry| entry.value.clone())
         {
             return Ok(entries);
@@ -199,7 +318,7 @@ impl RemoteFilesystem {
             }
         }
         let cached_at = Instant::now();
-        let mut metadata_cache = self.metadata_cache.write().await;
+        let mut metadata_cache = self.caches.metadata.write().await;
         for entry in &entries {
             metadata_cache.insert(
                 entry.metadata.path.clone(),
@@ -210,7 +329,7 @@ impl RemoteFilesystem {
             );
         }
         drop(metadata_cache);
-        self.directory_cache.write().await.insert(
+        self.caches.directories.write().await.insert(
             path.clone(),
             Cached {
                 value: entries.clone(),
@@ -236,18 +355,12 @@ impl RemoteFilesystem {
         } else {
             metadata.size_bytes.unwrap_or(0)
         };
-        Ok(Arc::new(OpenFile {
-            path: RwLock::new(path),
-            is_directory: metadata.is_directory,
-            size: AtomicU64::new(size),
+        Ok(Arc::new(OpenFile::new(
+            path,
+            metadata.is_directory,
+            size,
             stage,
-            read_request: Mutex::new(()),
-            read_cache: Mutex::new(None),
-            read_generation: AtomicU64::new(0),
-            read_progress: watch::channel(0).0,
-            dirty: AtomicBool::new(false),
-            delete_pending: AtomicBool::new(false),
-        }))
+        )))
     }
 
     pub async fn create_file(
@@ -255,18 +368,9 @@ impl RemoteFilesystem {
         path: RemotePath,
     ) -> Result<Arc<OpenFile>, WinFspFilesystemError> {
         self.ensure_missing(&path).await?;
-        Ok(Arc::new(OpenFile {
-            path: RwLock::new(path),
-            is_directory: false,
-            size: AtomicU64::new(0),
-            stage: Some(Self::empty_stage().await?),
-            read_request: Mutex::new(()),
-            read_cache: Mutex::new(None),
-            read_generation: AtomicU64::new(0),
-            read_progress: watch::channel(0).0,
-            dirty: AtomicBool::new(true),
-            delete_pending: AtomicBool::new(false),
-        }))
+        let handle = OpenFile::new(path, false, 0, Some(Self::empty_stage().await?));
+        handle.dirty.store(true, Ordering::Release);
+        Ok(Arc::new(handle))
     }
 
     pub async fn create_directory(
@@ -276,18 +380,7 @@ impl RemoteFilesystem {
         self.ensure_missing(&path).await?;
         self.provider.create_directory(&path).await?;
         self.invalidate_paths(&[&path]).await;
-        Ok(Arc::new(OpenFile {
-            path: RwLock::new(path),
-            is_directory: true,
-            size: AtomicU64::new(0),
-            stage: None,
-            read_request: Mutex::new(()),
-            read_cache: Mutex::new(None),
-            read_generation: AtomicU64::new(0),
-            read_progress: watch::channel(0).0,
-            dirty: AtomicBool::new(false),
-            delete_pending: AtomicBool::new(false),
-        }))
+        Ok(Arc::new(OpenFile::new(path, true, 0, None)))
     }
 
     pub async fn read(
@@ -313,12 +406,24 @@ impl RemoteFilesystem {
         if offset >= file_size {
             return Ok(Vec::new());
         }
+        let wanted_end = offset.saturating_add(length as u64).min(file_size);
         let mut progress = handle.read_progress.subscribe();
         loop {
             let mut cache = handle.read_cache.lock().await;
-            if let Some(cached) = cache.as_ref() {
+            if let Some(cached) = cache.as_mut() {
                 if let Some(error) = &cached.error {
                     return Err(WinFspFilesystemError::Staging(error.clone()));
+                }
+                if cached.streaming && offset >= cached.offset {
+                    cached.wanted_end = cached.wanted_end.max(wanted_end);
+                    let behind = offset - cached.offset;
+                    if behind > STREAM_BUFFER_BEHIND {
+                        let consumed =
+                            (behind - STREAM_BUFFER_BEHIND).min(cached.data.len() as u64);
+                        cached.data.advance(consumed as usize);
+                        cached.offset += consumed;
+                    }
+                    handle.read_consumed.notify_one();
                 }
                 let relative = offset.saturating_sub(cached.offset) as usize;
                 if offset >= cached.offset && relative < cached.data.len() {
@@ -334,7 +439,10 @@ impl RemoteFilesystem {
                 if cached.complete && cached.end == file_size && offset >= data_end {
                     return Ok(Vec::new());
                 }
-                if offset >= cached.offset && offset < cached.end && !cached.complete {
+                // A far forward seek would wait on a paused stream, so it starts a new range.
+                let reachable =
+                    !cached.streaming || offset <= data_end.saturating_add(STREAM_BUFFER_AHEAD);
+                if offset >= cached.offset && offset < cached.end && !cached.complete && reachable {
                     drop(cache);
                     progress
                         .changed()
@@ -342,119 +450,185 @@ impl RemoteFilesystem {
                         .map_err(|error| WinFspFilesystemError::Staging(error.to_string()))?;
                     continue;
                 }
-                if offset == cached.offset.saturating_add(cached.data.len() as u64) {
-                    if let Some(error) = &cached.error {
-                        return Err(WinFspFilesystemError::Staging(error.clone()));
-                    }
-                    if cached.complete && offset < cached.end {
-                        return Ok(Vec::new());
-                    }
+                if offset == data_end && cached.complete && offset < cached.end {
+                    return Ok(Vec::new());
                 }
             }
+            // Sequential access switches to one open-ended stream instead of chunked requests.
             let sequential = cache.as_ref().is_some_and(|cached| {
                 cached.complete && offset == cached.offset.saturating_add(cached.data.len() as u64)
             });
-            let read_length = length.max(if sequential {
-                SEQUENTIAL_READ_AHEAD_SIZE
+            let end = if sequential {
+                file_size
             } else {
-                INITIAL_READ_AHEAD_SIZE
-            });
-            let end = offset.saturating_add(read_length as u64).min(file_size);
-            let read_length = end.saturating_sub(offset) as usize;
+                offset
+                    .saturating_add(length.max(INITIAL_READ_AHEAD_SIZE) as u64)
+                    .min(file_size)
+            };
+            let buffer_capacity = end
+                .saturating_sub(offset)
+                .min(STREAM_BUFFER_AHEAD + STREAM_BUFFER_BEHIND + length as u64);
             let generation = handle.read_generation.fetch_add(1, Ordering::AcqRel) + 1;
             *cache = Some(ReadCache {
                 offset,
                 end,
-                data: Vec::with_capacity(read_length),
+                data: BytesMut::with_capacity(buffer_capacity as usize),
                 generation,
                 complete: false,
                 error: None,
+                streaming: sequential,
+                wanted_end,
             });
             drop(cache);
 
-            let provider = Arc::clone(&self.provider);
-            let handle = Arc::clone(handle);
-            let path = handle.path().await;
-            tokio::spawn(async move {
-                let result = provider
-                    .read(ReadRequest {
-                        path,
-                        range: Some(offset..end),
-                    })
-                    .await;
-                match result {
-                    Ok(mut stream) => {
-                        while let Some(chunk) = stream.next().await {
-                            let chunk = match chunk {
-                                Ok(chunk) => chunk,
-                                Err(error) => {
-                                    let mut cache = handle.read_cache.lock().await;
-                                    if let Some(cache) = cache
-                                        .as_mut()
-                                        .filter(|cache| cache.generation == generation)
-                                    {
-                                        cache.error = Some(error.to_string());
-                                        cache.complete = true;
-                                    }
-                                    handle.read_progress.send_modify(|value| *value += 1);
-                                    return;
-                                }
-                            };
-                            let full = {
-                                let mut cache = handle.read_cache.lock().await;
-                                let Some(cache) = cache
-                                    .as_mut()
-                                    .filter(|cache| cache.generation == generation)
-                                else {
-                                    return;
-                                };
-                                let remaining = read_length.saturating_sub(cache.data.len());
-                                cache
-                                    .data
-                                    .extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-                                let full = cache.data.len() == read_length;
-                                cache.complete = full;
-                                full
-                            };
-                            handle.read_progress.send_modify(|value| *value += 1);
-                            if full {
-                                return;
-                            }
-                        }
-                        let mut cache = handle.read_cache.lock().await;
-                        if let Some(cache) = cache
-                            .as_mut()
-                            .filter(|cache| cache.generation == generation)
-                        {
-                            if cache.data.len() == read_length {
-                                cache.complete = true;
-                            } else {
-                                cache.error = Some(format!(
-                                    "remote read ended after {} of {read_length} bytes",
-                                    cache.data.len()
-                                ));
-                                cache.complete = true;
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        let mut cache = handle.read_cache.lock().await;
-                        if let Some(cache) = cache
-                            .as_mut()
-                            .filter(|cache| cache.generation == generation)
-                        {
-                            cache.error = Some(error.to_string());
-                            cache.complete = true;
-                        }
-                    }
-                }
-                handle.read_progress.send_modify(|value| *value += 1);
-            });
+            tokio::spawn(Self::fetch_range(
+                Arc::clone(&self.provider),
+                Arc::downgrade(handle),
+                Arc::clone(&handle.read_consumed),
+                handle.path().await,
+                generation,
+                offset..end,
+                sequential,
+            ));
             progress
                 .changed()
                 .await
                 .map_err(|error| WinFspFilesystemError::Staging(error.to_string()))?;
         }
+    }
+
+    async fn fetch_range(
+        provider: Arc<dyn StorageProvider>,
+        handle: Weak<OpenFile>,
+        consumed: Arc<Notify>,
+        path: RemotePath,
+        generation: u64,
+        range: std::ops::Range<u64>,
+        streaming: bool,
+    ) {
+        let expected = range.end - range.start;
+        let mut received = 0u64;
+        let mut stream = match provider
+            .read(ReadRequest {
+                path,
+                range: Some(range),
+            })
+            .await
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                Self::finish_fetch(&handle, generation, |cache| {
+                    cache.error = Some(error.to_string());
+                })
+                .await;
+                return;
+            }
+        };
+        loop {
+            let chunk = match stream.next().await {
+                Some(Ok(chunk)) => chunk,
+                Some(Err(error)) => {
+                    Self::finish_fetch(&handle, generation, |cache| {
+                        // A dropped long-lived stream resumes with a new request at the gap.
+                        if streaming && received > 0 {
+                            cache.end = cache.offset + cache.data.len() as u64;
+                        } else {
+                            cache.error = Some(error.to_string());
+                        }
+                    })
+                    .await;
+                    return;
+                }
+                None => {
+                    Self::finish_fetch(&handle, generation, |cache| {
+                        if received != expected {
+                            cache.error = Some(format!(
+                                "remote read ended after {received} of {expected} bytes"
+                            ));
+                        }
+                    })
+                    .await;
+                    return;
+                }
+            };
+            // Backpressure: pause the stream while it is far enough ahead of the reader.
+            if streaming {
+                loop {
+                    match Self::stream_has_room(&handle, generation).await {
+                        None => return,
+                        Some(true) => break,
+                        Some(false) => {
+                            let _ =
+                                tokio::time::timeout(Duration::from_secs(1), consumed.notified())
+                                    .await;
+                        }
+                    }
+                }
+            }
+            let Some(handle) = handle.upgrade() else {
+                return;
+            };
+            let full = {
+                let mut cache = handle.read_cache.lock().await;
+                let Some(cache) = cache
+                    .as_mut()
+                    .filter(|cache| cache.generation == generation)
+                else {
+                    return;
+                };
+                let take = (chunk.len() as u64).min(expected - received) as usize;
+                cache.data.extend_from_slice(&chunk[..take]);
+                received += take as u64;
+                let full = received == expected;
+                cache.complete = full;
+                full
+            };
+            handle.read_progress.send_modify(|value| *value += 1);
+            if full {
+                return;
+            }
+        }
+    }
+
+    /// `None` means the handle closed or a newer fetch replaced this one.
+    async fn stream_has_room(handle: &Weak<OpenFile>, generation: u64) -> Option<bool> {
+        let handle = handle.upgrade()?;
+        let cache = handle.read_cache.lock().await;
+        let cache = cache
+            .as_ref()
+            .filter(|cache| cache.generation == generation)?;
+        Some(
+            cache.offset + (cache.data.len() as u64)
+                < cache.wanted_end.saturating_add(STREAM_BUFFER_AHEAD),
+        )
+    }
+
+    async fn finish_fetch(
+        handle: &Weak<OpenFile>,
+        generation: u64,
+        update: impl FnOnce(&mut ReadCache),
+    ) {
+        let Some(handle) = handle.upgrade() else {
+            return;
+        };
+        if let Some(cache) = handle
+            .read_cache
+            .lock()
+            .await
+            .as_mut()
+            .filter(|cache| cache.generation == generation)
+        {
+            update(cache);
+            cache.complete = true;
+        }
+        handle.read_progress.send_modify(|value| *value += 1);
+    }
+
+    /// Stops any background range fetch for a handle that the OS has closed.
+    pub async fn close(&self, handle: &OpenFile) {
+        handle.read_generation.fetch_add(1, Ordering::AcqRel);
+        *handle.read_cache.lock().await = None;
+        handle.read_consumed.notify_one();
     }
 
     pub async fn write(
@@ -590,31 +764,8 @@ impl RemoteFilesystem {
         }
     }
 
-    /// Drops cached state for each changed path, its descendants, and its parent listing.
     async fn invalidate_paths(&self, paths: &[&RemotePath]) {
-        self.metadata_cache
-            .write()
-            .await
-            .retain(|cached, _| !paths.iter().any(|path| Self::within(cached, path)));
-        self.directory_cache.write().await.retain(|cached, _| {
-            !paths.iter().any(|path| {
-                Self::within(cached, path)
-                    || cached.as_str()
-                        == path
-                            .as_str()
-                            .rsplit_once('/')
-                            .map_or("", |(parent, _)| parent)
-            })
-        });
-    }
-
-    fn within(candidate: &RemotePath, path: &RemotePath) -> bool {
-        let (candidate, path) = (candidate.as_str(), path.as_str());
-        path.is_empty()
-            || candidate == path
-            || candidate
-                .strip_prefix(path)
-                .is_some_and(|rest| rest.starts_with('/'))
+        self.caches.invalidate(paths).await;
     }
 
     async fn stage_remote_file(
@@ -685,6 +836,8 @@ mod tests {
         list_size_unknown: bool,
         read_chunk_size: usize,
         read_chunk_delay: Duration,
+        supports_changes: bool,
+        pending_changes: Mutex<Vec<RemotePath>>,
     }
 
     impl MemoryProvider {
@@ -899,6 +1052,23 @@ mod tests {
             self.replace_calls.fetch_add(1, Ordering::Relaxed);
             self.delete(to).await?;
             self.rename(from, to).await
+        }
+
+        async fn poll_changes(
+            &self,
+            _cursor: Option<&str>,
+        ) -> Result<bifrost_storage::ChangeBatch, StorageError> {
+            if !self.supports_changes {
+                return Err(StorageError::Unsupported {
+                    provider: self.kind(),
+                    capability: "change_notifications".to_owned(),
+                });
+            }
+            Ok(bifrost_storage::ChangeBatch {
+                changed: std::mem::take(&mut *self.pending_changes.lock().await),
+                reset: false,
+                cursor: "cursor".to_owned(),
+            })
         }
     }
 
@@ -1142,6 +1312,77 @@ mod tests {
             result,
             Err(WinFspFilesystemError::AlreadyExists(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn remote_changes_extend_cache_lifetime_and_invalidate_changed_paths() {
+        let provider = Arc::new(MemoryProvider {
+            supports_changes: true,
+            ..Default::default()
+        });
+        provider.insert("a/one.txt", b"one").await;
+        let filesystem = RemoteFilesystem::new(provider.clone());
+        let folder = RemotePath::parse("a").unwrap();
+        filesystem.list(&folder).await.unwrap();
+
+        let watcher = filesystem.watch_changes_every(Duration::from_millis(10));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(filesystem.caches.ttl(), WATCHED_METADATA_CACHE_TTL);
+        filesystem.list(&folder).await.unwrap();
+        filesystem.list(&folder).await.unwrap();
+        assert_eq!(provider.list_calls.load(Ordering::Relaxed), 2);
+
+        provider
+            .pending_changes
+            .lock()
+            .await
+            .push(RemotePath::parse("a/two.txt").unwrap());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        filesystem.list(&folder).await.unwrap();
+        assert_eq!(provider.list_calls.load(Ordering::Relaxed), 3);
+        watcher.abort();
+    }
+
+    #[tokio::test]
+    async fn providers_without_change_support_keep_the_short_cache_lifetime() {
+        let provider = Arc::new(MemoryProvider::default());
+        let filesystem = RemoteFilesystem::new(provider);
+
+        filesystem.watch_changes().await.unwrap();
+
+        assert_eq!(filesystem.caches.ttl(), METADATA_CACHE_TTL);
+    }
+
+    #[tokio::test]
+    async fn sequential_reads_share_one_open_ended_stream() {
+        let provider = Arc::new(MemoryProvider {
+            read_chunk_size: 1024 * 1024,
+            ..Default::default()
+        });
+        let expected = (0..40 * 1024 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        provider.insert("movie.mkv", &expected).await;
+        let filesystem = RemoteFilesystem::new(provider.clone());
+        let handle = filesystem
+            .open(RemotePath::parse("movie.mkv").unwrap(), false)
+            .await
+            .unwrap();
+
+        let mut actual = Vec::new();
+        loop {
+            let chunk = filesystem
+                .read(&handle, actual.len() as u64, 1024 * 1024)
+                .await
+                .unwrap();
+            if chunk.is_empty() {
+                break;
+            }
+            actual.extend_from_slice(&chunk);
+        }
+
+        assert!(actual == expected);
+        assert_eq!(provider.read_calls.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]

@@ -23,6 +23,8 @@ Bifrost can upload supported media, list and stream Bifrost-created media, creat
 
 Listed media items are cached for 50 minutes, inside Google's 60-minute base URL lifetime, and the album list for five minutes. `All Photos` items are fetched directly by the media ID embedded in their virtual name instead of paging through the library. Album items that are not cached fall back to an album search. Rate-limit and `5xx` responses are retried with capped exponential backoff.
 
+The Library API does not report file sizes, so opening an item sends one `HEAD` request for its download size and remembers it for later listings. Downloads use `=d` for photos (EXIF preserved except location, per Google) and `=dv` for videos, with a standard HTTP `Range` header; when Google answers a range request with the full body, Bifrost slices the requested bytes locally. Uploads stream from the local file instead of buffering it in memory and are therefore sent once; the transfer queue owns retries.
+
 Google does not offer an official API to delete media items, empty Google Photos trash, or delete album containers. Bifrost therefore rejects deletion through this official connection.
 
 ## Planned hybrid connection

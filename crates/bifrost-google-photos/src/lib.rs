@@ -7,7 +7,6 @@ use bifrost_google_drive::{
 use bifrost_storage::{
     ByteStream, Page, ReadRequest, RemoteEntry, StorageError, StorageProvider, WriteRequest,
 };
-use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use reqwest::{header, Client, Method, StatusCode};
@@ -57,7 +56,9 @@ pub struct GooglePhotosProvider {
     endpoint: Url,
     session: Arc<Mutex<GooglePhotosSession>>,
     // Keyed by (album ID, media item ID); `None` is the whole library.
-    media_items: Arc<Mutex<HashMap<(Option<String>, String), CachedMediaItem>>>,
+    media_items: Arc<Mutex<MediaItemCache>>,
+    // Download sizes by media ID; media content is immutable once created.
+    media_sizes: Arc<Mutex<HashMap<String, u64>>>,
     albums: Arc<Mutex<Option<CachedAlbums>>>,
 }
 
@@ -65,6 +66,8 @@ struct CachedMediaItem {
     item: MediaItem,
     cached_at: Instant,
 }
+
+type MediaItemCache = HashMap<(Option<String>, String), CachedMediaItem>;
 
 struct CachedAlbums {
     albums: Vec<Album>,
@@ -145,6 +148,8 @@ struct MediaItem {
     filename: String,
     #[serde(rename = "baseUrl")]
     base_url: String,
+    #[serde(rename = "mimeType")]
+    mime_type: Option<String>,
     #[serde(rename = "mediaMetadata")]
     media_metadata: Option<MediaMetadata>,
 }
@@ -238,6 +243,7 @@ impl GooglePhotosProvider {
                 expires_at: credentials.expires_at,
             })),
             media_items: Arc::new(Mutex::new(HashMap::new())),
+            media_sizes: Arc::new(Mutex::new(HashMap::new())),
             albums: Arc::new(Mutex::new(None)),
         })
     }
@@ -585,20 +591,15 @@ impl GooglePhotosProvider {
                 "a file name is required for Google Photos uploads",
             ));
         }
-        let mut content = request.content;
-        let mut bytes = Vec::new();
-        while let Some(chunk) = content.next().await {
-            bytes.extend_from_slice(&chunk?);
-        }
-        let bytes = Bytes::from(bytes);
         let access_token = self.access_token().await?;
+        // Streamed like rclone so large videos are never buffered in memory; not replayable.
         let upload_token = self
             .execute(
                 self.authorized(Method::POST, self.api_url("uploads"), &access_token)
                     .header(header::CONTENT_TYPE, "application/octet-stream")
                     .header("X-Goog-Upload-Content-Type", "application/octet-stream")
                     .header("X-Goog-Upload-Protocol", "raw")
-                    .body(bytes),
+                    .body(reqwest::Body::wrap_stream(request.content)),
             )
             .await?
             .text()
@@ -648,14 +649,14 @@ impl GooglePhotosProvider {
             None => RemotePath::parse(ALL_PHOTOS_DIRECTORY).unwrap(),
         };
         let item_path = Self::item_path(&parent, &item)?;
-        Ok(Self::media_metadata(item, item_path))
+        Ok(Self::media_metadata(item, item_path, request.size_bytes))
     }
 
-    fn media_metadata(item: MediaItem, path: RemotePath) -> RemoteMetadata {
+    fn media_metadata(item: MediaItem, path: RemotePath, size: Option<u64>) -> RemoteMetadata {
         RemoteMetadata {
             path,
             is_directory: false,
-            size_bytes: None,
+            size_bytes: size,
             etag: Some(item.id),
             modified_at: item
                 .media_metadata
@@ -663,15 +664,71 @@ impl GooglePhotosProvider {
         }
     }
 
-    fn range_suffix(range: Option<Range<u64>>) -> Result<String, StorageError> {
-        match range {
-            None => Ok("=d".to_owned()),
-            Some(range) if range.start < range.end => {
-                Ok(format!("=d-r{}-{}", range.start, range.end - 1))
+    /// `=d` keeps EXIF (except location); videos need `=dv` or Google serves a still frame.
+    fn download_url(item: &MediaItem) -> String {
+        let is_video = item
+            .mime_type
+            .as_deref()
+            .is_some_and(|mime_type| mime_type.starts_with("video/"));
+        format!("{}={}", item.base_url, if is_video { "dv" } else { "d" })
+    }
+
+    async fn media_size(&self, item: &MediaItem) -> Result<Option<u64>, StorageError> {
+        if let Some(size) = self.media_sizes.lock().await.get(&item.id) {
+            return Ok(Some(*size));
+        }
+        let response = self
+            .execute(self.client.head(Self::download_url(item)))
+            .await?;
+        let size = response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        if let Some(size) = size {
+            let mut sizes = self.media_sizes.lock().await;
+            if sizes.len() >= MAX_CACHED_MEDIA_ITEMS {
+                sizes.clear();
             }
-            Some(_) => Err(Self::provider_error(
+            sizes.insert(item.id.clone(), size);
+        }
+        Ok(size)
+    }
+
+    /// Serves a requested range from a full-body response when the server ignores `Range`.
+    fn slice_stream(stream: ByteStream, skip: u64, take: u64) -> ByteStream {
+        Box::pin(futures_util::stream::unfold(
+            (stream, skip, take),
+            |(mut stream, mut skip, mut take)| async move {
+                loop {
+                    if take == 0 {
+                        return None;
+                    }
+                    match stream.next().await? {
+                        Err(error) => return Some((Err(error), (stream, 0, 0))),
+                        Ok(bytes) => {
+                            let dropped = skip.min(bytes.len() as u64);
+                            skip -= dropped;
+                            let bytes = bytes.slice(dropped as usize..);
+                            if bytes.is_empty() {
+                                continue;
+                            }
+                            let kept = take.min(bytes.len() as u64);
+                            take -= kept;
+                            return Some((Ok(bytes.slice(..kept as usize)), (stream, skip, take)));
+                        }
+                    }
+                }
+            },
+        ))
+    }
+
+    fn validate_range(range: &Option<Range<u64>>) -> Result<(), StorageError> {
+        match range {
+            Some(range) if range.start >= range.end => Err(Self::provider_error(
                 "read range must have a positive length",
             )),
+            _ => Ok(()),
         }
     }
 }
@@ -729,14 +786,16 @@ impl StorageProvider for GooglePhotosProvider {
         }
         if root == ALL_PHOTOS_DIRECTORY && components.is_empty() {
             let page = self.list_media(None, cursor).await?;
+            let sizes = self.media_sizes.lock().await;
             return Ok(Page {
                 entries: page
                     .entries
                     .into_iter()
                     .map(|item| {
                         let item_path = Self::item_path(prefix, &item)?;
+                        let size = sizes.get(&item.id).copied();
                         Ok(RemoteEntry {
-                            metadata: Self::media_metadata(item, item_path),
+                            metadata: Self::media_metadata(item, item_path, size),
                         })
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?,
@@ -774,14 +833,16 @@ impl StorageProvider for GooglePhotosProvider {
                 )
                 .await?;
             let page = self.list_media(Some(&album.id), cursor).await?;
+            let sizes = self.media_sizes.lock().await;
             return Ok(Page {
                 entries: page
                     .entries
                     .into_iter()
                     .map(|item| {
                         let item_path = Self::item_path(prefix, &item)?;
+                        let size = sizes.get(&item.id).copied();
                         Ok(RemoteEntry {
-                            metadata: Self::media_metadata(item, item_path),
+                            metadata: Self::media_metadata(item, item_path, size),
                         })
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?,
@@ -802,7 +863,8 @@ impl StorageProvider for GooglePhotosProvider {
         }
         if root == ALL_PHOTOS_DIRECTORY && components.len() == 1 {
             let item = self.find_media(None, components[0], path).await?;
-            return Ok(Self::media_metadata(item, path.clone()));
+            let size = self.media_size(&item).await?;
+            return Ok(Self::media_metadata(item, path.clone(), size));
         }
         if root == ALBUMS_DIRECTORY && components.len() == 1 {
             self.find_album(
@@ -826,7 +888,8 @@ impl StorageProvider for GooglePhotosProvider {
             let item = self
                 .find_media(Some(&album.id), components[1], path)
                 .await?;
-            return Ok(Self::media_metadata(item, path.clone()));
+            let size = self.media_size(&item).await?;
+            return Ok(Self::media_metadata(item, path.clone(), size));
         }
         Err(StorageError::NotFound { path: path.clone() })
     }
@@ -852,18 +915,27 @@ impl StorageProvider for GooglePhotosProvider {
                 capability: "read_directory".to_owned(),
             });
         };
-        let response = self
-            .execute(self.client.get(format!(
-                "{}{}",
-                item.base_url,
-                Self::range_suffix(request.range)?
-            )))
-            .await?;
-        Ok(Box::pin(
+        Self::validate_range(&request.range)?;
+        let mut download = self.client.get(Self::download_url(&item));
+        if let Some(range) = request.range.as_ref() {
+            download = download.header(
+                header::RANGE,
+                format!("bytes={}-{}", range.start, range.end - 1),
+            );
+        }
+        let response = self.execute(download).await?;
+        let ignored_range = response.status() == StatusCode::OK;
+        let stream: ByteStream = Box::pin(
             response
                 .bytes_stream()
                 .map(|chunk| chunk.map_err(Self::network_error)),
-        ))
+        );
+        Ok(match request.range {
+            Some(range) if ignored_range => {
+                Self::slice_stream(stream, range.start, range.end - range.start)
+            }
+            _ => stream,
+        })
     }
 
     async fn write(&self, request: WriteRequest) -> Result<RemoteMetadata, StorageError> {
@@ -1151,5 +1223,44 @@ mod tests {
         assert_eq!(ids("IMG_0001.jpg--AF1Qip_x-9"), ["AF1Qip_x-9"]);
         assert_eq!(ids("my--trip.jpg--AF1--Qip"), ["AF1--Qip", "Qip"]);
         assert!(ids("IMG_0001.jpg").is_empty());
+    }
+
+    #[tokio::test]
+    async fn slices_full_bodies_when_the_server_ignores_the_range() {
+        use bytes::Bytes;
+        use futures_util::{stream, StreamExt};
+
+        let body: bifrost_storage::ByteStream = Box::pin(stream::iter([
+            Ok(Bytes::from_static(b"abc")),
+            Ok(Bytes::from_static(b"defg")),
+            Ok(Bytes::from_static(b"hij")),
+        ]));
+        let sliced = GooglePhotosProvider::slice_stream(body, 2, 6)
+            .map(|chunk| chunk.unwrap())
+            .collect::<Vec<_>>()
+            .await
+            .concat();
+
+        assert_eq!(sliced, b"cdefgh");
+    }
+
+    #[test]
+    fn videos_use_the_video_download_suffix() {
+        let mut item = super::MediaItem {
+            id: "id".to_owned(),
+            filename: "clip.mp4".to_owned(),
+            base_url: "https://lh3.googleusercontent.com/base".to_owned(),
+            mime_type: Some("video/mp4".to_owned()),
+            media_metadata: None,
+        };
+        assert_eq!(
+            GooglePhotosProvider::download_url(&item),
+            "https://lh3.googleusercontent.com/base=dv"
+        );
+        item.mime_type = Some("image/jpeg".to_owned());
+        assert_eq!(
+            GooglePhotosProvider::download_url(&item),
+            "https://lh3.googleusercontent.com/base=d"
+        );
     }
 }

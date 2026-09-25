@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use bifrost_common::{Capability, CapabilitySet, ProviderKind, RemoteMetadata, RemotePath};
 use bifrost_storage::{
-    ByteStream, Page, ReadRequest, RemoteEntry, StorageCapacity, StorageError, StorageProvider,
-    WriteRequest,
+    ByteStream, ChangeBatch, Page, ReadRequest, RemoteEntry, StorageCapacity, StorageError,
+    StorageProvider, WriteRequest,
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -29,6 +29,11 @@ const SINGLE_FILE_FIELDS: &str =
 const MAX_WORKSPACE_EXPORT_CACHE_BYTES: usize = 64 * 1024 * 1024;
 // Lets consecutive range reads skip the per-request name lookup.
 const FILE_ID_CACHE_TTL: Duration = Duration::from_secs(30);
+const MAX_INDEXED_ITEMS: usize = 200_000;
+// Past this many changes in one poll, clearing every cache is cheaper than mapping them.
+const MAX_MAPPED_CHANGES: usize = 10_000;
+const CHANGE_FIELDS: &str =
+    "nextPageToken,newStartPageToken,changes(fileId,removed,file(name,mimeType,parents,trashed))";
 const GOOGLE_DOC_MIME_TYPE: &str = "application/vnd.google-apps.document";
 const GOOGLE_SHEET_MIME_TYPE: &str = "application/vnd.google-apps.spreadsheet";
 const GOOGLE_SLIDES_MIME_TYPE: &str = "application/vnd.google-apps.presentation";
@@ -109,6 +114,8 @@ pub struct GoogleDriveProvider {
     session: Arc<Mutex<GoogleDriveSession>>,
     directory_ids: Arc<Mutex<HashMap<String, String>>>,
     file_ids: Arc<Mutex<HashMap<String, CachedFile>>>,
+    // Reverse index used to map Changes API file IDs back to virtual paths.
+    item_paths: Arc<Mutex<HashMap<String, String>>>,
     workspace_exports: Arc<Mutex<HashMap<String, CachedWorkspaceExport>>>,
 }
 
@@ -150,6 +157,47 @@ struct DriveFile {
 struct AboutResponse {
     #[serde(rename = "storageQuota")]
     storage_quota: Option<StorageQuota>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileIdResponse {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StartPageTokenResponse {
+    #[serde(rename = "startPageToken")]
+    start_page_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChangeListResponse {
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
+    #[serde(rename = "newStartPageToken")]
+    new_start_page_token: Option<String>,
+    #[serde(default)]
+    changes: Vec<DriveChange>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DriveChange {
+    #[serde(rename = "fileId")]
+    file_id: Option<String>,
+    #[serde(default)]
+    removed: bool,
+    file: Option<ChangedFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChangedFile {
+    name: String,
+    #[serde(rename = "mimeType")]
+    mime_type: String,
+    #[serde(default)]
+    parents: Vec<String>,
+    #[serde(default)]
+    trashed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -228,6 +276,7 @@ impl GoogleDriveProvider {
             })),
             directory_ids: Arc::new(Mutex::new(directory_ids)),
             file_ids: Arc::new(Mutex::new(HashMap::new())),
+            item_paths: Arc::new(Mutex::new(HashMap::new())),
             workspace_exports: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -448,6 +497,18 @@ impl GoogleDriveProvider {
             .retain(|key, _| key.is_empty() || !within(key));
     }
 
+    async fn forget_everything(&self) {
+        self.file_ids.lock().await.clear();
+        self.directory_ids
+            .lock()
+            .await
+            .retain(|key, _| key.is_empty());
+        self.item_paths
+            .lock()
+            .await
+            .retain(|_, path| path.is_empty());
+    }
+
     async fn cached_file(&self, path: &RemotePath) -> Option<DriveFile> {
         self.file_ids
             .lock()
@@ -459,6 +520,109 @@ impl GoogleDriveProvider {
 
     fn is_cacheable_file(file: &DriveFile) -> bool {
         file.mime_type != FOLDER_MIME_TYPE && Self::workspace_format(&file.mime_type).is_none()
+    }
+
+    /// Replaces the `root` alias with the real ID that Changes API parents report.
+    async fn index_root(&self, access_token: &str) -> Result<(), StorageError> {
+        let root_id = self
+            .directory_ids
+            .lock()
+            .await
+            .get("")
+            .cloned()
+            .expect("Google Drive root ID is initialized");
+        let root_id = if root_id == "root" {
+            let root = self
+                .execute(
+                    self.authorized(Method::GET, self.api_url("files/root")?, access_token)
+                        .query(&[("fields", "id"), ("supportsAllDrives", "true")]),
+                )
+                .await?
+                .json::<FileIdResponse>()
+                .await
+                .map_err(Self::network_error)?;
+            self.directory_ids
+                .lock()
+                .await
+                .insert(String::new(), root.id.clone());
+            root.id
+        } else {
+            root_id
+        };
+        self.item_paths.lock().await.insert(root_id, String::new());
+        Ok(())
+    }
+
+    async fn changed_paths(&self, changes: Vec<DriveChange>) -> Vec<RemotePath> {
+        let mut changed = Vec::new();
+        {
+            let directory_ids = self.directory_ids.lock().await;
+            let mut item_paths = self.item_paths.lock().await;
+            let path_for = |item_paths: &HashMap<String, String>, id: &str| {
+                item_paths.get(id).cloned().or_else(|| {
+                    directory_ids
+                        .iter()
+                        .find(|(_, directory_id)| directory_id.as_str() == id)
+                        .map(|(path, _)| path.clone())
+                })
+            };
+            for change in changes {
+                let Some(file_id) = change.file_id else {
+                    continue;
+                };
+                if self.excluded_folder_ids.contains(&file_id) {
+                    continue;
+                }
+                if let Some(previous) = path_for(&item_paths, &file_id) {
+                    changed.push(previous);
+                }
+                let mut current = None;
+                if let Some(file) = change.file.as_ref() {
+                    let drive_file = DriveFile {
+                        id: file_id.clone(),
+                        name: file.name.clone(),
+                        mime_type: file.mime_type.clone(),
+                        size: None,
+                        modified_time: None,
+                        md5_checksum: None,
+                        version: None,
+                        web_view_link: None,
+                    };
+                    for parent in &file.parents {
+                        let Some(parent) = path_for(&item_paths, parent)
+                            .and_then(|parent| RemotePath::parse(&parent).ok())
+                        else {
+                            continue;
+                        };
+                        if let Ok(path) =
+                            Self::entry_path(&parent, &drive_file, self.workspace_open_mode)
+                        {
+                            current.get_or_insert_with(|| path.as_str().to_owned());
+                            changed.push(path.as_str().to_owned());
+                        }
+                    }
+                }
+                let gone = change.removed || change.file.as_ref().is_none_or(|file| file.trashed);
+                match current {
+                    Some(path) if !gone => {
+                        item_paths.insert(file_id, path);
+                    }
+                    _ => {
+                        item_paths.remove(&file_id);
+                    }
+                }
+            }
+        }
+        changed.sort();
+        changed.dedup();
+        let changed = changed
+            .into_iter()
+            .filter_map(|path| RemotePath::parse(&path).ok())
+            .collect::<Vec<_>>();
+        for path in &changed {
+            self.forget(path).await;
+        }
+        changed
     }
 
     pub async fn resolve_folder_path(&self, path: &RemotePath) -> Result<String, StorageError> {
@@ -905,8 +1069,14 @@ impl StorageProvider for GoogleDriveProvider {
             let cached_at = Instant::now();
             let mut directory_ids = self.directory_ids.lock().await;
             let mut file_ids = self.file_ids.lock().await;
+            let mut item_paths = self.item_paths.lock().await;
             file_ids.retain(|_, cached| cached.cached_at.elapsed() < FILE_ID_CACHE_TTL);
+            if item_paths.len() + entries.len() > MAX_INDEXED_ITEMS {
+                item_paths.clear();
+            }
+            item_paths.insert(parent_id.clone(), prefix.as_str().to_owned());
             for (file, path) in &entries {
+                item_paths.insert(file.id.clone(), path.as_str().to_owned());
                 if file.mime_type == FOLDER_MIME_TYPE {
                     directory_ids.insert(path.as_str().to_owned(), file.id.clone());
                 } else if Self::is_cacheable_file(file) {
@@ -1368,6 +1538,86 @@ impl StorageProvider for GoogleDriveProvider {
         self.forget(to).await;
         Ok(())
     }
+
+    async fn poll_changes(&self, cursor: Option<&str>) -> Result<ChangeBatch, StorageError> {
+        let access_token = self.access_token().await?;
+        let Some(cursor) = cursor else {
+            self.index_root(&access_token).await?;
+            let mut request = self
+                .authorized(
+                    Method::GET,
+                    self.api_url("changes/startPageToken")?,
+                    &access_token,
+                )
+                .query(&[("supportsAllDrives", "true")]);
+            if let Some(shared_drive_id) = self.shared_drive_id.as_ref() {
+                request = request.query(&[("driveId", shared_drive_id)]);
+            }
+            let token = self
+                .execute(request)
+                .await?
+                .json::<StartPageTokenResponse>()
+                .await
+                .map_err(Self::network_error)?;
+            return Ok(ChangeBatch {
+                changed: Vec::new(),
+                reset: false,
+                cursor: token.start_page_token,
+            });
+        };
+        let mut page_token = cursor.to_owned();
+        let mut changes = Vec::new();
+        let mut overflowed = false;
+        let next_cursor = loop {
+            let mut request = self
+                .authorized(Method::GET, self.api_url("changes")?, &access_token)
+                .query(&[
+                    ("pageToken", page_token.as_str()),
+                    ("pageSize", "1000"),
+                    ("supportsAllDrives", "true"),
+                    ("includeItemsFromAllDrives", "true"),
+                    ("spaces", "drive"),
+                    ("fields", CHANGE_FIELDS),
+                ]);
+            request = match self.shared_drive_id.as_ref() {
+                Some(shared_drive_id) => request.query(&[("driveId", shared_drive_id)]),
+                None => request.query(&[("restrictToMyDrive", "true")]),
+            };
+            let page = self
+                .execute(request)
+                .await?
+                .json::<ChangeListResponse>()
+                .await
+                .map_err(Self::network_error)?;
+            if !overflowed {
+                changes.extend(page.changes);
+                if changes.len() > MAX_MAPPED_CHANGES {
+                    overflowed = true;
+                    changes.clear();
+                }
+            }
+            if let Some(new_start_page_token) = page.new_start_page_token {
+                break new_start_page_token;
+            }
+            page_token = page.next_page_token.ok_or_else(|| StorageError::Provider {
+                provider: ProviderKind::GoogleDrive,
+                message: "Google Drive change list returned no continuation token".to_owned(),
+            })?;
+        };
+        if overflowed {
+            self.forget_everything().await;
+            return Ok(ChangeBatch {
+                changed: Vec::new(),
+                reset: true,
+                cursor: next_cursor,
+            });
+        }
+        Ok(ChangeBatch {
+            changed: self.changed_paths(changes).await,
+            reset: false,
+            cursor: next_cursor,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1695,5 +1945,62 @@ mod tests {
         assert!(!directories.contains_key("Projects"));
         assert!(!directories.contains_key("Projects/Bifrost"));
         assert!(provider.file_ids.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn maps_drive_changes_to_previous_and_current_paths() {
+        let provider = GoogleDriveProvider::connect(
+            GoogleDriveConfig {
+                endpoint: Url::parse("https://www.googleapis.com/drive/v3").unwrap(),
+                shared_drive_id: None,
+                root_folder_id: Some("root-id".to_owned()),
+                excluded_folder_ids: BTreeSet::new(),
+                workspace_open_mode: WorkspaceOpenMode::NativeApps,
+            },
+            "access-token",
+        )
+        .unwrap();
+        {
+            let mut item_paths = provider.item_paths.lock().await;
+            item_paths.insert("folder-id".to_owned(), "Projects".to_owned());
+            item_paths.insert("file-id".to_owned(), "Projects/old.txt".to_owned());
+            item_paths.insert("gone-id".to_owned(), "Projects/gone.txt".to_owned());
+        }
+        let change = |id: &str, name: &str, parent: &str, removed: bool| super::DriveChange {
+            file_id: Some(id.to_owned()),
+            removed,
+            file: (!removed).then(|| super::ChangedFile {
+                name: name.to_owned(),
+                mime_type: "text/plain".to_owned(),
+                parents: vec![parent.to_owned()],
+                trashed: false,
+            }),
+        };
+
+        let changed = provider
+            .changed_paths(vec![
+                change("file-id", "new.txt", "folder-id", false),
+                change("gone-id", "", "", true),
+                change("outside-id", "other.txt", "unknown-parent", false),
+                change("top-id", "Report: Q3.docx", "root-id", false),
+            ])
+            .await;
+
+        assert_eq!(
+            changed.iter().map(RemotePath::as_str).collect::<Vec<_>>(),
+            [
+                "Projects/gone.txt",
+                "Projects/new.txt",
+                "Projects/old.txt",
+                "Report%3A Q3%2Edocx"
+            ]
+        );
+        let item_paths = provider.item_paths.lock().await;
+        assert_eq!(
+            item_paths.get("file-id").map(String::as_str),
+            Some("Projects/new.txt")
+        );
+        assert!(!item_paths.contains_key("gone-id"));
+        assert!(!item_paths.contains_key("outside-id"));
     }
 }

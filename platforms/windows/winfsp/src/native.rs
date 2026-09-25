@@ -408,7 +408,9 @@ impl FileSystemInterface for BifrostFileSystem {
     }
 
     const CLOSE_DEFINED: bool = true;
-    fn close(&self, _file_context: Self::FileContext) {}
+    fn close(&self, file_context: Self::FileContext) {
+        self.runtime.block_on(self.engine.close(&file_context));
+    }
 
     const READ_DEFINED: bool = true;
     fn read(
@@ -645,6 +647,10 @@ pub fn mount(config: MountConfig) -> Result<MountHandle, WinFspError> {
         capacity_refresh,
         security,
     };
+    {
+        let _runtime = context.runtime.enter();
+        drop(context.engine.watch_changes());
+    }
     let filesystem = FileSystem::start(
         Params {
             volume_params,
