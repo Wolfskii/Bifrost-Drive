@@ -6,15 +6,20 @@ use bifrost_storage::{
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures_util::{stream, StreamExt, TryStreamExt};
+use futures_util::{stream, StreamExt};
 use reqwest::{header, Client, Method, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashMap},
     ops::Range,
     sync::Arc,
+    time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
+
+pub mod retry;
+
+use retry::{dispatch, DispatchError};
 
 const FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 const FILE_FIELDS: &str =
@@ -22,6 +27,8 @@ const FILE_FIELDS: &str =
 const SINGLE_FILE_FIELDS: &str =
     "id,name,mimeType,size,modifiedTime,md5Checksum,version,webViewLink";
 const MAX_WORKSPACE_EXPORT_CACHE_BYTES: usize = 64 * 1024 * 1024;
+// Lets consecutive range reads skip the per-request name lookup.
+const FILE_ID_CACHE_TTL: Duration = Duration::from_secs(30);
 const GOOGLE_DOC_MIME_TYPE: &str = "application/vnd.google-apps.document";
 const GOOGLE_SHEET_MIME_TYPE: &str = "application/vnd.google-apps.spreadsheet";
 const GOOGLE_SLIDES_MIME_TYPE: &str = "application/vnd.google-apps.presentation";
@@ -101,7 +108,13 @@ pub struct GoogleDriveProvider {
     workspace_open_mode: WorkspaceOpenMode,
     session: Arc<Mutex<GoogleDriveSession>>,
     directory_ids: Arc<Mutex<HashMap<String, String>>>,
+    file_ids: Arc<Mutex<HashMap<String, CachedFile>>>,
     workspace_exports: Arc<Mutex<HashMap<String, CachedWorkspaceExport>>>,
+}
+
+struct CachedFile {
+    file: DriveFile,
+    cached_at: Instant,
 }
 
 struct CachedWorkspaceExport {
@@ -117,7 +130,7 @@ struct FileListResponse {
     files: Vec<DriveFile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct DriveFile {
     id: String,
     name: String,
@@ -214,6 +227,7 @@ impl GoogleDriveProvider {
                 expires_at: credentials.expires_at,
             })),
             directory_ids: Arc::new(Mutex::new(directory_ids)),
+            file_ids: Arc::new(Mutex::new(HashMap::new())),
             workspace_exports: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -281,6 +295,28 @@ impl GoogleDriveProvider {
         Ok(session.access_token.clone())
     }
 
+    async fn execute(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, StorageError> {
+        self.send(Self::dispatch(request).await?).await
+    }
+
+    async fn dispatch(request: reqwest::RequestBuilder) -> Result<reqwest::Response, StorageError> {
+        dispatch(request).await.map_err(|error| match error {
+            DispatchError::Network(error) => Self::network_error(error),
+            DispatchError::Forbidden {
+                rate_limited: true, ..
+            } => StorageError::Network {
+                provider: ProviderKind::GoogleDrive,
+                message: "Google Drive rate limit exceeded; retry later".to_owned(),
+            },
+            DispatchError::Forbidden { .. } => StorageError::AuthenticationFailed {
+                provider: ProviderKind::GoogleDrive,
+            },
+        })
+    }
+
     async fn send(&self, response: reqwest::Response) -> Result<reqwest::Response, StorageError> {
         let status = response.status();
         if status.is_success() {
@@ -340,9 +376,7 @@ impl GoogleDriveProvider {
         if let Some(cursor) = cursor {
             request = request.query(&[("pageToken", cursor)]);
         }
-        let response = self
-            .send(request.send().await.map_err(Self::network_error)?)
-            .await?;
+        let response = self.execute(request).await?;
         let page = response
             .json::<FileListResponse>()
             .await
@@ -398,14 +432,33 @@ impl GoogleDriveProvider {
         Ok(parent_id)
     }
 
-    async fn clear_directory_cache(&self) {
-        let mut cache = self.directory_ids.lock().await;
-        let root_id = cache
-            .get("")
-            .cloned()
-            .expect("Google Drive root ID is initialized");
-        cache.clear();
-        cache.insert(String::new(), root_id);
+    /// Drops cached IDs for `path` and everything below it.
+    async fn forget(&self, path: &RemotePath) {
+        let prefix = path.as_str();
+        let within = |key: &str| {
+            key == prefix
+                || key
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        };
+        self.file_ids.lock().await.retain(|key, _| !within(key));
+        self.directory_ids
+            .lock()
+            .await
+            .retain(|key, _| key.is_empty() || !within(key));
+    }
+
+    async fn cached_file(&self, path: &RemotePath) -> Option<DriveFile> {
+        self.file_ids
+            .lock()
+            .await
+            .get(path.as_str())
+            .filter(|cached| cached.cached_at.elapsed() < FILE_ID_CACHE_TTL)
+            .map(|cached| cached.file.clone())
+    }
+
+    fn is_cacheable_file(file: &DriveFile) -> bool {
+        file.mime_type != FOLDER_MIME_TYPE && Self::workspace_format(&file.mime_type).is_none()
     }
 
     pub async fn resolve_folder_path(&self, path: &RemotePath) -> Result<String, StorageError> {
@@ -661,16 +714,13 @@ impl GoogleDriveProvider {
         }
         let access_token = self.access_token().await?;
         let response = self
-            .send(
+            .execute(
                 self.authorized(
                     Method::GET,
                     self.api_url(&format!("files/{}/export", file.id))?,
                     &access_token,
                 )
-                .query(&[("mimeType", format.office_mime_type)])
-                .send()
-                .await
-                .map_err(Self::network_error)?,
+                .query(&[("mimeType", format.office_mime_type)]),
             )
             .await?;
         let content = response.bytes().await.map_err(Self::network_error)?;
@@ -827,12 +877,9 @@ impl StorageProvider for GoogleDriveProvider {
 
     async fn test_connection(&self) -> Result<(), StorageError> {
         let access_token = self.access_token().await?;
-        self.send(
+        self.execute(
             self.authorized(Method::GET, self.api_url("about")?, &access_token)
-                .query(&[("fields", "user,storageQuota")])
-                .send()
-                .await
-                .map_err(Self::network_error)?,
+                .query(&[("fields", "user,storageQuota")]),
         )
         .await?;
         self.list(&RemotePath::root(), None).await?;
@@ -851,11 +898,34 @@ impl StorageProvider for GoogleDriveProvider {
             .into_iter()
             .map(|file| {
                 let path = Self::entry_path(prefix, &file, self.workspace_open_mode)?;
-                Ok(RemoteEntry {
-                    metadata: Self::metadata(file, path),
-                })
+                Ok((file, path))
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
+        {
+            let cached_at = Instant::now();
+            let mut directory_ids = self.directory_ids.lock().await;
+            let mut file_ids = self.file_ids.lock().await;
+            file_ids.retain(|_, cached| cached.cached_at.elapsed() < FILE_ID_CACHE_TTL);
+            for (file, path) in &entries {
+                if file.mime_type == FOLDER_MIME_TYPE {
+                    directory_ids.insert(path.as_str().to_owned(), file.id.clone());
+                } else if Self::is_cacheable_file(file) {
+                    file_ids.insert(
+                        path.as_str().to_owned(),
+                        CachedFile {
+                            file: file.clone(),
+                            cached_at,
+                        },
+                    );
+                }
+            }
+        }
+        let entries = entries
+            .into_iter()
+            .map(|(file, path)| RemoteEntry {
+                metadata: Self::metadata(file, path),
+            })
+            .collect();
         Ok(Page {
             entries,
             next_cursor: page.next_cursor,
@@ -890,7 +960,12 @@ impl StorageProvider for GoogleDriveProvider {
 
     async fn read(&self, request: ReadRequest) -> Result<ByteStream, StorageError> {
         let access_token = self.access_token().await?;
-        let file = self.resolve_file(&request.path).await?;
+        let cached = self.cached_file(&request.path).await;
+        let from_cache = cached.is_some();
+        let mut file = match cached {
+            Some(file) => file,
+            None => self.resolve_file(&request.path).await?,
+        };
         if file.mime_type == FOLDER_MIME_TYPE {
             return Err(StorageError::Unsupported {
                 provider: ProviderKind::GoogleDrive,
@@ -905,18 +980,36 @@ impl StorageProvider for GoogleDriveProvider {
             let content = Self::workspace_range(content, request.range)?;
             return Ok(Box::pin(stream::once(async move { Ok(content) })));
         }
-        let mut request_builder = self.authorized(
-            Method::GET,
-            self.api_url(&format!("files/{}", file.id))?,
-            &access_token,
-        );
-        request_builder = request_builder.query(&[("alt", "media")]);
-        if let Some(range) = Self::range_header(request.range)? {
-            request_builder = request_builder.header(header::RANGE, range);
+        let range = Self::range_header(request.range)?;
+        let media_request = |file_id: &str| -> Result<reqwest::RequestBuilder, StorageError> {
+            let mut builder = self
+                .authorized(
+                    Method::GET,
+                    self.api_url(&format!("files/{file_id}"))?,
+                    &access_token,
+                )
+                .query(&[("alt", "media"), ("supportsAllDrives", "true")]);
+            if let Some(range) = range.as_ref() {
+                builder = builder.header(header::RANGE, range);
+            }
+            Ok(builder)
+        };
+        let mut response = Self::dispatch(media_request(&file.id)?).await?;
+        if from_cache && response.status() == StatusCode::NOT_FOUND {
+            self.forget(&request.path).await;
+            file = self.resolve_file(&request.path).await?;
+            response = Self::dispatch(media_request(&file.id)?).await?;
         }
-        let response = self
-            .send(request_builder.send().await.map_err(Self::network_error)?)
-            .await?;
+        let response = self.send(response).await?;
+        if !from_cache && Self::is_cacheable_file(&file) {
+            self.file_ids.lock().await.insert(
+                request.path.as_str().to_owned(),
+                CachedFile {
+                    file,
+                    cached_at: Instant::now(),
+                },
+            );
+        }
         Ok(Box::pin(
             response
                 .bytes_stream()
@@ -966,59 +1059,60 @@ impl StorageProvider for GoogleDriveProvider {
                 });
             }
         }
-        let file_id = if let Some(file) = existing {
-            file.id
+        let content_type =
+            workspace_format.map_or("application/octet-stream", |format| format.office_mime_type);
+        let upload = if let Some(file) = existing {
+            self.authorized(
+                Method::PATCH,
+                self.upload_url(Some(&file.id))?,
+                &access_token,
+            )
+            .query(&[("uploadType", "media")])
+            .header(header::CONTENT_TYPE, content_type)
+            .body(reqwest::Body::wrap_stream(request.content))
         } else {
+            // A single multipart request creates and fills the file in one round trip.
             let (parent_id, name) = self.ensure_parent(&path).await?;
-            let response = self
-                .send(
-                    self.authorized(Method::POST, self.api_url("files")?, &access_token)
-                        .json(&FileMutation {
-                            name: &name,
-                            mime_type: None,
-                            parents: Some(vec![&parent_id]),
-                        })
-                        .send()
-                        .await
-                        .map_err(Self::network_error)?,
-                )
-                .await?;
-            response
-                .json::<DriveFile>()
-                .await
-                .map_err(Self::network_error)?
-                .id
-        };
-        let response = self
-            .send(
-                self.authorized(
-                    Method::PATCH,
-                    self.upload_url(Some(&file_id))?,
-                    &access_token,
-                )
-                .query(&[("uploadType", "media")])
-                .query(&[("supportsAllDrives", "true")])
-                .query(&[("fields", SINGLE_FILE_FIELDS)])
+            let metadata = serde_json::to_string(&FileMutation {
+                name: &name,
+                mime_type: None,
+                parents: Some(vec![&parent_id]),
+            })
+            .map_err(|error| StorageError::Provider {
+                provider: ProviderKind::GoogleDrive,
+                message: error.to_string(),
+            })?;
+            let boundary = format!("bifrost-{}", uuid::Uuid::new_v4().simple());
+            let head = Bytes::from(format!(
+                "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n--{boundary}\r\nContent-Type: {content_type}\r\n\r\n"
+            ));
+            let tail = Bytes::from(format!("\r\n--{boundary}--\r\n"));
+            let body = stream::once(async move { Ok::<_, StorageError>(head) })
+                .chain(request.content)
+                .chain(stream::once(async move { Ok(tail) }));
+            self.authorized(Method::POST, self.upload_url(None)?, &access_token)
+                .query(&[("uploadType", "multipart")])
                 .header(
                     header::CONTENT_TYPE,
-                    workspace_format
-                        .map_or("application/octet-stream", |format| format.office_mime_type),
+                    format!("multipart/related; boundary={boundary}"),
                 )
-                .body(reqwest::Body::wrap_stream(
-                    request.content.map_ok(|bytes| bytes),
-                ))
-                .send()
-                .await
-                .map_err(Self::network_error)?,
+                .body(reqwest::Body::wrap_stream(body))
+        };
+        let response = self
+            .execute(
+                upload
+                    .query(&[("supportsAllDrives", "true")])
+                    .query(&[("fields", SINGLE_FILE_FIELDS)]),
             )
             .await?;
         let file = response
             .json::<DriveFile>()
             .await
             .map_err(Self::network_error)?;
+        self.forget(&path).await;
         if workspace_format.is_some() {
             self.workspace_exports.lock().await.insert(
-                file_id,
+                file.id.clone(),
                 CachedWorkspaceExport {
                     version: file.version.clone(),
                     content: None,
@@ -1035,36 +1129,27 @@ impl StorageProvider for GoogleDriveProvider {
     async fn delete(&self, path: &RemotePath) -> Result<(), StorageError> {
         let access_token = self.access_token().await?;
         let file = self.resolve_file(path).await?;
-        let is_directory = file.mime_type == FOLDER_MIME_TYPE;
         let file_id = file.id;
-        self.send(
+        self.execute(
             self.authorized(
                 Method::DELETE,
                 self.api_url(&format!("files/{file_id}"))?,
                 &access_token,
             )
-            .query(&[("supportsAllDrives", "true")])
-            .send()
-            .await
-            .map_err(Self::network_error)?,
+            .query(&[("supportsAllDrives", "true")]),
         )
         .await?;
         self.workspace_exports.lock().await.remove(&file_id);
-        if is_directory {
-            self.clear_directory_cache().await;
-        }
+        self.forget(path).await;
         Ok(())
     }
 
     async fn capacity(&self) -> Result<Option<StorageCapacity>, StorageError> {
         let access_token = self.access_token().await?;
         let response = self
-            .send(
+            .execute(
                 self.authorized(Method::GET, self.api_url("about")?, &access_token)
-                    .query(&[("fields", "storageQuota")])
-                    .send()
-                    .await
-                    .map_err(Self::network_error)?,
+                    .query(&[("fields", "storageQuota")]),
             )
             .await?;
         let about = response
@@ -1110,7 +1195,7 @@ impl StorageProvider for GoogleDriveProvider {
             });
         }
         let response = self
-            .send(
+            .execute(
                 self.authorized(Method::POST, self.api_url("files")?, &access_token)
                     .query(&[("supportsAllDrives", "true")])
                     .query(&[("fields", SINGLE_FILE_FIELDS)])
@@ -1118,10 +1203,7 @@ impl StorageProvider for GoogleDriveProvider {
                         name: &name,
                         mime_type: Some(FOLDER_MIME_TYPE),
                         parents: Some(vec![&parent_id]),
-                    })
-                    .send()
-                    .await
-                    .map_err(Self::network_error)?,
+                    }),
             )
             .await?;
         let directory = response
@@ -1180,11 +1262,9 @@ impl StorageProvider for GoogleDriveProvider {
             request =
                 request.query(&[("addParents", parent_id), ("removeParents", current_parent)]);
         }
-        self.send(request.send().await.map_err(Self::network_error)?)
-            .await?;
-        if file.mime_type == FOLDER_MIME_TYPE {
-            self.clear_directory_cache().await;
-        }
+        self.execute(request).await?;
+        self.forget(from).await;
+        self.forget(to).await;
         Ok(())
     }
 
@@ -1224,7 +1304,7 @@ impl StorageProvider for GoogleDriveProvider {
             .await?;
         let access_token = self.access_token().await?;
         let response = self
-            .send(
+            .execute(
                 self.authorized(
                     Method::PATCH,
                     self.upload_url(Some(&destination.id))?,
@@ -1234,16 +1314,14 @@ impl StorageProvider for GoogleDriveProvider {
                 .query(&[("supportsAllDrives", "true")])
                 .query(&[("fields", SINGLE_FILE_FIELDS)])
                 .header(header::CONTENT_TYPE, workspace_format.office_mime_type)
-                .body(reqwest::Body::wrap_stream(content.map_ok(|bytes| bytes)))
-                .send()
-                .await
-                .map_err(Self::network_error)?,
+                .body(reqwest::Body::wrap_stream(content)),
             )
             .await?;
         let updated = response
             .json::<DriveFile>()
             .await
             .map_err(Self::network_error)?;
+        self.forget(to).await;
         self.workspace_exports.lock().await.insert(
             destination.id,
             CachedWorkspaceExport {
@@ -1273,8 +1351,7 @@ impl StorageProvider for GoogleDriveProvider {
                 message: "a remote item already exists at the destination".to_owned(),
             });
         }
-        let is_directory = file.mime_type == FOLDER_MIME_TYPE;
-        self.send(
+        self.execute(
             self.authorized(
                 Method::POST,
                 self.api_url(&format!("files/{}/copy", file.id))?,
@@ -1285,15 +1362,10 @@ impl StorageProvider for GoogleDriveProvider {
                 name: &name,
                 mime_type: None,
                 parents: Some(vec![&parent_id]),
-            })
-            .send()
-            .await
-            .map_err(Self::network_error)?,
+            }),
         )
         .await?;
-        if is_directory {
-            self.clear_directory_cache().await;
-        }
+        self.forget(to).await;
         Ok(())
     }
 }
@@ -1581,5 +1653,47 @@ mod tests {
                 .unwrap(),
             "bifrost-id"
         );
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_folder_drops_only_its_subtree() {
+        let provider = GoogleDriveProvider::connect(
+            GoogleDriveConfig {
+                endpoint: Url::parse("https://www.googleapis.com/drive/v3").unwrap(),
+                shared_drive_id: None,
+                root_folder_id: None,
+                excluded_folder_ids: BTreeSet::new(),
+                workspace_open_mode: WorkspaceOpenMode::NativeApps,
+            },
+            "access-token",
+        )
+        .unwrap();
+        {
+            let mut directories = provider.directory_ids.lock().await;
+            directories.insert("Projects".to_owned(), "projects-id".to_owned());
+            directories.insert("Projects/Bifrost".to_owned(), "bifrost-id".to_owned());
+            directories.insert("Projects2".to_owned(), "projects2-id".to_owned());
+        }
+        provider.file_ids.lock().await.insert(
+            "Projects/notes.txt".to_owned(),
+            super::CachedFile {
+                file: file("notes.txt", "text/plain"),
+                cached_at: std::time::Instant::now(),
+            },
+        );
+
+        provider
+            .forget(&RemotePath::parse("Projects").unwrap())
+            .await;
+
+        let directories = provider.directory_ids.lock().await;
+        assert_eq!(directories.get("").map(String::as_str), Some("root"));
+        assert_eq!(
+            directories.get("Projects2").map(String::as_str),
+            Some("projects2-id")
+        );
+        assert!(!directories.contains_key("Projects"));
+        assert!(!directories.contains_key("Projects/Bifrost"));
+        assert!(provider.file_ids.lock().await.is_empty());
     }
 }

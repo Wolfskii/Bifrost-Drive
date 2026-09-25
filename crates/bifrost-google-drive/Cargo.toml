@@ -13,8 +13,10 @@ chrono.workspace = true
 futures-util = "0.3"
 reqwest.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 url.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

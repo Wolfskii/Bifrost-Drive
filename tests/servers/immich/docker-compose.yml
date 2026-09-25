@@ -20,7 +20,11 @@ services:
       database:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:2283/api/server/config"]
+      test:
+        [
+          "CMD-SHELL",
+          "curl --fail --silent http://127.0.0.1:2283/api/server/config",
+        ]
       interval: 5s
       timeout: 5s
       retries: 30

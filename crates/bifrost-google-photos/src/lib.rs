@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use bifrost_common::{Capability, CapabilitySet, ProviderKind, RemoteMetadata, RemotePath};
-use bifrost_google_drive::GoogleDriveProvider;
+use bifrost_google_drive::{
+    retry::{dispatch, DispatchError},
+    GoogleDriveProvider,
+};
 use bifrost_storage::{
     ByteStream, Page, ReadRequest, RemoteEntry, StorageError, StorageProvider, WriteRequest,
 };
@@ -9,7 +12,12 @@ use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use reqwest::{header, Client, Method, StatusCode};
 use serde::{Deserialize, Serialize};
-use std::{ops::Range, sync::Arc};
+use std::{
+    collections::HashMap,
+    ops::Range,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::Mutex;
 use url::Url;
 
@@ -17,6 +25,10 @@ pub const GOOGLE_PHOTOS_ENDPOINT: &str = "https://photoslibrary.googleapis.com/v
 pub const ALL_PHOTOS_DIRECTORY: &str = "All Photos";
 pub const ALBUMS_DIRECTORY: &str = "Albums";
 pub const LEGACY_DIRECTORY: &str = "Legacy";
+// Media base URLs expire after 60 minutes.
+const MEDIA_ITEM_CACHE_TTL: Duration = Duration::from_secs(50 * 60);
+const MAX_CACHED_MEDIA_ITEMS: usize = 100_000;
+const ALBUM_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GooglePhotosConfig {
@@ -44,6 +56,19 @@ pub struct GooglePhotosProvider {
     client: Client,
     endpoint: Url,
     session: Arc<Mutex<GooglePhotosSession>>,
+    // Keyed by (album ID, media item ID); `None` is the whole library.
+    media_items: Arc<Mutex<HashMap<(Option<String>, String), CachedMediaItem>>>,
+    albums: Arc<Mutex<Option<CachedAlbums>>>,
+}
+
+struct CachedMediaItem {
+    item: MediaItem,
+    cached_at: Instant,
+}
+
+struct CachedAlbums {
+    albums: Vec<Album>,
+    cached_at: Instant,
 }
 
 pub struct HybridGooglePhotosProvider {
@@ -108,13 +133,13 @@ struct MediaListResponse {
     next_page_token: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct Album {
     id: String,
     title: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct MediaItem {
     id: String,
     filename: String,
@@ -124,7 +149,7 @@ struct MediaItem {
     media_metadata: Option<MediaMetadata>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct MediaMetadata {
     #[serde(rename = "creationTime")]
     creation_time: Option<DateTime<Utc>>,
@@ -212,6 +237,8 @@ impl GooglePhotosProvider {
                 client_secret: credentials.client_secret,
                 expires_at: credentials.expires_at,
             })),
+            media_items: Arc::new(Mutex::new(HashMap::new())),
+            albums: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -281,6 +308,28 @@ impl GooglePhotosProvider {
         Ok(session.access_token.clone())
     }
 
+    async fn execute(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, StorageError> {
+        self.send(Self::dispatch(request).await?).await
+    }
+
+    async fn dispatch(request: reqwest::RequestBuilder) -> Result<reqwest::Response, StorageError> {
+        dispatch(request).await.map_err(|error| match error {
+            DispatchError::Network(error) => Self::network_error(error),
+            DispatchError::Forbidden {
+                rate_limited: true, ..
+            } => StorageError::Network {
+                provider: ProviderKind::GooglePhotos,
+                message: "Google Photos rate limit exceeded; retry later".to_owned(),
+            },
+            DispatchError::Forbidden { .. } => StorageError::AuthenticationFailed {
+                provider: ProviderKind::GooglePhotos,
+            },
+        })
+    }
+
     async fn send(&self, response: reqwest::Response) -> Result<reqwest::Response, StorageError> {
         let status = response.status();
         if status.is_success() {
@@ -345,16 +394,13 @@ impl GooglePhotosProvider {
         cursor: Option<&str>,
     ) -> Result<Page<MediaItem>, StorageError> {
         let access_token = self.access_token().await?;
-        let response = if let Some(album_id) = album_id {
+        let request = if let Some(album_id) = album_id {
             self.authorized(
                 Method::POST,
                 self.api_url("mediaItems:search"),
                 &access_token,
             )
             .json(&serde_json::json!({ "albumId": album_id, "pageSize": 100, "pageToken": cursor }))
-            .send()
-            .await
-            .map_err(Self::network_error)?
         } else {
             let mut request = self
                 .authorized(Method::GET, self.api_url("mediaItems"), &access_token)
@@ -362,18 +408,39 @@ impl GooglePhotosProvider {
             if let Some(cursor) = cursor {
                 request = request.query(&[("pageToken", cursor)]);
             }
-            request.send().await.map_err(Self::network_error)?
+            request
         };
         let page = self
-            .send(response)
+            .execute(request)
             .await?
             .json::<MediaListResponse>()
             .await
             .map_err(Self::network_error)?;
+        self.cache_media_items(album_id, &page.media_items).await;
         Ok(Page {
             entries: page.media_items,
             next_cursor: page.next_page_token,
         })
+    }
+
+    async fn cache_media_items(&self, album_id: Option<&str>, items: &[MediaItem]) {
+        let mut cache = self.media_items.lock().await;
+        if cache.len() + items.len() > MAX_CACHED_MEDIA_ITEMS {
+            cache.retain(|_, cached| cached.cached_at.elapsed() < MEDIA_ITEM_CACHE_TTL);
+            if cache.len() + items.len() > MAX_CACHED_MEDIA_ITEMS {
+                cache.clear();
+            }
+        }
+        let cached_at = Instant::now();
+        for item in items {
+            cache.insert(
+                (album_id.map(str::to_owned), item.id.clone()),
+                CachedMediaItem {
+                    item: item.clone(),
+                    cached_at,
+                },
+            );
+        }
     }
 
     async fn list_albums(&self, cursor: Option<&str>) -> Result<Page<Album>, StorageError> {
@@ -385,7 +452,7 @@ impl GooglePhotosProvider {
             request = request.query(&[("pageToken", cursor)]);
         }
         let page = self
-            .send(request.send().await.map_err(Self::network_error)?)
+            .execute(request)
             .await?
             .json::<AlbumListResponse>()
             .await
@@ -397,19 +464,46 @@ impl GooglePhotosProvider {
     }
 
     async fn find_album(&self, name: &str) -> Result<Album, StorageError> {
+        if let Some(album) = self
+            .albums
+            .lock()
+            .await
+            .as_ref()
+            .filter(|cached| cached.cached_at.elapsed() < ALBUM_CACHE_TTL)
+            .and_then(|cached| cached.albums.iter().find(|album| album.title == name))
+        {
+            return Ok(album.clone());
+        }
+        let mut albums = Vec::new();
         let mut cursor = None;
         loop {
             let page = self.list_albums(cursor.as_deref()).await?;
-            if let Some(album) = page.entries.into_iter().find(|album| album.title == name) {
-                return Ok(album);
-            }
+            albums.extend(page.entries);
             cursor = page.next_cursor;
             if cursor.is_none() {
-                return Err(StorageError::NotFound {
-                    path: RemotePath::parse(ALBUMS_DIRECTORY).unwrap(),
-                });
+                break;
             }
         }
+        let album = albums.iter().find(|album| album.title == name).cloned();
+        *self.albums.lock().await = Some(CachedAlbums {
+            albums,
+            cached_at: Instant::now(),
+        });
+        album.ok_or_else(|| StorageError::NotFound {
+            path: RemotePath::parse(ALBUMS_DIRECTORY).unwrap(),
+        })
+    }
+
+    /// Media IDs are URL-safe base64, so only `--` suffixes in that alphabet can be IDs.
+    fn candidate_media_ids(name: &str) -> impl Iterator<Item = &str> {
+        name.match_indices("--")
+            .map(move |(index, _)| &name[index + 2..])
+            .filter(|candidate| {
+                !candidate.is_empty()
+                    && candidate
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            })
     }
 
     async fn find_media(
@@ -418,16 +512,58 @@ impl GooglePhotosProvider {
         name: &str,
         path: &RemotePath,
     ) -> Result<MediaItem, StorageError> {
+        let matches = |item: &MediaItem| {
+            Self::item_path(&RemotePath::root(), item)
+                .ok()
+                .as_ref()
+                .map(RemotePath::as_str)
+                == Some(name)
+        };
+        {
+            let cache = self.media_items.lock().await;
+            for id in Self::candidate_media_ids(name) {
+                if let Some(cached) = cache
+                    .get(&(album_id.map(str::to_owned), id.to_owned()))
+                    .filter(|cached| cached.cached_at.elapsed() < MEDIA_ITEM_CACHE_TTL)
+                    .filter(|cached| matches(&cached.item))
+                {
+                    return Ok(cached.item.clone());
+                }
+            }
+        }
+        // Every media item belongs to the library, so library paths can be fetched by ID.
+        if album_id.is_none() {
+            for id in Self::candidate_media_ids(name) {
+                let access_token = self.access_token().await?;
+                let response = Self::dispatch(self.authorized(
+                    Method::GET,
+                    self.api_url(&format!("mediaItems/{id}")),
+                    &access_token,
+                ))
+                .await?;
+                if matches!(
+                    response.status(),
+                    StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND
+                ) {
+                    continue;
+                }
+                let item = self
+                    .send(response)
+                    .await?
+                    .json::<MediaItem>()
+                    .await
+                    .map_err(Self::network_error)?;
+                if matches(&item) {
+                    self.cache_media_items(None, std::slice::from_ref(&item))
+                        .await;
+                    return Ok(item);
+                }
+            }
+        }
         let mut cursor = None;
         loop {
             let page = self.list_media(album_id, cursor.as_deref()).await?;
-            if let Some(item) = page.entries.into_iter().find(|item| {
-                Self::item_path(&RemotePath::root(), item)
-                    .ok()
-                    .as_ref()
-                    .map(RemotePath::as_str)
-                    == Some(name)
-            }) {
+            if let Some(item) = page.entries.into_iter().find(|item| matches(item)) {
                 return Ok(item);
             }
             cursor = page.next_cursor;
@@ -457,22 +593,19 @@ impl GooglePhotosProvider {
         let bytes = Bytes::from(bytes);
         let access_token = self.access_token().await?;
         let upload_token = self
-            .send(
+            .execute(
                 self.authorized(Method::POST, self.api_url("uploads"), &access_token)
                     .header(header::CONTENT_TYPE, "application/octet-stream")
                     .header("X-Goog-Upload-Content-Type", "application/octet-stream")
                     .header("X-Goog-Upload-Protocol", "raw")
-                    .body(bytes)
-                    .send()
-                    .await
-                    .map_err(Self::network_error)?,
+                    .body(bytes),
             )
             .await?
             .text()
             .await
             .map_err(Self::network_error)?;
         let response = self
-            .send(
+            .execute(
                 self.authorized(
                     Method::POST,
                     self.api_url("mediaItems:batchCreate"),
@@ -486,10 +619,7 @@ impl GooglePhotosProvider {
                             upload_token: &upload_token,
                         },
                     }],
-                })
-                .send()
-                .await
-                .map_err(Self::network_error)?,
+                }),
             )
             .await?;
         let result = response
@@ -723,16 +853,12 @@ impl StorageProvider for GooglePhotosProvider {
             });
         };
         let response = self
-            .client
-            .get(format!(
+            .execute(self.client.get(format!(
                 "{}{}",
                 item.base_url,
                 Self::range_suffix(request.range)?
-            ))
-            .send()
-            .await
-            .map_err(Self::network_error)?;
-        let response = self.send(response).await?;
+            )))
+            .await?;
         Ok(Box::pin(
             response
                 .bytes_stream()
@@ -781,16 +907,14 @@ impl StorageProvider for GooglePhotosProvider {
             .replace("%5C", "\\")
             .replace("%25", "%");
         let access_token = self.access_token().await?;
-        self.send(
+        self.execute(
             self.authorized(Method::POST, self.api_url("albums"), &access_token)
                 .json(&CreateAlbumRequest {
                     album: CreateAlbum { title: &title },
-                })
-                .send()
-                .await
-                .map_err(Self::network_error)?,
+                }),
         )
         .await?;
+        *self.albums.lock().await = None;
         Ok(())
     }
 
@@ -820,19 +944,17 @@ impl StorageProvider for GooglePhotosProvider {
             .replace("%5C", "\\")
             .replace("%25", "%");
         let access_token = self.access_token().await?;
-        self.send(
+        self.execute(
             self.authorized(
                 Method::PATCH,
                 self.api_url(&format!("albums/{}", album.id)),
                 &access_token,
             )
             .query(&[("updateMask", "title")])
-            .json(&UpdateAlbumRequest { title: &title })
-            .send()
-            .await
-            .map_err(Self::network_error)?,
+            .json(&UpdateAlbumRequest { title: &title }),
         )
         .await?;
+        *self.albums.lock().await = None;
         Ok(())
     }
 }
@@ -1020,5 +1142,14 @@ mod tests {
             GooglePhotosProvider::encode_name("holiday/100%\\original.jpg"),
             "holiday%2F100%25%5Coriginal.jpg"
         );
+    }
+
+    #[test]
+    fn extracts_media_ids_from_virtual_names() {
+        let ids = |name| GooglePhotosProvider::candidate_media_ids(name).collect::<Vec<_>>();
+
+        assert_eq!(ids("IMG_0001.jpg--AF1Qip_x-9"), ["AF1Qip_x-9"]);
+        assert_eq!(ids("my--trip.jpg--AF1--Qip"), ["AF1--Qip", "Qip"]);
+        assert!(ids("IMG_0001.jpg").is_empty());
     }
 }

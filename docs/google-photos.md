@@ -21,6 +21,8 @@ The official Google Photos Library API exposes only content created by Bifrost. 
 
 Bifrost can upload supported media, list and stream Bifrost-created media, create albums, and rename Bifrost-created albums. Uploaded media is stored at original quality and counts toward the Google account's storage quota.
 
+Listed media items are cached for 50 minutes, inside Google's 60-minute base URL lifetime, and the album list for five minutes. `All Photos` items are fetched directly by the media ID embedded in their virtual name instead of paging through the library. Album items that are not cached fall back to an album search. Rate-limit and `5xx` responses are retried with capped exponential backoff.
+
 Google does not offer an official API to delete media items, empty Google Photos trash, or delete album containers. Bifrost therefore rejects deletion through this official connection.
 
 ## Planned hybrid connection

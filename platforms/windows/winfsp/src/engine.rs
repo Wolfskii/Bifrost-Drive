@@ -275,7 +275,7 @@ impl RemoteFilesystem {
     ) -> Result<Arc<OpenFile>, WinFspFilesystemError> {
         self.ensure_missing(&path).await?;
         self.provider.create_directory(&path).await?;
-        self.invalidate_caches().await;
+        self.invalidate_paths(&[&path]).await;
         Ok(Arc::new(OpenFile {
             path: RwLock::new(path),
             is_directory: true,
@@ -528,14 +528,14 @@ impl RemoteFilesystem {
         let metadata = self
             .provider
             .write(WriteRequest {
-                path,
+                path: path.clone(),
                 content: Box::pin(content),
                 size_bytes: Some(size),
                 modified_at: None,
             })
             .await?;
         handle.dirty.store(false, Ordering::Release);
-        self.invalidate_caches().await;
+        self.invalidate_paths(&[&path]).await;
         Ok(metadata)
     }
 
@@ -543,7 +543,7 @@ impl RemoteFilesystem {
         self.can_delete(handle).await?;
         let path = handle.path().await;
         self.provider.delete(&path).await?;
-        self.invalidate_caches().await;
+        self.invalidate_paths(&[&path]).await;
         Ok(())
     }
 
@@ -568,8 +568,8 @@ impl RemoteFilesystem {
             Ok(_) => {
                 let source = handle.path().await;
                 self.provider.replace(&source, &destination).await?;
+                self.invalidate_paths(&[&source, &destination]).await;
                 *handle.path.write().await = destination;
-                self.invalidate_caches().await;
                 return Ok(());
             }
             Err(WinFspFilesystemError::Storage(StorageError::NotFound { .. })) => {}
@@ -577,8 +577,8 @@ impl RemoteFilesystem {
         }
         let source = handle.path().await;
         self.provider.rename(&source, &destination).await?;
+        self.invalidate_paths(&[&source, &destination]).await;
         *handle.path.write().await = destination;
-        self.invalidate_caches().await;
         Ok(())
     }
 
@@ -590,9 +590,31 @@ impl RemoteFilesystem {
         }
     }
 
-    async fn invalidate_caches(&self) {
-        self.metadata_cache.write().await.clear();
-        self.directory_cache.write().await.clear();
+    /// Drops cached state for each changed path, its descendants, and its parent listing.
+    async fn invalidate_paths(&self, paths: &[&RemotePath]) {
+        self.metadata_cache
+            .write()
+            .await
+            .retain(|cached, _| !paths.iter().any(|path| Self::within(cached, path)));
+        self.directory_cache.write().await.retain(|cached, _| {
+            !paths.iter().any(|path| {
+                Self::within(cached, path)
+                    || cached.as_str()
+                        == path
+                            .as_str()
+                            .rsplit_once('/')
+                            .map_or("", |(parent, _)| parent)
+            })
+        });
+    }
+
+    fn within(candidate: &RemotePath, path: &RemotePath) -> bool {
+        let (candidate, path) = (candidate.as_str(), path.as_str());
+        path.is_empty()
+            || candidate == path
+            || candidate
+                .strip_prefix(path)
+                .is_some_and(|rest| rest.starts_with('/'))
     }
 
     async fn stage_remote_file(
@@ -1120,6 +1142,29 @@ mod tests {
             result,
             Err(WinFspFilesystemError::AlreadyExists(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn deleting_a_file_keeps_unrelated_directory_listings_cached() {
+        let provider = Arc::new(MemoryProvider::default());
+        provider.insert("a/one.txt", b"one").await;
+        provider.insert("b/two.txt", b"two").await;
+        let filesystem = RemoteFilesystem::new(provider.clone());
+        let first = RemotePath::parse("a").unwrap();
+        let second = RemotePath::parse("b").unwrap();
+        filesystem.list(&first).await.unwrap();
+        filesystem.list(&second).await.unwrap();
+
+        let handle = filesystem
+            .open(RemotePath::parse("a/one.txt").unwrap(), false)
+            .await
+            .unwrap();
+        filesystem.delete(&handle).await.unwrap();
+        filesystem.list(&second).await.unwrap();
+        assert_eq!(provider.list_calls.load(Ordering::Relaxed), 2);
+
+        assert!(filesystem.list(&first).await.unwrap().is_empty());
+        assert_eq!(provider.list_calls.load(Ordering::Relaxed), 3);
     }
 
     #[tokio::test]
