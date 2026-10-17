@@ -383,6 +383,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # The release job deletes the run's build artifacts once they are in the release.
+      actions: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -488,3 +490,14 @@ jobs:
             --title "Bifrost Drive $RELEASE_VERSION" \
             --notes-file "$notes_file" \
             --target "$GITHUB_SHA"
+      # The release holds the files now; drop this run's artifacts so they stop counting against
+      # the account's artifact storage.
+      - name: Delete the run's build artifacts
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[].id' | while read -r id; do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id" >/dev/null && echo "deleted artifact $id"
+          done
