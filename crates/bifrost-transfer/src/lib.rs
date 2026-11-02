@@ -1,3 +1,5 @@
+pub mod batch;
+
 use bifrost_cache::{CacheError, CacheManager, CacheRecord};
 use bifrost_common::{ConnectionId, RemotePath, TransferId};
 use bifrost_storage::{StorageError, StorageProvider};
