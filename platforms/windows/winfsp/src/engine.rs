@@ -215,6 +215,21 @@ impl OpenFile {
     }
 }
 
+/// Drops cached metadata for paths changed outside the drive, such as by a batch transfer
+/// that wrote to the provider directly.
+#[derive(Clone)]
+pub struct CacheInvalidator {
+    caches: Arc<MetadataCaches>,
+}
+
+impl CacheInvalidator {
+    /// Each path, its descendants, and its parent listing are dropped.
+    pub async fn invalidate(&self, paths: &[RemotePath]) {
+        let paths = paths.iter().collect::<Vec<_>>();
+        self.caches.invalidate(&paths).await;
+    }
+}
+
 pub struct RemoteFilesystem {
     provider: Arc<dyn StorageProvider>,
     caches: Arc<MetadataCaches>,
@@ -288,6 +303,13 @@ impl RemoteFilesystem {
             provider,
             caches: Arc::new(MetadataCaches::default()),
             failures: FailureHandling::default(),
+        }
+    }
+
+    /// A handle for telling the filesystem that something else changed the provider's data.
+    pub fn cache_invalidator(&self) -> CacheInvalidator {
+        CacheInvalidator {
+            caches: Arc::clone(&self.caches),
         }
     }
 
@@ -1515,6 +1537,22 @@ mod tests {
             recovery_destination(root, &RemotePath::parse("Filmer/clip|1?.mkv.").unwrap()),
             root.join("Filmer").join("clip_1_.mkv")
         );
+    }
+
+    #[tokio::test]
+    async fn invalidator_makes_files_written_outside_the_drive_visible() {
+        let provider = Arc::new(MemoryProvider::default());
+        provider.insert("dest/old.txt", b"old").await;
+        let filesystem = RemoteFilesystem::new(provider.clone());
+        let invalidator = filesystem.cache_invalidator();
+        let folder = RemotePath::parse("dest").unwrap();
+        assert_eq!(filesystem.list(&folder).await.unwrap().len(), 1);
+
+        provider.insert("dest/new.txt", b"new").await;
+        assert_eq!(filesystem.list(&folder).await.unwrap().len(), 1);
+        invalidator.invalidate(std::slice::from_ref(&folder)).await;
+
+        assert_eq!(filesystem.list(&folder).await.unwrap().len(), 2);
     }
 
     #[test]

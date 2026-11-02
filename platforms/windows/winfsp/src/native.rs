@@ -17,7 +17,10 @@ use windows::{
             RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
             KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
         },
-        UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_FLUSHNOWAIT, SHCNF_IDLIST},
+        UI::Shell::{
+            SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNE_UPDATEDIR, SHCNF_FLUSHNOWAIT, SHCNF_IDLIST,
+            SHCNF_PATHW,
+        },
     },
 };
 use winfsp_wrs::{
@@ -44,9 +47,41 @@ pub struct MountHandle {
     filesystem: Option<FileSystem>,
     drive_letter: char,
     mount_points_key: Option<String>,
+    invalidator: crate::CacheInvalidator,
 }
 
 impl MountHandle {
+    /// Tells the drive that `paths` changed behind its back: cached metadata is dropped and
+    /// Explorer windows showing those folders (or their parents) refresh.
+    pub async fn refresh(&self, paths: &[RemotePath]) {
+        self.invalidator.invalidate(paths).await;
+        let mut folders = std::collections::BTreeSet::new();
+        for path in paths {
+            folders.insert(path.as_str().to_owned());
+            folders.insert(
+                path.as_str()
+                    .rsplit_once('/')
+                    .map_or(String::new(), |(parent, _)| parent.to_owned()),
+            );
+        }
+        for folder in folders {
+            let windows_path = if folder.is_empty() {
+                format!(r"{}:\", self.drive_letter)
+            } else {
+                format!(r"{}:\{}", self.drive_letter, folder.replace('/', r"\"))
+            };
+            let wide = wide_null(&windows_path);
+            unsafe {
+                SHChangeNotify(
+                    SHCNE_UPDATEDIR,
+                    SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
+                    Some(wide.as_ptr().cast()),
+                    None,
+                );
+            }
+        }
+    }
+
     pub fn unmount(mut self) {
         if let Some(filesystem) = self.filesystem.take() {
             stop_filesystem(filesystem);
@@ -700,8 +735,10 @@ pub fn mount(config: MountConfig) -> Result<MountHandle, WinFspError> {
             .map_err(|_| WinFspError::Initialization("network prefix is too long".to_owned()))?;
     }
 
+    let engine = RemoteFilesystem::new(config.provider).with_failure_handling(config.failures);
+    let invalidator = engine.cache_invalidator();
     let context = BifrostFileSystem {
-        engine: RemoteFilesystem::new(config.provider).with_failure_handling(config.failures),
+        engine,
         runtime,
         volume_label,
         volume_total_bytes,
@@ -767,6 +804,7 @@ pub fn mount(config: MountConfig) -> Result<MountHandle, WinFspError> {
         filesystem: Some(filesystem),
         drive_letter,
         mount_points_key,
+        invalidator,
     })
 }
 

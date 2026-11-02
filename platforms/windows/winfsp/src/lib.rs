@@ -8,7 +8,9 @@ use std::sync::Arc;
 use bifrost_storage::StorageProvider;
 use thiserror::Error;
 
-pub use engine::{remote_path_from_windows, OpenFile, RemoteFilesystem, WinFspFilesystemError};
+pub use engine::{
+    remote_path_from_windows, CacheInvalidator, OpenFile, RemoteFilesystem, WinFspFilesystemError,
+};
 pub use failure::{
     DriveFailure, DriveFailureReason, DriveFailureSink, DriveOperation, FailureHandling,
     UploadRecovery,
