@@ -317,6 +317,31 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: cargo run -p xtask -- version-set $env:RELEASE_VERSION
+      - name: Prepare Authenticode certificate
+        id: certificate
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          # The Explorer extension is signed while the app is built, before the installer exists,
+          # so the certificate is prepared once here and shared through the environment.
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64)) {
+            $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Bifrost Drive Development' -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(1)
+          } else {
+            $certificatePath = Join-Path $env:RUNNER_TEMP 'bifrost-drive-signing.pfx'
+            [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+            $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          }
+          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          $signTool = Get-ChildItem $sdkRoot -Filter signtool.exe -Recurse -File |
+            Where-Object { $_.DirectoryName -like '*\x64' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if ($null -eq $signTool) { throw "Windows SDK signtool.exe was not found under $sdkRoot" }
+          "BIFROST_SIGN_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "BIFROST_SIGNTOOL=$($signTool.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Build Windows updater package
         env:
           BIFROST_GOOGLE_OAUTH_CLIENT_ID: ${{ vars.BIFROST_GOOGLE_OAUTH_CLIENT_ID }}
@@ -327,28 +352,11 @@ jobs:
       - name: Authenticode-sign Windows installer
         id: authenticode
         shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64)) {
-            $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Bifrost Drive Development' -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(1)
-          } else {
-            $certificatePath = Join-Path $env:RUNNER_TEMP 'bifrost-drive-signing.pfx'
-            [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
-            $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-            $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password
-          }
           $installer = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           if ($null -eq $installer) { throw 'Windows installer was not produced' }
-          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
-          $signTool = Get-ChildItem $sdkRoot -Filter signtool.exe -Recurse -File |
-            Where-Object { $_.DirectoryName -like '*\x64' } |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1
-          if ($null -eq $signTool) { throw "Windows SDK signtool.exe was not found under $sdkRoot" }
-          & $signTool.FullName sign /sha1 $certificate.Thumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $installer.FullName
-          if ($LASTEXITCODE -ne 0) { throw "signtool failed: $($signTool.FullName)" }
+          & $env:BIFROST_SIGNTOOL sign /sha1 $env:BIFROST_SIGN_THUMBPRINT /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $installer.FullName
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed: $env:BIFROST_SIGNTOOL" }
       - name: Re-sign updater artifact after Authenticode
         shell: pwsh
         env:

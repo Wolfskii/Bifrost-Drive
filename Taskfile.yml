@@ -255,6 +255,22 @@ tasks:
     cmds:
       - powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/cleanup-windows-drives.ps1
 
+  shell:register:
+    desc: Register the Explorer transfer menu for the current user (development; Windows only)
+    cmds:
+      - cargo build -p bifrost-windows-shell
+      - regsvr32.exe /s target/debug/bifrost_windows_shell.dll
+
+  shell:unregister:
+    desc: Remove the development Explorer transfer menu registration for the current user
+    cmds:
+      - regsvr32.exe /u /s target/debug/bifrost_windows_shell.dll
+
+  shell:restart-explorer:
+    desc: Restart Explorer so it loads or releases a rebuilt Explorer extension (closes open folder windows)
+    cmds:
+      - powershell.exe -NoProfile -Command "Stop-Process -Name explorer -Force; Start-Sleep -Seconds 1; if (-not (Get-Process explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe }"
+
   version:
     desc: Check synchronized workspace versions
     cmds:
