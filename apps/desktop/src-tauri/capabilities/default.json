@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main Bifrost Drive window permissions",
-  "windows": ["main"],
+  "description": "Main and transfer window permissions",
+  "windows": ["main", "transfers"],
   "permissions": [
     "core:default",
     "autostart:default",

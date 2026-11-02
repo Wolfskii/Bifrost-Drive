@@ -16,7 +16,7 @@ pub use failure::{
     UploadRecovery,
 };
 #[cfg(all(target_os = "windows", feature = "native"))]
-pub use native::{mount, MountHandle};
+pub use native::{mount, MountHandle, MountRefresher};
 
 #[derive(Debug, Error)]
 pub enum WinFspError {

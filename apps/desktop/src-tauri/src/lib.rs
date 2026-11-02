@@ -1,5 +1,47 @@
 #[cfg(target_os = "windows")]
 mod drive_failures;
+#[cfg(target_os = "windows")]
+mod transfers;
+#[cfg(not(target_os = "windows"))]
+mod transfers {
+    //! Explorer transfers exist only on Windows; these keep the shared commands compiling.
+    use bifrost_transfer::batch::Resolution;
+
+    const UNAVAILABLE: &str = "Explorer transfers are available only on Windows";
+
+    pub fn list(_app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!([]))
+    }
+
+    pub fn pause(_app: &tauri::AppHandle, _id: u64) -> Result<(), String> {
+        Err(UNAVAILABLE.to_owned())
+    }
+
+    pub fn resume(_app: &tauri::AppHandle, _id: u64) -> Result<(), String> {
+        Err(UNAVAILABLE.to_owned())
+    }
+
+    pub fn cancel(_app: &tauri::AppHandle, _id: u64) -> Result<(), String> {
+        Err(UNAVAILABLE.to_owned())
+    }
+
+    pub fn dismiss(_app: &tauri::AppHandle, _id: u64) -> Result<(), String> {
+        Err(UNAVAILABLE.to_owned())
+    }
+
+    pub fn answer_conflict(
+        _app: &tauri::AppHandle,
+        _id: u64,
+        _resolution: Resolution,
+        _apply_to_all: bool,
+    ) -> Result<(), String> {
+        Err(UNAVAILABLE.to_owned())
+    }
+
+    pub fn show_window(_app: &tauri::AppHandle) -> Result<(), String> {
+        Err(UNAVAILABLE.to_owned())
+    }
+}
 #[cfg(any(target_os = "macos", test))]
 mod macos_file_provider;
 
@@ -139,6 +181,13 @@ impl DriveMountRegistry {
 
     fn take(&self, key: &str) -> Option<MountHandle> {
         self.mounts().remove(key)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl DriveMountRegistry {
+    fn refresher(&self, key: &str) -> Option<bifrost_windows_winfsp::MountRefresher> {
+        self.mounts().get(key).map(MountHandle::refresher)
     }
 }
 
@@ -375,6 +424,12 @@ struct AppPreferences {
     start_minimized: bool,
     #[serde(default = "default_show_update_popups")]
     show_update_popups: bool,
+    #[serde(default = "default_explorer_transfer_menu")]
+    explorer_transfer_menu: bool,
+}
+
+fn default_explorer_transfer_menu() -> bool {
+    true
 }
 
 fn default_show_update_popups() -> bool {
@@ -391,7 +446,10 @@ fn preferences_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 fn load_preferences(path: &std::path::Path) -> Result<AppPreferences, String> {
     match fs::read(path) {
         Ok(contents) => serde_json::from_slice(&contents).map_err(|error| error.to_string()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AppPreferences::default()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AppPreferences {
+            explorer_transfer_menu: default_explorer_transfer_menu(),
+            ..AppPreferences::default()
+        }),
         Err(error) => Err(error.to_string()),
     }
 }
@@ -441,6 +499,64 @@ fn app_update_popups_set(app: tauri::AppHandle, enabled: bool) -> Result<(), Str
     let mut preferences = load_preferences(&path)?;
     preferences.show_update_popups = enabled;
     save_preferences(&path, &preferences)
+}
+
+#[tauri::command]
+fn app_explorer_transfer_menu_get(app: tauri::AppHandle) -> Result<bool, String> {
+    Ok(load_preferences(&preferences_path(&app)?)?.explorer_transfer_menu)
+}
+
+#[tauri::command]
+fn app_explorer_transfer_menu_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let path = preferences_path(&app)?;
+    let mut preferences = load_preferences(&path)?;
+    preferences.explorer_transfer_menu = enabled;
+    save_preferences(&path, &preferences)?;
+    #[cfg(target_os = "windows")]
+    transfers::set_menu_enabled(enabled)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn transfers_list(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    transfers::list(&app)
+}
+
+#[tauri::command]
+fn transfer_pause(app: tauri::AppHandle, id: u64) -> Result<(), String> {
+    transfers::pause(&app, id)
+}
+
+#[tauri::command]
+fn transfer_resume(app: tauri::AppHandle, id: u64) -> Result<(), String> {
+    transfers::resume(&app, id)
+}
+
+#[tauri::command]
+fn transfer_cancel(app: tauri::AppHandle, id: u64) -> Result<(), String> {
+    transfers::cancel(&app, id)
+}
+
+#[tauri::command]
+fn transfer_dismiss(app: tauri::AppHandle, id: u64) -> Result<(), String> {
+    transfers::dismiss(&app, id)
+}
+
+#[tauri::command]
+fn transfer_conflict_answer(
+    app: tauri::AppHandle,
+    id: u64,
+    resolution: bifrost_transfer::batch::Resolution,
+    apply_to_all: bool,
+) -> Result<(), String> {
+    transfers::answer_conflict(&app, id, resolution, apply_to_all)
+}
+
+/// Opens (or focuses) the transfer window. Window creation must not run on the main thread
+/// of a synchronous command on Windows, so this is async.
+#[tauri::command]
+async fn transfers_window_open(app: tauri::AppHandle) -> Result<(), String> {
+    transfers::show_window(&app)
 }
 
 #[cfg(target_os = "linux")]
@@ -3964,6 +4080,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 app.exit(0);
                 return;
             }
+            #[cfg(target_os = "windows")]
+            if let Some(file) = transfers::request_file_argument(&arguments) {
+                tauri::async_runtime::spawn(transfers::run_request_file(app.clone(), file));
+                return;
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -4006,9 +4127,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             app.manage(database);
             app.manage(transfers);
+            #[cfg(target_os = "windows")]
+            app.manage(transfers::TransferManager::default());
             let open = MenuItemBuilder::with_id("open", "Open Bifrost Drive").build(app)?;
+            let transfer_window = MenuItemBuilder::with_id("transfers", "Transfers").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
+            let menu = MenuBuilder::new(app)
+                .items(&[&open, &transfer_window, &quit])
+                .build()?;
             let mut tray = TrayIconBuilder::new()
                 .menu(&menu)
                 .show_menu_on_left_click(false);
@@ -4037,13 +4163,39 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = window.set_focus();
                     }
                 }
+                "transfers" => {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) = transfers::show_window(&app) {
+                            tracing::warn!(%error, "could not open the transfer window");
+                        }
+                    });
+                }
                 "quit" => app.exit(0),
                 _ => {}
             })
             .build(app)?;
             let preferences = load_preferences(&data_dir.join("preferences.json"))
                 .map_err(std::io::Error::other)?;
-            if !preferences.start_minimized {
+            #[cfg(target_os = "windows")]
+            if let Err(error) = transfers::set_menu_enabled(preferences.explorer_transfer_menu) {
+                tracing::warn!(%error, "could not publish the Explorer transfer menu setting");
+            }
+            #[cfg(target_os = "windows")]
+            let launched_for_transfer = {
+                let arguments = std::env::args().collect::<Vec<_>>();
+                let file = transfers::request_file_argument(&arguments);
+                if let Some(file) = file.clone() {
+                    tauri::async_runtime::spawn(transfers::run_request_file(
+                        app.handle().clone(),
+                        file,
+                    ));
+                }
+                file.is_some()
+            };
+            #[cfg(not(target_os = "windows"))]
+            let launched_for_transfer = false;
+            if !preferences.start_minimized && !launched_for_transfer {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
@@ -4065,6 +4217,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             app_status,
             app_start_minimized_get,
             app_start_minimized_set,
+            app_explorer_transfer_menu_get,
+            app_explorer_transfer_menu_set,
+            transfers_list,
+            transfer_pause,
+            transfer_resume,
+            transfer_cancel,
+            transfer_dismiss,
+            transfer_conflict_answer,
+            transfers_window_open,
             credential_store_check,
             sync_root_supported,
             filesystem_integration_kind,
@@ -4132,6 +4293,9 @@ pub fn cleanup_windows_integrations() -> Result<(), String> {
         failures.push(error);
     }
     if let Err(error) = cleanup_configured_drive_icons() {
+        failures.push(error);
+    }
+    if let Err(error) = transfers::remove_menu_setting() {
         failures.push(error);
     }
     if failures.is_empty() {
@@ -4441,6 +4605,7 @@ mod preferences_tests {
             &AppPreferences {
                 start_minimized: true,
                 show_update_popups: true,
+                explorer_transfer_menu: true,
             },
         )
         .unwrap();

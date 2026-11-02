@@ -50,9 +50,17 @@ pub struct MountHandle {
     invalidator: crate::CacheInvalidator,
 }
 
-impl MountHandle {
-    /// Tells the drive that `paths` changed behind its back: cached metadata is dropped and
-    /// Explorer windows showing those folders (or their parents) refresh.
+/// Tells a drive that its data changed behind its back, such as after a batch transfer wrote
+/// to the provider directly.
+#[derive(Clone)]
+pub struct MountRefresher {
+    drive_letter: char,
+    invalidator: crate::CacheInvalidator,
+}
+
+impl MountRefresher {
+    /// Drops cached metadata for `paths` and refreshes Explorer windows showing those folders
+    /// or their parents.
     pub async fn refresh(&self, paths: &[RemotePath]) {
         self.invalidator.invalidate(paths).await;
         let mut folders = std::collections::BTreeSet::new();
@@ -79,6 +87,16 @@ impl MountHandle {
                     None,
                 );
             }
+        }
+    }
+}
+
+impl MountHandle {
+    /// A cloneable handle for refreshing the drive without holding on to the mount itself.
+    pub fn refresher(&self) -> MountRefresher {
+        MountRefresher {
+            drive_letter: self.drive_letter,
+            invalidator: self.invalidator.clone(),
         }
     }
 

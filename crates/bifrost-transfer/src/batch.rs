@@ -18,7 +18,7 @@ use std::{
 use bifrost_common::RemotePath;
 use bifrost_storage::{ReadRequest, StorageError, StorageProvider, WriteRequest};
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::{
     io::AsyncWriteExt,
     sync::{oneshot, watch, OwnedSemaphorePermit, Semaphore},
@@ -32,7 +32,7 @@ const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(100);
 const RATE_WINDOW: Duration = Duration::from_secs(3);
 const CHUNK_SIZE: usize = 256 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferMode {
     Copy,
@@ -95,7 +95,7 @@ pub struct ItemFailure {
     pub reason: FailureReason,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Resolution {
     Skip,
