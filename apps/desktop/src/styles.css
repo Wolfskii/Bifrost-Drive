@@ -552,6 +552,14 @@ h1 {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.activity-failed .file-icon,
+.activity-failed .activity-copy strong {
+    color: #8e3939;
+}
+.activity-failed .activity-copy span {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
 .file-size {
     margin-left: auto;
     color: var(--muted);

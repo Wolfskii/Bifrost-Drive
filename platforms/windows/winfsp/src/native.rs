@@ -31,7 +31,7 @@ use winfsp_wrs::{
 };
 
 use crate::{
-    remote_path_from_windows, MountConfig, OpenFile, RemoteFilesystem, WinFspError,
+    remote_path_from_windows, DriveOperation, MountConfig, OpenFile, RemoteFilesystem, WinFspError,
     WinFspFilesystemError,
 };
 
@@ -227,6 +227,29 @@ impl BifrostFileSystem {
         self.runtime.block_on(future).map_err(status_from_error)
     }
 
+    /// Like `block_on`, but also tells the host about failures the user should see.
+    fn reported<T>(
+        &self,
+        operation: DriveOperation,
+        path: &RemotePath,
+        future: impl std::future::Future<Output = Result<T, WinFspFilesystemError>>,
+    ) -> Result<T, NTSTATUS> {
+        self.runtime.block_on(future).map_err(|error| {
+            self.engine.report_error(operation, path, &error);
+            status_from_error(error)
+        })
+    }
+
+    fn reported_for_handle<T>(
+        &self,
+        operation: DriveOperation,
+        handle: &OpenFile,
+        future: impl std::future::Future<Output = Result<T, WinFspFilesystemError>>,
+    ) -> Result<T, NTSTATUS> {
+        let path = self.runtime.block_on(handle.path());
+        self.reported(operation, &path, future)
+    }
+
     fn path(file_name: &U16CStr) -> Result<RemotePath, NTSTATUS> {
         remote_path_from_windows(&file_name.to_string_lossy()).map_err(status_from_error)
     }
@@ -360,9 +383,17 @@ impl FileSystemInterface for BifrostFileSystem {
             .create_options
             .is(CreateOptions::FILE_DIRECTORY_FILE)
         {
-            self.block_on(self.engine.create_directory(path))?
+            self.reported(
+                DriveOperation::CreateFolder,
+                &path,
+                self.engine.create_directory(path.clone()),
+            )?
         } else {
-            self.block_on(self.engine.create_file(path))?
+            self.reported(
+                DriveOperation::CreateFile,
+                &path,
+                self.engine.create_file(path.clone()),
+            )?
         };
         let metadata = self.metadata_for_handle(&handle)?;
         Ok((handle, Self::file_info(&metadata)))
@@ -389,7 +420,11 @@ impl FileSystemInterface for BifrostFileSystem {
         _replace_file_attributes: bool,
         _allocation_size: u64,
     ) -> Result<FileInfo, NTSTATUS> {
-        self.block_on(self.engine.set_file_size(&file_context, 0))?;
+        self.reported_for_handle(
+            DriveOperation::Save,
+            &file_context,
+            self.engine.set_file_size(&file_context, 0),
+        )?;
         Ok(Self::file_info(&self.metadata_for_handle(&file_context)?))
     }
 
@@ -400,10 +435,16 @@ impl FileSystemInterface for BifrostFileSystem {
         _file_name: Option<&U16CStr>,
         flags: CleanupFlags,
     ) {
+        // Cleanup cannot fail back to Windows, so failures are reported to the host instead.
         if flags.is(CleanupFlags::DELETE) && file_context.delete_pending() {
-            let _ = self.runtime.block_on(self.engine.delete(&file_context));
+            let _ = self.reported_for_handle(
+                DriveOperation::Delete,
+                &file_context,
+                self.engine.delete(&file_context),
+            );
         } else if file_context.is_writable() {
-            let _ = self.runtime.block_on(self.engine.flush(&file_context));
+            self.runtime
+                .block_on(self.engine.upload_on_close(&file_context));
         }
     }
 
@@ -434,18 +475,29 @@ impl FileSystemInterface for BifrostFileSystem {
         buffer: &[u8],
         mode: WriteMode,
     ) -> Result<(usize, FileInfo), NTSTATUS> {
+        let save = DriveOperation::Save;
         let written = match mode {
-            WriteMode::Normal { offset } => {
-                self.block_on(self.engine.write(&file_context, offset, buffer))?
-            }
-            WriteMode::WriteToEOF => self.block_on(self.engine.append(&file_context, buffer))?,
+            WriteMode::Normal { offset } => self.reported_for_handle(
+                save,
+                &file_context,
+                self.engine.write(&file_context, offset, buffer),
+            )?,
+            WriteMode::WriteToEOF => self.reported_for_handle(
+                save,
+                &file_context,
+                self.engine.append(&file_context, buffer),
+            )?,
             WriteMode::ConstrainedIO { offset } => {
                 let size = self.block_on(self.engine.file_size(&file_context))?;
                 if offset >= size {
                     0
                 } else {
                     let length = buffer.len().min((size - offset) as usize);
-                    self.block_on(self.engine.write(&file_context, offset, &buffer[..length]))?
+                    self.reported_for_handle(
+                        save,
+                        &file_context,
+                        self.engine.write(&file_context, offset, &buffer[..length]),
+                    )?
                 }
             }
         };
@@ -457,7 +509,11 @@ impl FileSystemInterface for BifrostFileSystem {
 
     const FLUSH_DEFINED: bool = true;
     fn flush(&self, file_context: Self::FileContext) -> Result<FileInfo, NTSTATUS> {
-        let metadata = self.block_on(self.engine.flush(&file_context))?;
+        let metadata = self.reported_for_handle(
+            DriveOperation::Save,
+            &file_context,
+            self.engine.flush(&file_context),
+        )?;
         Ok(Self::file_info(&metadata))
     }
 
@@ -475,7 +531,11 @@ impl FileSystemInterface for BifrostFileSystem {
     ) -> Result<FileInfo, NTSTATUS> {
         let current_size = self.block_on(self.engine.file_size(&file_context))?;
         if !set_allocation_size || new_size < current_size {
-            self.block_on(self.engine.set_file_size(&file_context, new_size))?;
+            self.reported_for_handle(
+                DriveOperation::Save,
+                &file_context,
+                self.engine.set_file_size(&file_context, new_size),
+            )?;
         }
         Ok(Self::file_info(&self.metadata_for_handle(&file_context)?))
     }
@@ -498,7 +558,9 @@ impl FileSystemInterface for BifrostFileSystem {
         replace_if_exists: bool,
     ) -> Result<(), NTSTATUS> {
         let destination = self.destination_path(new_file_name)?;
-        self.block_on(
+        self.reported_for_handle(
+            DriveOperation::Rename,
+            &file_context,
             self.engine
                 .rename(&file_context, destination, replace_if_exists),
         )
@@ -639,7 +701,7 @@ pub fn mount(config: MountConfig) -> Result<MountHandle, WinFspError> {
     }
 
     let context = BifrostFileSystem {
-        engine: RemoteFilesystem::new(config.provider),
+        engine: RemoteFilesystem::new(config.provider).with_failure_handling(config.failures),
         runtime,
         volume_label,
         volume_total_bytes,

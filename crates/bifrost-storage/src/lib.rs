@@ -122,6 +122,16 @@ pub trait StorageProvider: Send + Sync {
         })
     }
 
+    /// Creates an empty file only when nothing exists at `path`, so permission and connection
+    /// failures surface before callers accept data. Providers whose later `write` would add a
+    /// duplicate item instead of replacing this one must keep the unsupported default.
+    async fn create_empty_file(&self, _path: &RemotePath) -> Result<(), StorageError> {
+        Err(StorageError::Unsupported {
+            provider: self.kind(),
+            capability: "create_empty_file".to_owned(),
+        })
+    }
+
     async fn rename(&self, _from: &RemotePath, _to: &RemotePath) -> Result<(), StorageError> {
         Err(StorageError::Unsupported {
             provider: self.kind(),

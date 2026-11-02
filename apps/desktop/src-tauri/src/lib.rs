@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+mod drive_failures;
 #[cfg(any(target_os = "macos", test))]
 mod macos_file_provider;
 
@@ -3734,6 +3736,16 @@ async fn drive_mount_register(
             .path()
             .app_data_dir()
             .map_err(|error| error.to_string())?;
+        let local_data_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| error.to_string())?;
+        let failures = drive_failures::failure_handling(
+            &app,
+            &local_data_dir,
+            connection.name.clone(),
+            drive_letter,
+        );
         let handle = bifrost_windows_winfsp::mount(MountConfig {
             drive_letter,
             volume_label: connection.name.clone(),
@@ -3744,6 +3756,7 @@ async fn drive_mount_register(
                 connection.id,
             )?,
             provider: Arc::from(provider),
+            failures,
         })
         .map_err(|error| error.to_string())?;
         let previous = registry.insert(key, handle);
@@ -3844,6 +3857,32 @@ async fn drive_mount_startup_set(
     )
     .await;
     Ok(())
+}
+
+/// Opens the folder that keeps drive uploads which never reached their provider.
+#[tauri::command]
+async fn recovered_uploads_open(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let local_data_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| error.to_string())?;
+        let folder = drive_failures::recovery_root(&local_data_dir);
+        tokio::fs::create_dir_all(&folder)
+            .await
+            .map_err(|error| error.to_string())?;
+        std::process::Command::new("explorer.exe")
+            .arg(folder)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        Err("Recovered uploads are kept only for Windows drive letters".to_owned())
+    }
 }
 
 #[tauri::command]
@@ -4061,6 +4100,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             drive_stock_icons,
             drive_icon_preview,
             drive_mount_register,
+            recovered_uploads_open,
             drive_mount_unregister,
             drive_mount_startup_set,
             app_update_popups_get,

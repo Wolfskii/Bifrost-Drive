@@ -113,3 +113,36 @@ async fn atmoz_sftp_public_key_auth_uses_known_hosts() {
     };
     provider.test_connection().await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires task docker:up and BIFROST_SFTP_INTEGRATION=1"]
+async fn atmoz_sftp_create_empty_file_is_exclusive_and_reports_denied_folders() {
+    let Some(provider) = integration_provider() else {
+        return;
+    };
+    let path = RemotePath::parse("upload/created-empty.bin").unwrap();
+    let _ = provider.delete(&path).await;
+
+    provider.create_empty_file(&path).await.unwrap();
+    assert_eq!(provider.stat(&path).await.unwrap().size_bytes, Some(0));
+    assert!(provider.create_empty_file(&path).await.is_err());
+    provider.delete(&path).await.unwrap();
+
+    // The chroot root is owned by root, so the test user cannot create files there.
+    let denied = RemotePath::parse("denied.bin").unwrap();
+    assert!(matches!(
+        provider.create_empty_file(&denied).await,
+        Err(bifrost_storage::StorageError::PermissionDenied { .. })
+    ));
+    assert!(matches!(
+        provider
+            .write(WriteRequest {
+                path: denied.clone(),
+                content: Box::pin(stream::iter(vec![Ok(Bytes::from_static(b"data"))])),
+                size_bytes: Some(4),
+                modified_at: None,
+            })
+            .await,
+        Err(bifrost_storage::StorageError::PermissionDenied { .. })
+    ));
+}

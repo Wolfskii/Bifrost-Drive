@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Weak,
@@ -9,6 +10,10 @@ use std::{
 
 use bifrost_common::{RemoteMetadata, RemotePath};
 use bifrost_storage::{ReadRequest, RemoteEntry, StorageError, StorageProvider, WriteRequest};
+
+use crate::failure::{
+    DriveFailure, DriveFailureReason, DriveOperation, FailureHandling, UploadRecovery,
+};
 use bytes::{Buf, BytesMut};
 use futures_util::StreamExt;
 use tempfile::TempPath;
@@ -48,8 +53,94 @@ pub fn remote_path_from_windows(path: &str) -> Result<RemotePath, WinFspFilesyst
     RemotePath::parse(relative).map_err(|_| WinFspFilesystemError::InvalidPath(path.to_owned()))
 }
 
+/// Mirrors the remote path below the recovery folder using only Windows-safe names.
+fn recovery_destination(recovery_dir: &Path, path: &RemotePath) -> PathBuf {
+    let mut destination = recovery_dir.to_path_buf();
+    for component in path.as_str().split('/').filter(|value| !value.is_empty()) {
+        let safe = component
+            .chars()
+            .map(|character| match character {
+                '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*' => '_',
+                character if character.is_control() => '_',
+                character => character,
+            })
+            .collect::<String>();
+        let safe = safe.trim_end_matches(['.', ' ']);
+        destination.push(if safe.is_empty() { "_" } else { safe });
+    }
+    if destination == recovery_dir {
+        destination.push("recovered upload");
+    }
+    destination
+}
+
+/// Yields `name.ext`, then `name (2).ext`, `name (3).ext`, ... so recovery never overwrites.
+fn recovery_candidates(destination: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    let stem = destination
+        .file_stem()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let extension = destination
+        .extension()
+        .map(|value| format!(".{}", value.to_string_lossy()))
+        .unwrap_or_default();
+    std::iter::once(destination.to_path_buf()).chain(
+        (2..=1000)
+            .map(move |index| destination.with_file_name(format!("{stem} ({index}){extension}"))),
+    )
+}
+
+/// Moves staged data to the recovery folder, copying across volumes, and as a last resort
+/// keeps the staged file where it is rather than deleting it.
+fn persist_recovery(mut temporary: TempPath, staged: &Path, destination: &Path) -> UploadRecovery {
+    let keep_in_place = |temporary: TempPath, reason: String| match temporary.keep() {
+        Ok(path) => {
+            tracing::warn!(%reason, "kept failed upload in the staging folder");
+            UploadRecovery::Saved(path)
+        }
+        Err(error) => UploadRecovery::Lost(format!("{reason}; {error}")),
+    };
+    if let Some(parent) = destination.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            return keep_in_place(temporary, error.to_string());
+        }
+    }
+    for candidate in recovery_candidates(destination) {
+        match temporary.persist_noclobber(&candidate) {
+            Ok(()) => return UploadRecovery::Saved(candidate),
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                temporary = error.path;
+            }
+            Err(error) => {
+                let temporary = error.path;
+                let copied = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&candidate)
+                    .and_then(|mut target| {
+                        std::io::copy(&mut std::fs::File::open(staged)?, &mut target)?;
+                        target.sync_all()
+                    });
+                return match copied {
+                    Ok(()) => UploadRecovery::Saved(candidate),
+                    Err(copy_error) => {
+                        let _ = std::fs::remove_file(&candidate);
+                        keep_in_place(temporary, format!("{}; {copy_error}", error.error))
+                    }
+                };
+            }
+        }
+    }
+    keep_in_place(
+        temporary,
+        "no free file name in the recovery folder".to_owned(),
+    )
+}
+
 struct StagedFile {
-    path: TempPath,
+    path: PathBuf,
+    /// Deletes the staged data on drop unless a failed upload hands it to recovery.
+    temporary: std::sync::Mutex<Option<TempPath>>,
     file: Mutex<File>,
 }
 
@@ -81,6 +172,8 @@ pub struct OpenFile {
     read_consumed: Arc<Notify>,
     dirty: AtomicBool,
     delete_pending: AtomicBool,
+    /// Set when this handle created the remote file, so a failed upload leaves nothing behind.
+    created: bool,
 }
 
 impl OpenFile {
@@ -97,6 +190,7 @@ impl OpenFile {
             read_consumed: Arc::new(Notify::new()),
             dirty: AtomicBool::new(false),
             delete_pending: AtomicBool::new(false),
+            created: false,
         }
     }
 
@@ -124,6 +218,7 @@ impl OpenFile {
 pub struct RemoteFilesystem {
     provider: Arc<dyn StorageProvider>,
     caches: Arc<MetadataCaches>,
+    failures: FailureHandling,
 }
 
 struct Cached<T> {
@@ -135,6 +230,8 @@ const METADATA_CACHE_TTL: Duration = Duration::from_secs(5);
 // Used while provider change polling is healthy, matching rclone's directory cache time.
 const WATCHED_METADATA_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const CHANGE_POLL_INTERVAL: Duration = Duration::from_secs(15);
+/// Waits between upload attempts after a network failure while Windows closes a file.
+const UPLOAD_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(5)];
 
 #[derive(Default)]
 struct MetadataCaches {
@@ -190,6 +287,42 @@ impl RemoteFilesystem {
         Self {
             provider,
             caches: Arc::new(MetadataCaches::default()),
+            failures: FailureHandling::default(),
+        }
+    }
+
+    pub fn with_failure_handling(mut self, failures: FailureHandling) -> Self {
+        self.failures = failures;
+        self
+    }
+
+    /// Tells the host about a failed operation unless Windows alone should handle it.
+    pub fn report_error(
+        &self,
+        operation: DriveOperation,
+        path: &RemotePath,
+        error: &WinFspFilesystemError,
+    ) {
+        if let Some(reason) = DriveFailureReason::from_error(error) {
+            self.report(DriveFailure {
+                operation,
+                path: path.clone(),
+                reason,
+                recovery: None,
+            });
+        }
+    }
+
+    fn report(&self, failure: DriveFailure) {
+        tracing::warn!(
+            operation = ?failure.operation,
+            path = %failure.path,
+            reason = ?failure.reason,
+            recovery = ?failure.recovery,
+            "drive operation failed"
+        );
+        if let Some(sink) = &self.failures.sink {
+            sink(failure);
         }
     }
 
@@ -368,7 +501,15 @@ impl RemoteFilesystem {
         path: RemotePath,
     ) -> Result<Arc<OpenFile>, WinFspFilesystemError> {
         self.ensure_missing(&path).await?;
-        let handle = OpenFile::new(path, false, 0, Some(Self::empty_stage().await?));
+        // Creating the remote file now lets Windows report a refused write before the caller
+        // copies any data, instead of only at close when the error can no longer be returned.
+        match self.provider.create_empty_file(&path).await {
+            Ok(()) => self.invalidate_paths(&[&path]).await,
+            Err(StorageError::Unsupported { .. }) => {}
+            Err(error) => return Err(error.into()),
+        }
+        let mut handle = OpenFile::new(path, false, 0, Some(Self::empty_stage().await?));
+        handle.created = true;
         handle.dirty.store(true, Ordering::Release);
         Ok(Arc::new(handle))
     }
@@ -713,6 +854,67 @@ impl RemoteFilesystem {
         Ok(metadata)
     }
 
+    /// Uploads a closing handle's changes. Windows has already told the caller that the file
+    /// was saved, so a failed upload keeps the staged data in the recovery folder and reports it.
+    pub async fn upload_on_close(&self, handle: &OpenFile) {
+        if handle.stage.is_none() || !handle.dirty.load(Ordering::Acquire) {
+            return;
+        }
+        let mut retries = UPLOAD_RETRY_DELAYS.iter();
+        let reason = loop {
+            let Err(error) = self.flush(handle).await else {
+                return;
+            };
+            let reason = DriveFailureReason::from_error(&error)
+                .unwrap_or_else(|| DriveFailureReason::Local(error.to_string()));
+            match retries.next() {
+                Some(delay) if reason.is_transient() => tokio::time::sleep(*delay).await,
+                _ => break reason,
+            }
+        };
+        let path = handle.path().await;
+        let recovery = self.preserve_stage(handle, &path).await;
+        if handle.created && matches!(recovery, UploadRecovery::Saved(_)) {
+            // Only this handle's own empty or partial upload can be at the path.
+            match self.provider.delete(&path).await {
+                Ok(()) | Err(StorageError::NotFound { .. }) => {}
+                Err(error) => {
+                    tracing::warn!(%error, %path, "could not remove incomplete remote upload")
+                }
+            }
+            self.invalidate_paths(&[&path]).await;
+        }
+        self.report(DriveFailure {
+            operation: DriveOperation::Upload,
+            path,
+            reason,
+            recovery: Some(recovery),
+        });
+    }
+
+    async fn preserve_stage(&self, handle: &OpenFile, path: &RemotePath) -> UploadRecovery {
+        let Some(stage) = &handle.stage else {
+            return UploadRecovery::Lost("the file had no staged data".to_owned());
+        };
+        let file = stage.file.lock().await;
+        if let Err(error) = file.sync_all().await {
+            tracing::warn!(%error, "could not flush staged data before recovery");
+        }
+        let Some(temporary) = stage
+            .temporary
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        else {
+            return UploadRecovery::Lost("the staged data was already released".to_owned());
+        };
+        let destination = recovery_destination(&self.failures.recovery_dir, path);
+        let staged = stage.path.clone();
+        tokio::task::spawn_blocking(move || persist_recovery(temporary, &staged, &destination))
+            .await
+            .unwrap_or_else(|error| UploadRecovery::Lost(error.to_string()))
+    }
+
     pub async fn delete(&self, handle: &OpenFile) -> Result<(), WinFspFilesystemError> {
         self.can_delete(handle).await?;
         let path = handle.path().await;
@@ -794,10 +996,12 @@ impl RemoteFilesystem {
         let temporary = tokio::task::spawn_blocking(tempfile::NamedTempFile::new)
             .await
             .map_err(|error| WinFspFilesystemError::Staging(error.to_string()))??;
-        let path = temporary.into_temp_path();
+        let temporary = temporary.into_temp_path();
+        let path = temporary.to_path_buf();
         let file = File::options().read(true).write(true).open(&path).await?;
         Ok(StagedFile {
             path,
+            temporary: std::sync::Mutex::new(Some(temporary)),
             file: Mutex::new(file),
         })
     }
@@ -838,6 +1042,10 @@ mod tests {
         read_chunk_delay: Duration,
         supports_changes: bool,
         pending_changes: Mutex<Vec<RemotePath>>,
+        supports_create_empty: bool,
+        deny_create: bool,
+        deny_write: bool,
+        network_failures: AtomicUsize,
     }
 
     impl MemoryProvider {
@@ -1005,6 +1213,21 @@ mod tests {
 
         async fn write(&self, mut request: WriteRequest) -> Result<RemoteMetadata, StorageError> {
             self.write_calls.fetch_add(1, Ordering::Relaxed);
+            if self.deny_write {
+                return Err(StorageError::PermissionDenied { path: request.path });
+            }
+            if self
+                .network_failures
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(StorageError::Network {
+                    provider: self.kind(),
+                    message: "connection reset".to_owned(),
+                });
+            }
             let mut data = Vec::new();
             while let Some(chunk) = request.content.next().await {
                 data.extend_from_slice(&chunk?);
@@ -1012,6 +1235,20 @@ mod tests {
             let metadata = Self::metadata(request.path.clone(), data.len());
             self.files.lock().await.insert(request.path, data);
             Ok(metadata)
+        }
+
+        async fn create_empty_file(&self, path: &RemotePath) -> Result<(), StorageError> {
+            if !self.supports_create_empty {
+                return Err(StorageError::Unsupported {
+                    provider: self.kind(),
+                    capability: "create_empty_file".to_owned(),
+                });
+            }
+            if self.deny_create {
+                return Err(StorageError::PermissionDenied { path: path.clone() });
+            }
+            self.files.lock().await.insert(path.clone(), Vec::new());
+            Ok(())
         }
 
         async fn delete(&self, path: &RemotePath) -> Result<(), StorageError> {
@@ -1070,6 +1307,214 @@ mod tests {
                 cursor: "cursor".to_owned(),
             })
         }
+    }
+
+    type Reported = Arc<std::sync::Mutex<Vec<DriveFailure>>>;
+
+    fn reporting_filesystem(
+        provider: Arc<MemoryProvider>,
+        recovery_dir: &Path,
+    ) -> (RemoteFilesystem, Reported) {
+        let reported = Reported::default();
+        let sink = Arc::clone(&reported);
+        let filesystem = RemoteFilesystem::new(provider).with_failure_handling(FailureHandling {
+            recovery_dir: recovery_dir.to_path_buf(),
+            sink: Some(Arc::new(move |failure| sink.lock().unwrap().push(failure))),
+        });
+        (filesystem, reported)
+    }
+
+    #[tokio::test]
+    async fn create_fails_before_data_is_copied_when_the_provider_refuses_writes() {
+        let provider = Arc::new(MemoryProvider {
+            supports_create_empty: true,
+            deny_create: true,
+            ..Default::default()
+        });
+        let recovery = tempfile::tempdir().unwrap();
+        let (filesystem, _) = reporting_filesystem(provider, recovery.path());
+
+        let result = filesystem
+            .create_file(RemotePath::parse("video.mkv").unwrap())
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(WinFspFilesystemError::Storage(
+                StorageError::PermissionDenied { .. }
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_makes_the_remote_file_immediately_when_supported() {
+        let provider = Arc::new(MemoryProvider {
+            supports_create_empty: true,
+            ..Default::default()
+        });
+        let filesystem = RemoteFilesystem::new(provider.clone());
+
+        filesystem
+            .create_file(RemotePath::parse("notes.txt").unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(provider.contents("notes.txt").await, b"");
+    }
+
+    #[tokio::test]
+    async fn failed_close_upload_keeps_the_data_and_reports_where() {
+        let provider = Arc::new(MemoryProvider {
+            deny_write: true,
+            ..Default::default()
+        });
+        let recovery = tempfile::tempdir().unwrap();
+        let (filesystem, reported) = reporting_filesystem(provider.clone(), recovery.path());
+        let path = RemotePath::parse("Filmer/2026-10-31_16-10-30.mkv").unwrap();
+        let handle = filesystem.create_file(path.clone()).await.unwrap();
+        filesystem.write(&handle, 0, b"recording").await.unwrap();
+        let staged = handle.stage.as_ref().unwrap().path.clone();
+
+        filesystem.upload_on_close(&handle).await;
+        drop(handle);
+
+        let expected = recovery
+            .path()
+            .join("Filmer")
+            .join("2026-10-31_16-10-30.mkv");
+        assert_eq!(std::fs::read(&expected).unwrap(), b"recording");
+        assert!(!staged.exists());
+        assert_eq!(
+            *reported.lock().unwrap(),
+            vec![DriveFailure {
+                operation: DriveOperation::Upload,
+                path,
+                reason: DriveFailureReason::PermissionDenied,
+                recovery: Some(UploadRecovery::Saved(expected)),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_upload_of_a_new_file_removes_its_empty_remote_placeholder() {
+        let provider = Arc::new(MemoryProvider {
+            supports_create_empty: true,
+            deny_write: true,
+            ..Default::default()
+        });
+        let recovery = tempfile::tempdir().unwrap();
+        let (filesystem, reported) = reporting_filesystem(provider.clone(), recovery.path());
+        let handle = filesystem
+            .create_file(RemotePath::parse("video.mkv").unwrap())
+            .await
+            .unwrap();
+        filesystem.write(&handle, 0, b"recording").await.unwrap();
+
+        filesystem.upload_on_close(&handle).await;
+
+        assert!(provider.files.lock().await.is_empty());
+        assert_eq!(reported.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_upload_of_an_existing_file_leaves_the_remote_copy_alone() {
+        let provider = Arc::new(MemoryProvider {
+            deny_write: true,
+            ..Default::default()
+        });
+        provider.insert("notes.txt", b"before").await;
+        let recovery = tempfile::tempdir().unwrap();
+        let (filesystem, _) = reporting_filesystem(provider.clone(), recovery.path());
+        let handle = filesystem
+            .open(RemotePath::parse("notes.txt").unwrap(), true)
+            .await
+            .unwrap();
+        filesystem.write(&handle, 0, b"after!").await.unwrap();
+
+        filesystem.upload_on_close(&handle).await;
+
+        assert_eq!(provider.contents("notes.txt").await, b"before");
+        assert_eq!(
+            std::fs::read(recovery.path().join("notes.txt")).unwrap(),
+            b"after!"
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_never_overwrites_an_earlier_recovered_file() {
+        let provider = Arc::new(MemoryProvider {
+            deny_write: true,
+            ..Default::default()
+        });
+        let recovery = tempfile::tempdir().unwrap();
+        std::fs::write(recovery.path().join("video.mkv"), b"earlier").unwrap();
+        let (filesystem, _) = reporting_filesystem(provider, recovery.path());
+        let handle = filesystem
+            .create_file(RemotePath::parse("video.mkv").unwrap())
+            .await
+            .unwrap();
+        filesystem.write(&handle, 0, b"later").await.unwrap();
+
+        filesystem.upload_on_close(&handle).await;
+
+        assert_eq!(
+            std::fs::read(recovery.path().join("video.mkv")).unwrap(),
+            b"earlier"
+        );
+        assert_eq!(
+            std::fs::read(recovery.path().join("video (2).mkv")).unwrap(),
+            b"later"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn close_upload_retries_network_failures_before_giving_up() {
+        let provider = Arc::new(MemoryProvider {
+            network_failures: AtomicUsize::new(2),
+            ..Default::default()
+        });
+        let recovery = tempfile::tempdir().unwrap();
+        let (filesystem, reported) = reporting_filesystem(provider.clone(), recovery.path());
+        let handle = filesystem
+            .create_file(RemotePath::parse("video.mkv").unwrap())
+            .await
+            .unwrap();
+        filesystem.write(&handle, 0, b"recording").await.unwrap();
+
+        filesystem.upload_on_close(&handle).await;
+
+        assert_eq!(provider.contents("video.mkv").await, b"recording");
+        assert!(reported.lock().unwrap().is_empty());
+        assert_eq!(provider.write_calls.load(Ordering::Relaxed), 3);
+    }
+
+    #[tokio::test]
+    async fn unchanged_writable_handles_do_not_upload_or_report_on_close() {
+        let provider = Arc::new(MemoryProvider {
+            deny_write: true,
+            ..Default::default()
+        });
+        provider.insert("notes.txt", b"before").await;
+        let recovery = tempfile::tempdir().unwrap();
+        let (filesystem, reported) = reporting_filesystem(provider.clone(), recovery.path());
+        let handle = filesystem
+            .open(RemotePath::parse("notes.txt").unwrap(), true)
+            .await
+            .unwrap();
+
+        filesystem.upload_on_close(&handle).await;
+
+        assert_eq!(provider.write_calls.load(Ordering::Relaxed), 0);
+        assert!(reported.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn recovery_paths_mirror_the_remote_path_with_safe_names() {
+        let root = Path::new(r"C:\Recovered");
+        assert_eq!(
+            recovery_destination(root, &RemotePath::parse("Filmer/clip|1?.mkv.").unwrap()),
+            root.join("Filmer").join("clip_1_.mkv")
+        );
     }
 
     #[test]
@@ -1452,6 +1897,7 @@ mod tests {
             network_drive: true,
             icon_source: None,
             provider,
+            failures: Default::default(),
         })
         .unwrap();
 
@@ -1483,6 +1929,7 @@ mod tests {
             network_drive: false,
             icon_source: None,
             provider,
+            failures: Default::default(),
         })
         .unwrap();
         let actual = std::fs::read(format!(r"{drive_letter}:\stream.bin")).unwrap();
@@ -1509,6 +1956,7 @@ mod tests {
             network_drive: false,
             icon_source: None,
             provider: provider.clone(),
+            failures: Default::default(),
         })
         .unwrap();
         let path = format!(r"{drive_letter}:\notes.txt");
@@ -1533,5 +1981,76 @@ mod tests {
 
         mount.unmount();
         assert!(!std::path::Path::new(&format!(r"{drive_letter}:\")).exists());
+    }
+
+    #[cfg(all(target_os = "windows", feature = "native"))]
+    fn native_test_mount(
+        provider: Arc<MemoryProvider>,
+        failures: FailureHandling,
+    ) -> (crate::MountHandle, char) {
+        let drive_letter = ('M'..='Z')
+            .rev()
+            .find(|letter| !std::path::Path::new(&format!(r"{letter}:\")).exists())
+            .expect("no free drive letter available for WinFsp acceptance test");
+        let mount = crate::mount(crate::MountConfig {
+            drive_letter,
+            volume_label: "Bifrost Failure Test".to_owned(),
+            network_drive: false,
+            icon_source: None,
+            provider,
+            failures,
+        })
+        .unwrap();
+        (mount, drive_letter)
+    }
+
+    #[cfg(all(target_os = "windows", feature = "native"))]
+    #[test]
+    fn native_copy_into_a_refused_folder_fails_instead_of_reporting_success() {
+        let _guard = NATIVE_MOUNT_TEST_LOCK.lock().unwrap();
+        let provider = Arc::new(MemoryProvider {
+            supports_create_empty: true,
+            deny_create: true,
+            ..Default::default()
+        });
+        let recovery = tempfile::tempdir().unwrap();
+        let (filesystem, reported) = reporting_filesystem(provider.clone(), recovery.path());
+        let (mount, drive_letter) = native_test_mount(provider, filesystem.failures.clone());
+
+        let error = std::fs::write(format!(r"{drive_letter}:\video.mkv"), b"recording")
+            .expect_err("a refused create must reach the caller");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            reported.lock().unwrap()[0].operation,
+            DriveOperation::CreateFile
+        );
+        mount.unmount();
+    }
+
+    #[cfg(all(target_os = "windows", feature = "native"))]
+    #[test]
+    fn native_failed_upload_on_close_keeps_the_data_in_the_recovery_folder() {
+        let _guard = NATIVE_MOUNT_TEST_LOCK.lock().unwrap();
+        let provider = Arc::new(MemoryProvider {
+            deny_write: true,
+            ..Default::default()
+        });
+        let recovery = tempfile::tempdir().unwrap();
+        let (filesystem, reported) = reporting_filesystem(provider.clone(), recovery.path());
+        let (mount, drive_letter) = native_test_mount(provider, filesystem.failures.clone());
+
+        // Windows cannot fail a close, so the write itself still appears to succeed.
+        std::fs::write(format!(r"{drive_letter}:\video.mkv"), b"recording").unwrap();
+
+        assert_eq!(
+            std::fs::read(recovery.path().join("video.mkv")).unwrap(),
+            b"recording"
+        );
+        let reported = reported.lock().unwrap();
+        assert_eq!(reported[0].operation, DriveOperation::Upload);
+        assert_eq!(reported[0].reason, DriveFailureReason::PermissionDenied);
+        drop(reported);
+        mount.unmount();
     }
 }

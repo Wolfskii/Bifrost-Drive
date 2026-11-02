@@ -19,6 +19,7 @@ import {
     Power,
     RefreshCw,
     Trash2,
+    TriangleAlert,
 } from "lucide-react";
 import {
     SiAlibabacloud,
@@ -89,6 +90,7 @@ import {
     installUpdate,
     listConnections,
     listActivity,
+    openRecoveredUploads,
     listConflicts,
     openConnectionLocation,
     registerSyncRoot,
@@ -1010,6 +1012,20 @@ export function App() {
             await openConnectionLocation(connection.id);
         } catch (cause) {
             setError(errorMessage(cause, "Unable to open this location."));
+        }
+    }
+
+    async function handleOpenRecoveredUploads() {
+        setError(null);
+        try {
+            await openRecoveredUploads();
+        } catch (cause) {
+            setError(
+                errorMessage(
+                    cause,
+                    "Unable to open the recovered uploads folder.",
+                ),
+            );
         }
     }
 
@@ -2101,6 +2117,21 @@ export function App() {
                                 <span className="muted-label">
                                     Last 100 events
                                 </span>
+                                {activity.some(
+                                    (event) =>
+                                        event.kind === "drive_upload_failed",
+                                ) && (
+                                    <button
+                                        className="secondary-button"
+                                        type="button"
+                                        onClick={() =>
+                                            void handleOpenRecoveredUploads()
+                                        }
+                                    >
+                                        <FolderOpen size={15} /> Open recovered
+                                        uploads
+                                    </button>
+                                )}
                             </div>
                             {activity.length === 0 ? (
                                 <p className="empty-files">
@@ -2110,11 +2141,19 @@ export function App() {
                                 <div className="file-list">
                                     {activity.map((event) => (
                                         <div
-                                            className="file-row"
+                                            className={
+                                                event.status === "failed"
+                                                    ? "file-row activity-failed"
+                                                    : "file-row"
+                                            }
                                             key={event.id}
                                         >
                                             <span className="file-icon">
-                                                <Activity size={17} />
+                                                {event.status === "failed" ? (
+                                                    <TriangleAlert size={17} />
+                                                ) : (
+                                                    <Activity size={17} />
+                                                )}
                                             </span>
                                             <span className="activity-copy">
                                                 <strong>
@@ -3267,6 +3306,8 @@ function activityTitle(kind: string): string {
         hydrate: "File downloaded",
         sync: "File synchronized",
         conflict: "Conflict resolved",
+        drive_upload_failed: "Upload failed, data kept on this PC",
+        drive_operation_failed: "Drive action failed",
     };
     return titles[kind] ?? kind.replaceAll("_", " ");
 }

@@ -1,4 +1,5 @@
 mod engine;
+mod failure;
 #[cfg(all(target_os = "windows", feature = "native"))]
 mod native;
 
@@ -8,6 +9,10 @@ use bifrost_storage::StorageProvider;
 use thiserror::Error;
 
 pub use engine::{remote_path_from_windows, OpenFile, RemoteFilesystem, WinFspFilesystemError};
+pub use failure::{
+    DriveFailure, DriveFailureReason, DriveFailureSink, DriveOperation, FailureHandling,
+    UploadRecovery,
+};
 #[cfg(all(target_os = "windows", feature = "native"))]
 pub use native::{mount, MountHandle};
 
@@ -34,6 +39,7 @@ pub struct MountConfig {
     pub network_drive: bool,
     pub icon_source: Option<String>,
     pub provider: Arc<dyn StorageProvider>,
+    pub failures: FailureHandling,
 }
 
 impl MountConfig {

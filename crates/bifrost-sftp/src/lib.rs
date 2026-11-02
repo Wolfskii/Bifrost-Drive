@@ -537,6 +537,18 @@ impl StorageProvider for SftpProvider {
         })
     }
 
+    async fn create_empty_file(&self, path: &RemotePath) -> Result<(), StorageError> {
+        let session = self.session().await?;
+        let mut file = session
+            .open_with_flags(
+                self.path(path),
+                OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+            )
+            .await
+            .map_err(|error| Self::map_path_error(error, path))?;
+        file.shutdown().await.map_err(StorageError::Io)
+    }
+
     async fn delete(&self, path: &RemotePath) -> Result<(), StorageError> {
         let session = self.session().await?;
         let metadata = session

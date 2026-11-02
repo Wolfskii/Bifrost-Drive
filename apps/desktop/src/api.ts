@@ -653,6 +653,13 @@ export async function openConnectionLocation(
     });
 }
 
+export async function openRecoveredUploads(): Promise<void> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    await invoke("recovered_uploads_open");
+}
+
 export async function listFiles(connectionId: string): Promise<FileSummary[]> {
     if (!tauriAvailable()) {
         return [];
