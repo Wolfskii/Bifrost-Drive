@@ -1045,7 +1045,7 @@ mod tests {
         supports_create_empty: bool,
         deny_create: bool,
         deny_write: bool,
-        network_failures: AtomicUsize,
+        network_failures: std::sync::Mutex<usize>,
     }
 
     impl MemoryProvider {
@@ -1216,13 +1216,13 @@ mod tests {
             if self.deny_write {
                 return Err(StorageError::PermissionDenied { path: request.path });
             }
-            if self
-                .network_failures
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
-                    left.checked_sub(1)
-                })
-                .is_ok()
-            {
+            let failing = {
+                let mut left = self.network_failures.lock().unwrap();
+                let failing = *left > 0;
+                *left = left.saturating_sub(1);
+                failing
+            };
+            if failing {
                 return Err(StorageError::Network {
                     provider: self.kind(),
                     message: "connection reset".to_owned(),
@@ -1470,7 +1470,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn close_upload_retries_network_failures_before_giving_up() {
         let provider = Arc::new(MemoryProvider {
-            network_failures: AtomicUsize::new(2),
+            network_failures: std::sync::Mutex::new(2),
             ..Default::default()
         });
         let recovery = tempfile::tempdir().unwrap();
