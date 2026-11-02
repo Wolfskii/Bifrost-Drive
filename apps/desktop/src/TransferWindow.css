@@ -1,0 +1,298 @@
+/* The transfer window is always dark, whatever theme the main window uses. */
+html.transfer-root,
+html.transfer-root body {
+    margin: 0;
+    background: #0b0b0b;
+    color-scheme: dark;
+}
+
+.transfer-window {
+    --ink: #f4f4f4;
+    --ink-soft: #c9c9c9;
+    --line: #d9d9d9;
+    --segment-on: #e4e4e4;
+    --segment-off: #454545;
+    display: grid;
+    gap: 16px;
+    min-height: 100vh;
+    box-sizing: border-box;
+    padding: 18px;
+    align-content: start;
+    background: #0b0b0b;
+    color: var(--ink);
+    font:
+        14px/1.45 "DM Sans",
+        ui-sans-serif,
+        system-ui,
+        sans-serif;
+}
+
+.transfer-card {
+    padding: 14px 18px 18px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: #0b0b0b;
+}
+
+.transfer-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.transfer-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.transfer-chips li {
+    padding: 2px 10px;
+    border: 1px solid var(--ink-soft);
+    border-radius: 4px;
+    color: var(--ink);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.transfer-menu {
+    position: relative;
+}
+
+.transfer-more {
+    width: 32px;
+    height: 24px;
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+    font-size: 20px;
+    line-height: 1;
+    letter-spacing: 1px;
+    cursor: pointer;
+}
+
+.transfer-popup {
+    position: absolute;
+    z-index: 2;
+    top: 28px;
+    right: 0;
+    display: grid;
+    min-width: 168px;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #141414;
+}
+
+.transfer-popup button {
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.transfer-popup button:hover,
+.transfer-popup button:focus-visible {
+    background: #262626;
+}
+
+.transfer-title {
+    margin: 14px 0 12px;
+    overflow: hidden;
+    color: var(--ink);
+    font-size: 30px;
+    font-weight: 500;
+    line-height: 1.15;
+    letter-spacing: -0.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.transfer-rule {
+    margin: 0 0 14px;
+    border: 0;
+    border-top: 1px solid var(--line);
+}
+
+.transfer-status {
+    min-height: 1.45em;
+    margin: 0 0 8px;
+    color: var(--ink-soft);
+}
+
+.transfer-figure {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.transfer-percent {
+    font-size: 60px;
+    font-weight: 400;
+    line-height: 1;
+    letter-spacing: -2px;
+    font-variant-numeric: tabular-nums;
+}
+
+.transfer-badge {
+    padding: 4px 12px;
+    border: 1px solid var(--ink-soft);
+    border-radius: 3px;
+    font-size: 15px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.transfer-badge.danger {
+    border-color: #ff8a80;
+    color: #ffb4ab;
+}
+
+.transfer-note {
+    color: var(--ink-soft);
+}
+
+.transfer-bar {
+    display: flex;
+    gap: 5px;
+    height: 70px;
+}
+
+.transfer-segment {
+    flex: 1 1 0;
+    border-radius: 3px;
+    background: var(--segment-off);
+}
+
+.transfer-segment[data-on="true"] {
+    background: var(--segment-on);
+}
+
+.state-paused .transfer-segment[data-on="true"] {
+    background: #8f8f8f;
+}
+
+.state-completed_with_errors .transfer-segment[data-on="true"],
+.state-failed .transfer-segment[data-on="true"] {
+    background: #d7a09a;
+}
+
+.state-cancelled .transfer-segment[data-on="true"] {
+    background: #8f8f8f;
+}
+
+.transfer-current {
+    margin: 12px 0 0;
+    overflow: hidden;
+    color: var(--ink-soft);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.transfer-conflict {
+    display: grid;
+    gap: 10px;
+    margin: 0 0 12px;
+    padding: 12px;
+    border: 1px solid var(--ink-soft);
+    border-radius: 8px;
+}
+
+.transfer-conflict p {
+    display: grid;
+    gap: 2px;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.transfer-conflict p span {
+    color: var(--ink-soft);
+    font-size: 13px;
+}
+
+.transfer-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ink-soft);
+}
+
+.transfer-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.transfer-actions button {
+    padding: 6px 14px;
+    border: 1px solid var(--ink-soft);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    cursor: pointer;
+}
+
+.transfer-actions button:hover,
+.transfer-actions button:focus-visible {
+    background: #262626;
+}
+
+.transfer-problems {
+    margin-top: 14px;
+    color: var(--ink-soft);
+}
+
+.transfer-problems summary {
+    cursor: pointer;
+}
+
+.transfer-problems ul {
+    display: grid;
+    gap: 8px;
+    max-height: 160px;
+    margin: 10px 0 0;
+    padding: 0;
+    overflow: auto;
+    list-style: none;
+}
+
+.transfer-problems li {
+    display: grid;
+    gap: 1px;
+    overflow-wrap: anywhere;
+}
+
+.transfer-problems strong {
+    color: var(--ink);
+    font-weight: 500;
+}
+
+.transfer-empty,
+.transfer-error {
+    margin: 0;
+    color: var(--ink-soft);
+}
+
+.transfer-error {
+    padding: 10px 12px;
+    border: 1px solid #ff8a80;
+    border-radius: 8px;
+    color: #ffb4ab;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .transfer-segment {
+        transition: background-color 120ms linear;
+    }
+}

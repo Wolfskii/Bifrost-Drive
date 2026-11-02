@@ -79,6 +79,7 @@ import {
     checkForUpdate,
     getAutostartEnabled,
     getCredentialStoreStatus,
+    getExplorerTransferMenu,
     getStartMinimized,
     getUpdatePopupsEnabled,
     getConnectionDetails,
@@ -100,6 +101,7 @@ import {
     resolveConflict,
     setDriveMountStartup,
     setAutostartEnabled,
+    setExplorerTransferMenu,
     setStartMinimized,
     setUpdatePopupsEnabled,
     supportsSyncRoots,
@@ -602,6 +604,8 @@ export function App() {
     const [updatingAutostart, setUpdatingAutostart] = useState(false);
     const [startMinimized, setStartMinimizedState] = useState(false);
     const [updatingStartMinimized, setUpdatingStartMinimized] = useState(false);
+    const [explorerTransferMenu, setExplorerTransferMenuState] = useState(true);
+    const [updatingExplorerMenu, setUpdatingExplorerMenu] = useState(false);
     const [sftpAuthentication, setSftpAuthentication] = useState<
         "password" | "private_key"
     >("password");
@@ -887,6 +891,9 @@ export function App() {
         getStartMinimized()
             .then(setStartMinimizedState)
             .catch(() => undefined);
+        getExplorerTransferMenu()
+            .then(setExplorerTransferMenuState)
+            .catch(() => undefined);
     }, []);
 
     useEffect(() => {
@@ -930,6 +937,24 @@ export function App() {
             );
         } finally {
             setUpdatingStartMinimized(false);
+        }
+    }
+
+    async function handleExplorerTransferMenuChange(enabled: boolean) {
+        setUpdatingExplorerMenu(true);
+        setError(null);
+        try {
+            await setExplorerTransferMenu(enabled);
+            setExplorerTransferMenuState(enabled);
+        } catch (cause) {
+            setError(
+                errorMessage(
+                    cause,
+                    "Unable to update the Explorer menu setting.",
+                ),
+            );
+        } finally {
+            setUpdatingExplorerMenu(false);
         }
     }
 
@@ -2225,6 +2250,34 @@ export function App() {
                                     </small>
                                 </span>
                             </div>
+                            {filesystemIntegration === "windows" && (
+                                <div className="checkbox-row settings-option">
+                                    <input
+                                        type="checkbox"
+                                        aria-label="Show Bifrost Drive transfer options in Explorer menus"
+                                        checked={explorerTransferMenu}
+                                        disabled={updatingExplorerMenu}
+                                        onChange={(event) =>
+                                            void handleExplorerTransferMenuChange(
+                                                event.target.checked,
+                                            )
+                                        }
+                                    />
+                                    <span>
+                                        Show Bifrost Drive transfer options in
+                                        Explorer menus
+                                        <small>
+                                            Adds “Copy here / Move here / Paste
+                                            with Bifrost Drive” for files going
+                                            to or from a Bifrost drive, with a
+                                            faster transfer window. Normal
+                                            Ctrl+V and drag stay Explorer’s own.
+                                            Turn this off to always use Windows’
+                                            own copy.
+                                        </small>
+                                    </span>
+                                </div>
+                            )}
                             <div className="settings-update-section">
                                 <div className="section-heading">
                                     <div>
@@ -3306,6 +3359,9 @@ function activityTitle(kind: string): string {
         hydrate: "File downloaded",
         sync: "File synchronized",
         conflict: "Conflict resolved",
+        transfer_completed: "Explorer transfer finished",
+        transfer_failed: "Explorer transfer had problems",
+        transfer_cancelled: "Explorer transfer cancelled",
         drive_upload_failed: "Upload failed, data kept on this PC",
         drive_operation_failed: "Drive action failed",
     };

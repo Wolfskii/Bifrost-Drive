@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
     disable as disableAutostart,
     enable as enableAutostart,
@@ -759,4 +760,126 @@ export async function unregisterSyncRoot(connectionId: string): Promise<void> {
     await invoke("sync_root_unregister", {
         request: { id: connectionId },
     });
+}
+
+export type TransferMode = "copy" | "move";
+export type TransferState =
+    | "planning"
+    | "running"
+    | "paused"
+    | "waiting_for_answer"
+    | "completed"
+    | "completed_with_errors"
+    | "cancelled"
+    | "failed";
+export type ConflictResolution = "skip" | "replace" | "keep_both";
+
+export type TransferFailureReason =
+    | { kind: "permission_denied" | "not_found" | "authentication_failed" }
+    | { kind: "network" | "other"; detail: string };
+
+export interface TransferFailure {
+    name: string;
+    reason: TransferFailureReason;
+}
+
+export interface TransferConflict {
+    name: string;
+    source_bytes: number;
+    destination_bytes: number;
+}
+
+export interface TransferSnapshot {
+    state: TransferState;
+    mode: TransferMode;
+    total_files: number;
+    total_bytes: number;
+    done_files: number;
+    done_bytes: number;
+    skipped_files: number;
+    failed_files: number;
+    failures: TransferFailure[];
+    current: string[];
+    bytes_per_second: number;
+    seconds_left: number | null;
+    conflict: TransferConflict | null;
+}
+
+export interface TransferView {
+    id: number;
+    connection: string;
+    direction: "upload" | "download" | "transfer";
+    items: number;
+    first_item: string;
+    destination: string;
+    started_at_ms: number;
+    snapshot: TransferSnapshot;
+}
+
+export async function listTransfers(): Promise<TransferView[]> {
+    if (!tauriAvailable()) {
+        return [];
+    }
+    return invoke<TransferView[]>("transfers_list");
+}
+
+/** Calls `onUpdate` for every progress change; resolves to a function that stops listening. */
+export async function subscribeTransfers(
+    onUpdate: (view: TransferView) => void,
+): Promise<() => void> {
+    if (!tauriAvailable()) {
+        return () => undefined;
+    }
+    return listen<TransferView>("transfer://update", (event) =>
+        onUpdate(event.payload),
+    );
+}
+
+async function transferCommand(
+    command: string,
+    args: Record<string, unknown>,
+): Promise<void> {
+    if (!tauriAvailable()) {
+        throw new Error("The desktop service is not available in this window");
+    }
+    await invoke(command, args);
+}
+
+export function pauseTransfer(id: number): Promise<void> {
+    return transferCommand("transfer_pause", { id });
+}
+
+export function resumeTransfer(id: number): Promise<void> {
+    return transferCommand("transfer_resume", { id });
+}
+
+export function cancelTransfer(id: number): Promise<void> {
+    return transferCommand("transfer_cancel", { id });
+}
+
+export function dismissTransfer(id: number): Promise<void> {
+    return transferCommand("transfer_dismiss", { id });
+}
+
+export function answerTransferConflict(
+    id: number,
+    resolution: ConflictResolution,
+    applyToAll: boolean,
+): Promise<void> {
+    return transferCommand("transfer_conflict_answer", {
+        id,
+        resolution,
+        applyToAll,
+    });
+}
+
+export async function getExplorerTransferMenu(): Promise<boolean> {
+    if (!tauriAvailable()) {
+        return true;
+    }
+    return invoke<boolean>("app_explorer_transfer_menu_get");
+}
+
+export function setExplorerTransferMenu(enabled: boolean): Promise<void> {
+    return transferCommand("app_explorer_transfer_menu_set", { enabled });
 }
