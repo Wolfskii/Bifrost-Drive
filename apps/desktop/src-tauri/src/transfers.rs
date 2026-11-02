@@ -170,18 +170,10 @@ fn within(candidate: &Location, parent: &Location) -> bool {
     }
 }
 
-/// Rejects requests that no drive is part of, and folders copied into themselves.
+/// Rejects folders copied into themselves. Transfers between ordinary folders are accepted
+/// too: the Explorer menu offers Paste everywhere, and the engine copies local files itself.
 pub fn validate_locations(sources: &[Location], destination: &Location) -> Result<(), String> {
     for source in sources {
-        if matches!(
-            (source, destination),
-            (Location::Local(_), Location::Local(_))
-        ) {
-            return Err(
-                "Neither the source nor the destination is on a Bifrost Drive, so Windows Explorer should handle this copy"
-                    .to_owned(),
-            );
-        }
         if within(destination, source) {
             return Err("A folder can't be copied or moved into itself".to_owned());
         }
@@ -784,11 +776,12 @@ mod tests {
     }
 
     #[test]
-    fn needs_a_drive_on_one_side_and_refuses_copying_into_itself() {
+    fn accepts_any_pair_of_locations_but_refuses_copying_into_itself() {
         let mounted = letters(&['Y']);
         let local = |path| locate(path, &mounted).unwrap();
 
-        assert!(validate_locations(&[local(r"C:\a")], &local(r"D:\b")).is_err());
+        assert!(validate_locations(&[local(r"C:\a")], &local(r"D:\b")).is_ok());
+        assert!(validate_locations(&[local(r"C:\a")], &local(r"C:\a\sub")).is_err());
         assert!(validate_locations(&[local(r"C:\a")], &local(r"Y:\b")).is_ok());
         assert!(validate_locations(&[local(r"Y:\a")], &local(r"C:\b")).is_ok());
         assert!(validate_locations(&[local(r"Y:\a")], &local(r"Y:\a\sub")).is_err());

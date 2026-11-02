@@ -144,6 +144,19 @@ fn gesture_for(
     clipboard: impl FnOnce() -> Option<(Vec<PathBuf>, Mode)>,
     is_directory: impl Fn(&Path) -> bool,
 ) -> Option<Gesture> {
+    // A context menu on an item may also be given the folder that holds the item, which would
+    // look like a drop of the item into its own folder. Nobody drops files where they already
+    // are, so that combination is treated as a plain selection.
+    let (folder, selection) = match (folder, selection) {
+        (Some(folder), Some(selected))
+            if selected
+                .iter()
+                .all(|item| item.parent() == Some(folder.as_path())) =>
+        {
+            (None, Some(selected))
+        }
+        other => other,
+    };
     match (folder, selection) {
         // A right-drag: the dropped files and the folder they were dropped on.
         (Some(target), Some(sources)) => Some(Gesture::Drop { sources, target }),
@@ -830,6 +843,26 @@ mod tests {
         assert_eq!(gesture_for(None, None, clipboard, |_| true), None);
     }
 
+    #[test]
+    fn right_clicking_a_folder_is_a_paste_target_even_when_explorer_also_names_its_parent() {
+        let clipboard = || Some((vec![PathBuf::from(r"C:.mkv")], Mode::Copy));
+        let parent = Some(PathBuf::from(r"Y:\"));
+        let clicked = Some(vec![PathBuf::from(r"Y:\Filmer")]);
+
+        let gesture = gesture_for(parent.clone(), clicked.clone(), clipboard, |_| true);
+
+        assert_eq!(
+            gesture,
+            Some(Gesture::Paste {
+                sources: vec![PathBuf::from(r"C:.mkv")],
+                target: PathBuf::from(r"Y:\Filmer"),
+                clipboard_mode: Mode::Copy,
+            })
+        );
+        // Not a folder (a file was clicked): there is nothing to paste into.
+        assert_eq!(gesture_for(parent, clicked, clipboard, |_| false), None);
+    }
+
     fn shell_item(path: &Path) -> *mut ITEMIDLIST {
         let text = wide(&path.to_string_lossy());
         let mut pidl = std::ptr::null_mut();
@@ -850,9 +883,10 @@ mod tests {
 
     #[test]
     fn a_real_explorer_selection_dropped_on_a_folder_produces_the_menu() {
-        let directory = tempfile::tempdir().unwrap();
-        let file = directory.path().join("clip.mkv");
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("clip.mkv");
         std::fs::write(&file, b"x").unwrap();
+        let directory = tempfile::tempdir_in(root.path()).unwrap();
         let letter = volume::drive_letter(directory.path()).expect("the temp folder is on a drive");
         let _scenario = Scenario::new(letter, true);
         let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };

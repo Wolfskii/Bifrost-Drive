@@ -20,7 +20,7 @@ use bifrost_storage::{ReadRequest, StorageError, StorageProvider, WriteRequest};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     sync::{oneshot, watch, OwnedSemaphorePermit, Semaphore},
     task::JoinSet,
     time::Instant,
@@ -1195,11 +1195,19 @@ impl Context {
                     verify_remote(to_provider, to, written).await?;
                 }
             }
-            (Endpoint::Local(_), Endpoint::Local(_)) => {
-                return Err(FailureReason::Other(
-                    "copying between two local folders is handled by Windows Explorer".to_owned(),
-                )
-                .into());
+            (Endpoint::Local(source), Endpoint::Local(target)) => {
+                if same_local_file(source, target).await {
+                    // Pasting a file onto itself: there is nothing to copy, and the "original"
+                    // must not be removed afterwards because it is the result.
+                    progress.complete(job.size);
+                    return Ok(());
+                }
+                // A move inside one volume is a rename; anywhere else it falls back to copying.
+                if moving && tokio::fs::rename(source, target).await.is_ok() {
+                    progress.complete(job.size);
+                    return Ok(());
+                }
+                copy_local(source, target, progress, cancel, moving).await?;
             }
         }
         if moving {
@@ -1329,6 +1337,81 @@ async fn download_to_file(
         .into());
     }
     Ok(received)
+}
+
+async fn same_local_file(first: &std::path::Path, second: &std::path::Path) -> bool {
+    if first == second {
+        return true;
+    }
+    match (
+        tokio::fs::canonicalize(first).await,
+        tokio::fs::canonicalize(second).await,
+    ) {
+        (Ok(first), Ok(second)) => first == second,
+        _ => false,
+    }
+}
+
+/// Copies a local file through a partial file next to the target, so an interrupted copy never
+/// leaves a half-written file under the real name. Fails when the source changed while it was
+/// being read, because a move would otherwise delete data the copy does not have.
+async fn copy_local(
+    source: &std::path::Path,
+    target: &std::path::Path,
+    progress: &Progress,
+    cancel: &CancellationToken,
+    durable: bool,
+) -> Result<(), Stop> {
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let partial = target.with_file_name(format!(".{name}.bifrost-part"));
+    let result = async {
+        let mut input = tokio::fs::File::open(source).await.map_err(io_stop)?;
+        let modified = input
+            .metadata()
+            .await
+            .ok()
+            .and_then(|meta| meta.modified().ok());
+        let mut output = tokio::fs::File::create(&partial).await.map_err(io_stop)?;
+        let mut buffer = vec![0u8; CHUNK_SIZE];
+        let mut copied = 0u64;
+        loop {
+            if cancel.is_cancelled() {
+                return Err(Stop::Cancelled);
+            }
+            let read = input.read(&mut buffer).await.map_err(io_stop)?;
+            if read == 0 {
+                break;
+            }
+            output.write_all(&buffer[..read]).await.map_err(io_stop)?;
+            copied += read as u64;
+            progress.add(read, false);
+        }
+        output.flush().await.map_err(io_stop)?;
+        if durable {
+            output.sync_all().await.map_err(io_stop)?;
+        }
+        if let Some(modified) = modified {
+            let file = output.into_std().await;
+            // Keeping the original modification time is a nicety, not a requirement.
+            let _ = tokio::task::spawn_blocking(move || file.set_modified(modified)).await;
+        }
+        let now = tokio::fs::metadata(source).await.map_err(io_stop)?.len();
+        if now != copied {
+            return Err(FailureReason::Other(
+                "the file changed while it was being copied, so the original was kept".to_owned(),
+            )
+            .into());
+        }
+        tokio::fs::rename(&partial, target).await.map_err(io_stop)
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&partial).await;
+    }
+    result
 }
 
 async fn download_remote(

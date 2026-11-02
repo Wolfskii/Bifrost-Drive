@@ -67,9 +67,10 @@ const MOVE_ENTRY: MenuEntry = MenuEntry {
     mode: Mode::Move,
 };
 
-/// The entries to add to the menu. Nothing is offered when the setting is off, when there is
-/// nothing to transfer, or when neither side is on a Bifrost drive, so ordinary copies never
-/// see the extension.
+/// The entries to add to the menu. Nothing is offered when the setting is off or when there is
+/// nothing to transfer. Paste is offered wherever files wait on the clipboard, on any drive;
+/// the right-drag items (which would crowd every ordinary drag) only when a Bifrost drive is
+/// one of the two sides.
 pub fn entries(
     gesture: &Gesture,
     enabled: bool,
@@ -78,14 +79,17 @@ pub fn entries(
     if !enabled || gesture.sources().is_empty() {
         return Vec::new();
     }
-    // Explorer selections come from one folder, so the first item stands for all of them.
-    let involves_drive =
-        is_bifrost_drive(gesture.target()) || is_bifrost_drive(&gesture.sources()[0]);
-    if !involves_drive {
-        return Vec::new();
-    }
     match gesture {
-        Gesture::Drop { .. } => vec![COPY_ENTRY, MOVE_ENTRY],
+        Gesture::Drop { .. } => {
+            // Explorer selections come from one folder, so the first item stands for all.
+            let involves_drive =
+                is_bifrost_drive(gesture.target()) || is_bifrost_drive(&gesture.sources()[0]);
+            if involves_drive {
+                vec![COPY_ENTRY, MOVE_ENTRY]
+            } else {
+                Vec::new()
+            }
+        }
         Gesture::Paste { clipboard_mode, .. } => vec![MenuEntry {
             verb: PASTE_VERB,
             label: "Paste with Bifrost Drive",
@@ -187,11 +191,24 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_copies_never_see_the_menu() {
+    fn ordinary_drags_never_see_the_menu() {
         assert!(entries(&dropped(&[r"C:\a.mkv"], r"D:\Videos"), true, &drive).is_empty());
+    }
+
+    #[test]
+    fn paste_is_offered_on_every_drive_not_only_bifrost_ones() {
+        let offered = entries(
+            &pasted(&[r"C:\a.mkv"], r"D:\Videos", Mode::Move),
+            true,
+            &drive,
+        );
+
+        assert_eq!(offered.len(), 1);
+        assert_eq!(offered[0].label, "Paste with Bifrost Drive");
+        assert_eq!(offered[0].mode, Mode::Move);
         assert!(entries(
             &pasted(&[r"C:\a.mkv"], r"D:\Videos", Mode::Copy),
-            true,
+            false,
             &drive
         )
         .is_empty());

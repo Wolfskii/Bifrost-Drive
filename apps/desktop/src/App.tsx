@@ -2267,13 +2267,14 @@ export function App() {
                                         Show Bifrost Drive transfer options in
                                         Explorer menus
                                         <small>
-                                            Adds “Copy here / Move here / Paste
-                                            with Bifrost Drive” for files going
-                                            to or from a Bifrost drive, with a
-                                            faster transfer window. Normal
-                                            Ctrl+V and drag stay Explorer’s own.
-                                            Turn this off to always use Windows’
-                                            own copy.
+                                            Adds “Paste with Bifrost Drive” to
+                                            right-click menus when files are
+                                            copied or cut, and “Copy here / Move
+                                            here” to right-drags to or from a
+                                            Bifrost drive, with a faster
+                                            transfer window. Normal Ctrl+V and
+                                            drag stay Explorer’s own. Turn this
+                                            off to always use Windows’ own copy.
                                         </small>
                                     </span>
                                 </div>

@@ -810,3 +810,124 @@ async fn thousands_of_small_files_finish_with_exact_totals() {
     assert_eq!(finished.done_bytes, 1500);
     assert!(!local.path().join("many").exists());
 }
+
+#[tokio::test]
+async fn copies_a_folder_between_two_local_folders_and_keeps_the_originals() {
+    let from = tempfile::tempdir().unwrap();
+    let to = tempfile::tempdir().unwrap();
+    write_local(
+        from.path(),
+        &[("clips/a.mkv", b"aaaa"), ("clips/more/b.mkv", b"bb")],
+    );
+    let modified = std::fs::metadata(from.path().join("clips/a.mkv"))
+        .unwrap()
+        .modified()
+        .unwrap();
+
+    let finished = run_batch(
+        vec![Endpoint::Local(from.path().join("clips"))],
+        Endpoint::Local(to.path().to_path_buf()),
+        TransferMode::Copy,
+        options(),
+    )
+    .await;
+
+    assert_eq!(finished.state, BatchState::Completed);
+    assert_eq!(finished.done_files, 2);
+    assert_eq!(
+        std::fs::read(to.path().join("clips/a.mkv")).unwrap(),
+        b"aaaa"
+    );
+    assert_eq!(
+        std::fs::read(to.path().join("clips/more/b.mkv")).unwrap(),
+        b"bb"
+    );
+    assert_eq!(
+        std::fs::metadata(to.path().join("clips/a.mkv"))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        modified
+    );
+    assert!(from.path().join("clips/a.mkv").exists());
+    assert!(walk(to.path())
+        .iter()
+        .all(|name| !name.contains("bifrost-part")));
+}
+
+#[tokio::test]
+async fn moves_a_folder_between_two_local_folders_and_removes_the_original() {
+    let from = tempfile::tempdir().unwrap();
+    let to = tempfile::tempdir().unwrap();
+    write_local(
+        from.path(),
+        &[("clips/a.mkv", b"aaaa"), ("clips/more/b.mkv", b"bb")],
+    );
+
+    let finished = run_batch(
+        vec![Endpoint::Local(from.path().join("clips"))],
+        Endpoint::Local(to.path().to_path_buf()),
+        TransferMode::Move,
+        options(),
+    )
+    .await;
+
+    assert_eq!(finished.state, BatchState::Completed);
+    assert_eq!(
+        std::fs::read(to.path().join("clips/a.mkv")).unwrap(),
+        b"aaaa"
+    );
+    assert_eq!(
+        std::fs::read(to.path().join("clips/more/b.mkv")).unwrap(),
+        b"bb"
+    );
+    assert!(!from.path().join("clips").exists());
+}
+
+#[tokio::test]
+async fn replacing_a_file_with_itself_never_loses_it() {
+    let folder = tempfile::tempdir().unwrap();
+    write_local(folder.path(), &[("a.txt", b"precious")]);
+    let handle = start(
+        BatchRequest {
+            sources: vec![Endpoint::Local(folder.path().join("a.txt"))],
+            destination: Endpoint::Local(folder.path().to_path_buf()),
+            mode: TransferMode::Move,
+        },
+        options(),
+    );
+
+    wait_for_state(&handle, BatchState::WaitingForAnswer).await;
+    handle.answer_conflict(Resolution::Replace, false);
+    let finished = handle.wait().await;
+
+    assert_eq!(finished.state, BatchState::Completed);
+    assert_eq!(
+        std::fs::read(folder.path().join("a.txt")).unwrap(),
+        b"precious"
+    );
+}
+
+#[tokio::test]
+async fn keeping_both_when_pasting_into_the_same_local_folder_makes_a_second_name() {
+    let folder = tempfile::tempdir().unwrap();
+    write_local(folder.path(), &[("a.txt", b"one")]);
+    let handle = start(
+        BatchRequest {
+            sources: vec![Endpoint::Local(folder.path().join("a.txt"))],
+            destination: Endpoint::Local(folder.path().to_path_buf()),
+            mode: TransferMode::Copy,
+        },
+        options(),
+    );
+
+    wait_for_state(&handle, BatchState::WaitingForAnswer).await;
+    handle.answer_conflict(Resolution::KeepBoth, false);
+    handle.wait().await;
+
+    assert_eq!(std::fs::read(folder.path().join("a.txt")).unwrap(), b"one");
+    assert_eq!(
+        std::fs::read(folder.path().join("a (2).txt")).unwrap(),
+        b"one"
+    );
+}
