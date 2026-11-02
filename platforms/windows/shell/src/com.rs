@@ -39,7 +39,8 @@ use windows::{
                 SHCNE_ASSOCCHANGED, SHCNF_IDLIST,
             },
             WindowsAndMessaging::{
-                InsertMenuW, MessageBoxW, HMENU, MB_ICONERROR, MB_OK, MF_BYPOSITION, MF_STRING,
+                InsertMenuW, MessageBoxW, HMENU, IDYES, MB_DEFBUTTON2, MB_ICONERROR,
+                MB_ICONWARNING, MB_OK, MB_YESNO, MF_BYPOSITION, MF_STRING,
             },
         },
     },
@@ -143,7 +144,7 @@ fn gesture_for(
     selection: Option<Vec<PathBuf>>,
     clipboard: impl FnOnce() -> Option<(Vec<PathBuf>, Mode)>,
     is_directory: impl Fn(&Path) -> bool,
-) -> Option<Gesture> {
+) -> Vec<Gesture> {
     // A context menu on an item may also be given the folder that holds the item, which would
     // look like a drop of the item into its own folder. Nobody drops files where they already
     // are, so that combination is treated as a plain selection.
@@ -159,26 +160,36 @@ fn gesture_for(
     };
     match (folder, selection) {
         // A right-drag: the dropped files and the folder they were dropped on.
-        (Some(target), Some(sources)) => Some(Gesture::Drop { sources, target }),
+        (Some(target), Some(sources)) => vec![Gesture::Drop { sources, target }],
         // Right-click on a folder's empty space.
-        (Some(target), None) => {
-            let (sources, clipboard_mode) = clipboard()?;
-            Some(Gesture::Paste {
+        (Some(target), None) => clipboard()
+            .map(|(sources, clipboard_mode)| Gesture::Paste {
                 sources,
                 target,
                 clipboard_mode,
             })
+            .into_iter()
+            .collect(),
+        // Right-click on items: they can be deleted, and a single folder or drive can also
+        // receive what is on the clipboard.
+        (None, Some(selected)) if !selected.is_empty() => {
+            let mut readings = vec![Gesture::Selection {
+                items: selected.clone(),
+            }];
+            if let [only] = selected.as_slice() {
+                if is_directory(only) {
+                    if let Some((sources, clipboard_mode)) = clipboard() {
+                        readings.push(Gesture::Paste {
+                            sources,
+                            target: only.clone(),
+                            clipboard_mode,
+                        });
+                    }
+                }
+            }
+            readings
         }
-        // Right-click on one folder or drive.
-        (None, Some(selected)) if selected.len() == 1 && is_directory(&selected[0]) => {
-            let (sources, clipboard_mode) = clipboard()?;
-            Some(Gesture::Paste {
-                sources,
-                target: selected.into_iter().next()?,
-                clipboard_mode,
-            })
-        }
-        _ => None,
+        _ => Vec::new(),
     }
 }
 
@@ -190,7 +201,7 @@ fn clipboard_files() -> Option<(Vec<PathBuf>, Mode)> {
 
 #[implement(IShellExtInit, IContextMenu)]
 pub struct MenuHandler {
-    gesture: RefCell<Option<Gesture>>,
+    gestures: RefCell<Vec<Gesture>>,
     offered: RefCell<Vec<MenuEntry>>,
     first_command: Cell<u32>,
 }
@@ -199,7 +210,7 @@ impl MenuHandler {
     pub fn new() -> Self {
         OBJECTS.fetch_add(1, Ordering::SeqCst);
         Self {
-            gesture: RefCell::new(None),
+            gestures: RefCell::new(Vec::new()),
             offered: RefCell::new(Vec::new()),
             first_command: Cell::new(0),
         }
@@ -227,13 +238,13 @@ impl IShellExtInit_Impl for MenuHandler_Impl {
     ) -> Result<()> {
         guarded(Err(Error::from(E_UNEXPECTED)), || {
             let selection = pdtobj.as_ref().and_then(|data| files_in(data).ok());
-            let gesture = gesture_for(
+            let gestures = gesture_for(
                 path_from_pidl(pidlfolder),
                 selection,
                 clipboard_files,
                 Path::is_dir,
             );
-            *self.gesture.borrow_mut() = gesture;
+            *self.gestures.borrow_mut() = gestures;
             Ok(())
         })
     }
@@ -252,12 +263,12 @@ impl IContextMenu_Impl for MenuHandler_Impl {
             if uflags & CMF_DEFAULTONLY != 0 {
                 return HRESULT(0);
             }
-            let gesture = self.gesture.borrow();
-            let Some(gesture) = gesture.as_ref() else {
+            let gestures = self.gestures.borrow();
+            if gestures.is_empty() {
                 return HRESULT(0);
-            };
+            }
             let room = idcmdlast.saturating_sub(idcmdfirst).saturating_add(1) as usize;
-            let mut offered = decision::entries(gesture, setting::menu_enabled(), &|path| {
+            let mut offered = decision::entries_for(&gestures, setting::menu_enabled(), &|path| {
                 volume::is_bifrost_drive(path)
             });
             offered.truncate(room);
@@ -294,6 +305,9 @@ impl IContextMenu_Impl for MenuHandler_Impl {
             let Some(entry) = entry else {
                 return Err(Error::from(E_FAIL));
             };
+            if entry.mode == Mode::Delete && !self.confirmed_delete(info.hwnd) {
+                return Ok(());
+            }
             match self.run(&entry) {
                 Ok(()) => Ok(()),
                 Err(message) => {
@@ -363,10 +377,30 @@ impl MenuHandler {
         decision::entry_for_verb(&offered, name)
     }
 
+    /// Deleting cannot be undone, so it is the one action that asks first.
+    fn confirmed_delete(&self, owner: HWND) -> bool {
+        let gestures = self.gestures.borrow();
+        let Some(Gesture::Selection { items }) = gestures
+            .iter()
+            .find(|gesture| matches!(gesture, Gesture::Selection { .. }))
+        else {
+            return false;
+        };
+        let text = wide(&decision::delete_prompt(items));
+        let answer = unsafe {
+            MessageBoxW(
+                Some(owner),
+                PCWSTR(text.as_ptr()),
+                w!("Bifrost Drive"),
+                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
+            )
+        };
+        answer == IDYES
+    }
+
     fn run(&self, entry: &MenuEntry) -> std::result::Result<(), String> {
-        let gesture = self.gesture.borrow();
-        let gesture = gesture
-            .as_ref()
+        let gestures = self.gestures.borrow();
+        let gesture = decision::gesture_for_entry(&gestures, entry)
             .ok_or_else(|| "There is nothing selected to transfer".to_owned())?;
         let local_app_data = std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
@@ -625,7 +659,7 @@ mod tests {
 
     fn handler_for(gesture: Gesture) -> (ComObject<MenuHandler>, IContextMenu) {
         let object = ComObject::new(MenuHandler::new());
-        object.gesture.replace(Some(gesture));
+        object.gestures.replace(vec![gesture]);
         let menu = object.to_interface::<IContextMenu>();
         (object, menu)
     }
@@ -823,44 +857,111 @@ mod tests {
         let files = || Some(vec![PathBuf::from(r"C:\a.mkv")]);
 
         assert!(matches!(
-            gesture_for(folder(), files(), || None, |_| false),
-            Some(Gesture::Drop { .. })
+            gesture_for(folder(), files(), || None, |_| false).as_slice(),
+            [Gesture::Drop { .. }]
         ));
         assert!(matches!(
-            gesture_for(folder(), None, clipboard, |_| false),
-            Some(Gesture::Paste {
+            gesture_for(folder(), None, clipboard, |_| false).as_slice(),
+            [Gesture::Paste {
                 clipboard_mode: Mode::Move,
                 ..
-            })
+            }]
         ));
-        assert_eq!(gesture_for(folder(), None, || None, |_| false), None);
+        assert!(gesture_for(folder(), None, || None, |_| false).is_empty());
         let selected = Some(vec![PathBuf::from(r"Y:\Filmer")]);
         assert!(matches!(
-            gesture_for(None, selected.clone(), clipboard, |_| true),
-            Some(Gesture::Paste { .. })
+            gesture_for(None, selected.clone(), clipboard, |_| true).as_slice(),
+            [Gesture::Selection { .. }, Gesture::Paste { .. }]
         ));
-        assert_eq!(gesture_for(None, selected, clipboard, |_| false), None);
-        assert_eq!(gesture_for(None, None, clipboard, |_| true), None);
+        assert!(matches!(
+            gesture_for(None, selected, clipboard, |_| false).as_slice(),
+            [Gesture::Selection { .. }]
+        ));
+        assert!(gesture_for(None, None, clipboard, |_| true).is_empty());
     }
 
     #[test]
     fn right_clicking_a_folder_is_a_paste_target_even_when_explorer_also_names_its_parent() {
-        let clipboard = || Some((vec![PathBuf::from(r"C:.mkv")], Mode::Copy));
+        let clipboard = || Some((vec![PathBuf::from(r"C:\a.mkv")], Mode::Copy));
         let parent = Some(PathBuf::from(r"Y:\"));
         let clicked = Some(vec![PathBuf::from(r"Y:\Filmer")]);
 
-        let gesture = gesture_for(parent.clone(), clicked.clone(), clipboard, |_| true);
+        let readings = gesture_for(parent.clone(), clicked.clone(), clipboard, |_| true);
 
         assert_eq!(
-            gesture,
-            Some(Gesture::Paste {
-                sources: vec![PathBuf::from(r"C:.mkv")],
-                target: PathBuf::from(r"Y:\Filmer"),
-                clipboard_mode: Mode::Copy,
-            })
+            readings,
+            vec![
+                Gesture::Selection {
+                    items: vec![PathBuf::from(r"Y:\Filmer")],
+                },
+                Gesture::Paste {
+                    sources: vec![PathBuf::from(r"C:\a.mkv")],
+                    target: PathBuf::from(r"Y:\Filmer"),
+                    clipboard_mode: Mode::Copy,
+                },
+            ]
         );
-        // Not a folder (a file was clicked): there is nothing to paste into.
-        assert_eq!(gesture_for(parent, clicked, clipboard, |_| false), None);
+        // A file was clicked: it can be deleted, but there is nothing to paste into.
+        assert!(matches!(
+            gesture_for(parent, clicked, clipboard, |_| false).as_slice(),
+            [Gesture::Selection { .. }]
+        ));
+    }
+
+    #[test]
+    fn a_selection_on_a_bifrost_drive_offers_delete_next_to_paste() {
+        let _scenario = Scenario::new('Y', true);
+        let readings = gesture_for(
+            None,
+            Some(vec![PathBuf::from(r"Y:\Filmer")]),
+            || Some((vec![PathBuf::from(r"C:\a.mkv")], Mode::Copy)),
+            |_| true,
+        );
+
+        let offered =
+            decision::entries_for(&readings, true, &|path| volume::is_bifrost_drive(path));
+
+        assert_eq!(
+            offered.iter().map(|entry| entry.label).collect::<Vec<_>>(),
+            vec!["Delete with Bifrost Drive", "Paste with Bifrost Drive"]
+        );
+        assert_eq!(
+            decision::gesture_for_entry(&readings, &offered[0]),
+            Some(&readings[0])
+        );
+        assert_eq!(
+            decision::gesture_for_entry(&readings, &offered[1]),
+            Some(&readings[1])
+        );
+    }
+
+    #[test]
+    fn choosing_delete_saves_a_request_without_a_destination() {
+        let data = tempfile::tempdir().unwrap();
+        let launched = RefCell::new(false);
+        let gesture = Gesture::Selection {
+            items: vec![PathBuf::from(r"Y:\Filmer\a.mkv")],
+        };
+        let entry = decision::entries(&gesture, true, &|_| true)[0];
+
+        perform(
+            &gesture,
+            &entry,
+            data.path(),
+            Path::new(r"C:\App\bifrost-drive.exe"),
+            &|_, file| {
+                let saved: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+                assert_eq!(saved["mode"], "delete");
+                assert_eq!(saved["sources"][0], r"Y:\Filmer\a.mkv");
+                assert_eq!(saved["destination"], "");
+                *launched.borrow_mut() = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(launched.into_inner());
     }
 
     fn shell_item(path: &Path) -> *mut ITEMIDLIST {
@@ -899,11 +1000,11 @@ mod tests {
         unsafe { CoTaskMemFree(Some(target.cast())) };
 
         assert_eq!(
-            object.gesture.borrow().as_ref().unwrap(),
-            &Gesture::Drop {
+            object.gestures.borrow().as_slice(),
+            [Gesture::Drop {
                 sources: vec![file.clone()],
                 target: directory.path().to_path_buf(),
-            }
+            }]
         );
         let popup = unsafe { CreatePopupMenu() }.unwrap();
         let menu = object.to_interface::<IContextMenu>();

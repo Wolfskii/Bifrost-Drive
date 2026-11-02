@@ -1,4 +1,5 @@
 pub mod batch;
+pub mod concurrency;
 
 use bifrost_cache::{CacheError, CacheManager, CacheRecord};
 use bifrost_common::{ConnectionId, RemotePath, TransferId};

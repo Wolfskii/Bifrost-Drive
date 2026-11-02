@@ -16,7 +16,8 @@ import {
     directionLabel,
     formatBytes,
     formatCount,
-    formatSpeed,
+    formatRate,
+    modeLabel,
     isFinished,
     percentDone,
     segmentFills,
@@ -53,7 +54,7 @@ function badge(view: TransferView): {
             return { text: "…", tone: "quiet", note: "counting files" };
         default:
             return {
-                text: `↗ ${formatSpeed(snapshot.bytes_per_second)}`,
+                text: `↗ ${formatRate(snapshot)}`,
                 tone: "",
                 note: "current speed",
             };
@@ -137,8 +138,10 @@ export function TransferCard({
             <header className="transfer-head">
                 <ul className="transfer-chips" aria-label="Transfer details">
                     {view.connection && <li>{view.connection}</li>}
-                    <li>{snapshot.mode === "move" ? "Move" : "Copy"}</li>
-                    <li>{directionLabel(view.direction)}</li>
+                    <li>{modeLabel(snapshot.mode)}</li>
+                    {snapshot.mode !== "delete" && (
+                        <li>{directionLabel(view.direction)}</li>
+                    )}
                 </ul>
                 <div className="transfer-menu">
                     <button
@@ -177,7 +180,9 @@ export function TransferCard({
                                     role="menuitem"
                                     onClick={() => run(cancelTransfer(view.id))}
                                 >
-                                    Cancel transfer
+                                    {snapshot.mode === "delete"
+                                        ? "Stop deleting"
+                                        : "Cancel transfer"}
                                 </button>
                             )}
                             {finished && (
@@ -335,8 +340,8 @@ export function TransferWindow() {
             )}
             {views.length === 0 ? (
                 <p className="transfer-empty">
-                    No transfers yet. Right-drag files onto a Bifrost Drive and
-                    choose “Copy here with Bifrost Drive”.
+                    No transfers yet. Copy or cut files, then right-click a
+                    folder and choose “Paste with Bifrost Drive”.
                 </p>
             ) : (
                 views.map((view) => (

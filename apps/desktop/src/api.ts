@@ -762,7 +762,7 @@ export async function unregisterSyncRoot(connectionId: string): Promise<void> {
     });
 }
 
-export type TransferMode = "copy" | "move";
+export type TransferMode = "copy" | "move" | "delete";
 export type TransferState =
     | "planning"
     | "running"
@@ -801,6 +801,7 @@ export interface TransferSnapshot {
     failures: TransferFailure[];
     current: string[];
     bytes_per_second: number;
+    files_per_second: number;
     seconds_left: number | null;
     conflict: TransferConflict | null;
 }
@@ -808,7 +809,7 @@ export interface TransferSnapshot {
 export interface TransferView {
     id: number;
     connection: string;
-    direction: "upload" | "download" | "transfer";
+    direction: "upload" | "download" | "transfer" | "delete";
     items: number;
     first_item: string;
     destination: string;

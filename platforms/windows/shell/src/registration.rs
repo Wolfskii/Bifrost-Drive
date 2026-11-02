@@ -18,14 +18,16 @@ pub const DESCRIPTION: &str = "Bifrost Drive Explorer menu";
 pub const HANDLER_NAME: &str = "BifrostDrive";
 
 /// Where Explorer looks for the handler: right-drag onto folders, drives and a folder's
-/// background, and right-click paste on the same.
-pub const HANDLER_KEYS: [&str; 6] = [
+/// background, right-click paste on the same, and right-click Delete on files.
+pub const HANDLER_KEYS: [&str; 7] = [
     r"Directory\shellex\DragDropHandlers\BifrostDrive",
     r"Directory\Background\shellex\DragDropHandlers\BifrostDrive",
     r"Drive\shellex\DragDropHandlers\BifrostDrive",
     r"Directory\shellex\ContextMenuHandlers\BifrostDrive",
     r"Directory\Background\shellex\ContextMenuHandlers\BifrostDrive",
     r"Drive\shellex\ContextMenuHandlers\BifrostDrive",
+    // Files (folders and drives have their own entries above): for Delete.
+    r"*\shellex\ContextMenuHandlers\BifrostDrive",
 ];
 
 fn wide(text: &str) -> Vec<u16> {

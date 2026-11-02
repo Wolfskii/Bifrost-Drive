@@ -3,8 +3,11 @@ import { snapshot, view } from "./transferTestData";
 import {
     cardTitle,
     describeFailure,
+    directionLabel,
     formatBytes,
     formatDuration,
+    formatRate,
+    modeLabel,
     percentDone,
     segmentFills,
     statusLine,
@@ -101,5 +104,62 @@ describe("transfer formatting", () => {
                 reason: { kind: "network", detail: "connection reset" },
             }),
         ).toBe("Connection problem (connection reset)");
+    });
+});
+
+describe("deleting", () => {
+    it("words the title and status line for a delete", () => {
+        expect(cardTitle(view({ mode: "delete" }))).toBe(
+            "Deleting 2,000 files",
+        );
+        expect(cardTitle(view({ mode: "delete", state: "completed" }))).toBe(
+            "Deleted 2,000 files",
+        );
+        expect(
+            cardTitle(
+                view({
+                    mode: "delete",
+                    state: "completed_with_errors",
+                    done_files: 1999,
+                }),
+            ),
+        ).toBe("Deleted 1,999 of 2,000 files");
+        expect(cardTitle(view({ mode: "delete", state: "cancelled" }))).toBe(
+            "Delete cancelled",
+        );
+        expect(
+            statusLine(
+                view({
+                    mode: "delete",
+                    state: "completed_with_errors",
+                    failed_files: 1,
+                }),
+            ),
+        ).toBe("1 item couldn't be deleted and is still there");
+        expect(statusLine(view({ mode: "delete", state: "completed" }))).toBe(
+            "2,000 files deleted from Y:\\Filmer",
+        );
+    });
+
+    it("shows items per second instead of data per second", () => {
+        expect(
+            formatRate(
+                snapshot({
+                    mode: "delete",
+                    files_per_second: 1500,
+                    bytes_per_second: 0,
+                }),
+            ),
+        ).toBe("1,500 files/s");
+        expect(
+            formatRate(snapshot({ mode: "copy", bytes_per_second: 2048 })),
+        ).toBe("2.0 KB/s");
+    });
+
+    it("names the card after what it does", () => {
+        expect(modeLabel("delete")).toBe("Delete");
+        expect(modeLabel("move")).toBe("Move");
+        expect(modeLabel("copy")).toBe("Copy");
+        expect(directionLabel("delete")).toBe("Delete");
     });
 });

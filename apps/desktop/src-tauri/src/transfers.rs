@@ -18,9 +18,12 @@ use std::{
 use bifrost_common::RemotePath;
 use bifrost_db::Database;
 use bifrost_storage::StorageProvider;
-use bifrost_transfer::batch::{
-    self, BatchHandle, BatchOptions, BatchRequest, BatchSnapshot, BatchState, Endpoint, Resolution,
-    TransferMode,
+use bifrost_transfer::{
+    batch::{
+        self, BatchHandle, BatchOptions, BatchRequest, BatchSnapshot, BatchState, DeleteRequest,
+        Endpoint, Resolution, TransferMode,
+    },
+    concurrency::{tune, Involves, StorageClass},
 };
 use bifrost_windows_winfsp::MountRefresher;
 use serde::{Deserialize, Serialize};
@@ -46,6 +49,8 @@ pub struct TransferRequest {
     pub version: u32,
     pub mode: TransferMode,
     pub sources: Vec<String>,
+    /// The receiving folder; a delete has none.
+    #[serde(default)]
     pub destination: String,
 }
 
@@ -100,7 +105,8 @@ fn validate_request(request: &TransferRequest) -> Result<(), String> {
     if request.sources.len() > MAX_SOURCES {
         return Err("Too many items were selected at once".to_owned());
     }
-    for path in request.sources.iter().chain([&request.destination]) {
+    let destination = (request.mode != TransferMode::Delete).then_some(&request.destination);
+    for path in request.sources.iter().chain(destination) {
         let candidate = Path::new(path);
         if !candidate.is_absolute()
             || candidate
@@ -330,14 +336,48 @@ pub fn show_window(app: &AppHandle) -> Result<(), String> {
     .map_err(|error| error.to_string())
 }
 
+enum Work {
+    Batch(BatchRequest),
+    Delete(DeleteRequest),
+}
+
 struct Prepared {
-    request: BatchRequest,
+    work: Work,
+    /// Parallelism and ordering chosen for the drives this request touches.
+    options: BatchOptions,
     meta: Meta,
     /// Folders to refresh on each drive once the batch ends.
     refreshes: Vec<(MountRefresher, Vec<RemotePath>)>,
 }
 
-async fn prepare(app: &AppHandle, request: &TransferRequest) -> Result<Prepared, String> {
+/// What the request reads from and writes to, for choosing how many files to work on at once.
+/// Explorer selections come from one folder, so the first source stands for all of them.
+async fn involves(sources: &[Location], destination: Option<&Location>) -> Involves {
+    let mut local = Vec::new();
+    for location in sources.first().into_iter().chain(destination) {
+        if let Location::Local(path) = location {
+            let path = path.clone();
+            local.push(
+                tokio::task::spawn_blocking(move || bifrost_windows_storage::classify(&path))
+                    .await
+                    .unwrap_or(StorageClass::Unknown),
+            );
+        }
+    }
+    Involves {
+        local,
+        remote: sources
+            .iter()
+            .chain(destination)
+            .any(|location| matches!(location, Location::Drive { .. })),
+    }
+}
+
+async fn prepare(
+    app: &AppHandle,
+    request: &TransferRequest,
+    staging: &Path,
+) -> Result<Prepared, String> {
     let database = app.state::<Database>();
     let registry = app.state::<DriveMountRegistry>();
     let credentials = app.state::<WindowsCredentialStore>();
@@ -354,16 +394,31 @@ async fn prepare(app: &AppHandle, request: &TransferRequest) -> Result<Prepared,
         }
     }
     let letters = mounted.keys().copied().collect::<HashSet<_>>();
-    let destination = locate(&request.destination, &letters)?;
+    let deleting = request.mode == TransferMode::Delete;
     let sources = request
         .sources
         .iter()
         .map(|source| locate(source, &letters))
         .collect::<Result<Vec<_>, _>>()?;
-    validate_locations(&sources, &destination)?;
+    let destination = if deleting {
+        if sources
+            .iter()
+            .any(|source| matches!(source, Location::Local(_)))
+        {
+            return Err(
+                "Only items on a Bifrost drive can be deleted this way; Windows deletes everything else"
+                    .to_owned(),
+            );
+        }
+        None
+    } else {
+        let destination = locate(&request.destination, &letters)?;
+        validate_locations(&sources, &destination)?;
+        Some(destination)
+    };
 
     let mut providers: HashMap<char, Arc<dyn StorageProvider>> = HashMap::new();
-    for location in sources.iter().chain([&destination]) {
+    for location in sources.iter().chain(destination.as_ref()) {
         let Location::Drive { letter, .. } = location else {
             continue;
         };
@@ -383,10 +438,10 @@ async fn prepare(app: &AppHandle, request: &TransferRequest) -> Result<Prepared,
     };
 
     let mut changed: BTreeMap<char, Vec<RemotePath>> = BTreeMap::new();
-    if let Location::Drive { letter, path } = &destination {
+    if let Some(Location::Drive { letter, path }) = &destination {
         changed.entry(*letter).or_default().push(path.clone());
     }
-    if request.mode == TransferMode::Move {
+    if matches!(request.mode, TransferMode::Move | TransferMode::Delete) {
         for source in &sources {
             if let Location::Drive { letter, path } = source {
                 changed.entry(*letter).or_default().push(path.clone());
@@ -403,7 +458,7 @@ async fn prepare(app: &AppHandle, request: &TransferRequest) -> Result<Prepared,
         .collect();
 
     let connection = match (&destination, sources.first()) {
-        (Location::Drive { letter, .. }, _) | (_, Some(Location::Drive { letter, .. })) => {
+        (Some(Location::Drive { letter, .. }), _) | (_, Some(Location::Drive { letter, .. })) => {
             mounted[letter].name.clone()
         }
         _ => String::new(),
@@ -412,19 +467,46 @@ async fn prepare(app: &AppHandle, request: &TransferRequest) -> Result<Prepared,
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| request.sources[0].clone());
-    Ok(Prepared {
-        request: BatchRequest {
-            sources: sources.iter().map(endpoint).collect(),
-            destination: endpoint(&destination),
-            mode: request.mode,
+    let involves = involves(&sources, destination.as_ref()).await;
+    let options = tune(
+        BatchOptions {
+            temp_dir: staging.to_path_buf(),
+            ..BatchOptions::default()
         },
+        &involves,
+    );
+    let (work, direction, shown_destination) = match destination {
+        Some(destination) => (
+            Work::Batch(BatchRequest {
+                sources: sources.iter().map(endpoint).collect(),
+                destination: endpoint(&destination),
+                mode: request.mode,
+            }),
+            direction(&sources, &destination),
+            request.destination.clone(),
+        ),
+        None => (
+            Work::Delete(DeleteRequest {
+                targets: sources.iter().map(endpoint).collect(),
+            }),
+            "delete",
+            // Where the deleted items were, for the result messages.
+            Path::new(&request.sources[0]).parent().map_or_else(
+                || request.sources[0].clone(),
+                |parent| parent.to_string_lossy().into_owned(),
+            ),
+        ),
+    };
+    Ok(Prepared {
+        work,
+        options,
         meta: Meta {
             id: 0,
             connection,
-            direction: direction(&sources, &destination),
+            direction,
             items: request.sources.len(),
             first_item,
-            destination: request.destination.clone(),
+            destination: shown_destination,
             started_at_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_millis() as u64),
@@ -444,21 +526,18 @@ pub async fn run_request_file(app: AppHandle, file: PathBuf) {
         Ok(request) => request,
         Err(message) => return notify_problem(&app, &message),
     };
-    let prepared = match prepare(&app, &request).await {
-        Ok(prepared) => prepared,
-        Err(message) => return notify_problem(&app, &message),
-    };
     let staging = local_data_dir.join(STAGING_FOLDER);
     if let Err(error) = tokio::fs::create_dir_all(&staging).await {
         return notify_problem(&app, &error.to_string());
     }
-    let handle = batch::start(
-        prepared.request,
-        BatchOptions {
-            temp_dir: staging,
-            ..BatchOptions::default()
-        },
-    );
+    let prepared = match prepare(&app, &request, &staging).await {
+        Ok(prepared) => prepared,
+        Err(message) => return notify_problem(&app, &message),
+    };
+    let handle = match prepared.work {
+        Work::Batch(batch_request) => batch::start(batch_request, prepared.options),
+        Work::Delete(delete_request) => batch::start_delete(delete_request, prepared.options),
+    };
     let meta = prepared.meta;
     let id = app
         .state::<TransferManager>()
@@ -530,9 +609,13 @@ pub fn describe_result(
     mode: TransferMode,
     destination: &str,
 ) -> (String, String) {
+    if mode == TransferMode::Delete {
+        return describe_delete(snapshot, destination);
+    }
     let verb = match mode {
         TransferMode::Copy => "copied",
         TransferMode::Move => "moved",
+        TransferMode::Delete => unreachable!("handled above"),
     };
     let headline = match snapshot.state {
         BatchState::Completed => format!(
@@ -562,12 +645,42 @@ pub fn describe_result(
     (headline, detail.to_owned())
 }
 
+fn describe_delete(snapshot: &BatchSnapshot, folder: &str) -> (String, String) {
+    let headline = match snapshot.state {
+        BatchState::Completed => format!(
+            "{} deleted from {folder}",
+            plural(snapshot.done_files, "file")
+        ),
+        BatchState::CompletedWithErrors => format!(
+            "{} of {} deleted from {folder}; {} couldn't be deleted",
+            snapshot.done_files,
+            plural(snapshot.total_files, "file"),
+            snapshot.failed_files
+        ),
+        BatchState::Cancelled => format!(
+            "Deleting from {folder} was cancelled after {}",
+            plural(snapshot.done_files, "file")
+        ),
+        _ => format!("Deleting from {folder} couldn't start"),
+    };
+    let detail = if snapshot.state == BatchState::CompletedWithErrors {
+        "Items that couldn't be deleted are still there. Open the transfer window for details."
+    } else {
+        ""
+    };
+    (headline, detail.to_owned())
+}
+
 async fn finish(app: &AppHandle, meta: &Meta, snapshot: &BatchSnapshot, mode: TransferMode) {
     let (headline, detail) = describe_result(snapshot, mode, &meta.destination);
-    let (kind, status) = match snapshot.state {
-        BatchState::Completed => ("transfer_completed", "completed"),
-        BatchState::Cancelled => ("transfer_cancelled", "cancelled"),
-        _ => ("transfer_failed", "failed"),
+    let deleting = mode == TransferMode::Delete;
+    let (kind, status) = match (snapshot.state, deleting) {
+        (BatchState::Completed, false) => ("transfer_completed", "completed"),
+        (BatchState::Cancelled, false) => ("transfer_cancelled", "cancelled"),
+        (_, false) => ("transfer_failed", "failed"),
+        (BatchState::Completed, true) => ("delete_completed", "completed"),
+        (BatchState::Cancelled, true) => ("delete_cancelled", "cancelled"),
+        (_, true) => ("delete_failed", "failed"),
     };
     let details = if detail.is_empty() {
         headline.clone()
@@ -593,10 +706,11 @@ async fn finish(app: &AppHandle, meta: &Meta, snapshot: &BatchSnapshot, mode: Tr
         let _ = app
             .notification()
             .builder()
-            .title(if needs_attention {
-                "Some files weren't transferred"
-            } else {
-                "Transfer finished"
+            .title(match (needs_attention, deleting) {
+                (true, false) => "Some files weren't transferred",
+                (false, false) => "Transfer finished",
+                (true, true) => "Some items weren't deleted",
+                (false, true) => "Delete finished",
             })
             .body(if detail.is_empty() {
                 headline
@@ -803,6 +917,7 @@ mod tests {
             failures: Vec::new(),
             current: Vec::new(),
             bytes_per_second: 0,
+            files_per_second: 0,
             seconds_left: None,
             conflict: None,
         };
@@ -817,5 +932,66 @@ mod tests {
         let (headline, detail) = describe_result(&snapshot, TransferMode::Move, r"Y:\Filmer");
         assert_eq!(headline, "1 of 2 files moved; 1 didn't transfer");
         assert!(detail.contains("left where they were"));
+    }
+
+    #[test]
+    fn describes_deletions_in_plain_words() {
+        let mut snapshot = BatchSnapshot {
+            state: BatchState::Completed,
+            mode: TransferMode::Delete,
+            total_files: 3,
+            total_bytes: 0,
+            done_files: 3,
+            done_bytes: 0,
+            skipped_files: 0,
+            failed_files: 0,
+            failures: Vec::new(),
+            current: Vec::new(),
+            bytes_per_second: 0,
+            files_per_second: 0,
+            seconds_left: None,
+            conflict: None,
+        };
+        assert_eq!(
+            describe_result(&snapshot, TransferMode::Delete, r"Y:\Filmer").0,
+            r"3 files deleted from Y:\Filmer"
+        );
+
+        snapshot.state = BatchState::CompletedWithErrors;
+        snapshot.done_files = 2;
+        snapshot.failed_files = 1;
+        let (headline, detail) = describe_result(&snapshot, TransferMode::Delete, r"Y:\Filmer");
+        assert_eq!(
+            headline,
+            r"2 of 3 files deleted from Y:\Filmer; 1 couldn't be deleted"
+        );
+        assert!(detail.contains("still there"));
+    }
+
+    fn request(mode: TransferMode, sources: &[&str], destination: &str) -> TransferRequest {
+        TransferRequest {
+            version: REQUEST_VERSION,
+            mode,
+            sources: sources.iter().map(|source| (*source).to_owned()).collect(),
+            destination: destination.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_delete_request_needs_no_destination_but_a_copy_does() {
+        assert!(validate_request(&request(TransferMode::Delete, &[r"Y:\a"], "")).is_ok());
+        assert!(validate_request(&request(TransferMode::Copy, &[r"Y:\a"], "")).is_err());
+        assert!(validate_request(&request(TransferMode::Delete, &[r"..\a"], "")).is_err());
+    }
+
+    #[test]
+    fn a_delete_request_from_the_shell_parses_without_a_destination() {
+        let parsed: TransferRequest = serde_json::from_str(
+            r#"{"version":1,"mode":"delete","sources":["Y:\\Filmer\\a.mkv"]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.mode, TransferMode::Delete);
+        assert_eq!(parsed.destination, "");
     }
 }

@@ -21,6 +21,10 @@ struct MemoryProvider {
     server_side_rename: bool,
     write_delay: Duration,
     read_delay: Duration,
+    delete_delay: Duration,
+    /// Deleting a path that contains this text is refused.
+    refuse_delete: Option<String>,
+    write_order: Mutex<Vec<String>>,
     network_failures: Mutex<usize>,
     active: AtomicUsize,
     peak: AtomicUsize,
@@ -172,6 +176,10 @@ impl StorageProvider for MemoryProvider {
 
     async fn write(&self, mut request: WriteRequest) -> Result<RemoteMetadata, StorageError> {
         self.write_calls.fetch_add(1, Ordering::Relaxed);
+        self.write_order
+            .lock()
+            .unwrap()
+            .push(request.path.as_str().to_owned());
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(active, Ordering::SeqCst);
         let result = async {
@@ -214,6 +222,17 @@ impl StorageProvider for MemoryProvider {
     }
 
     async fn delete(&self, path: &RemotePath) -> Result<(), StorageError> {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(active, Ordering::SeqCst);
+        tokio::time::sleep(self.delete_delay).await;
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        if self
+            .refuse_delete
+            .as_deref()
+            .is_some_and(|text| path.as_str().contains(text))
+        {
+            return Err(StorageError::PermissionDenied { path: path.clone() });
+        }
         self.files.lock().unwrap().remove(path.as_str());
         self.dirs.lock().unwrap().remove(path.as_str());
         Ok(())
@@ -930,4 +949,263 @@ async fn keeping_both_when_pasting_into_the_same_local_folder_makes_a_second_nam
         std::fs::read(folder.path().join("a (2).txt")).unwrap(),
         b"one"
     );
+}
+
+fn big_tree(provider_files: &mut Vec<(String, Vec<u8>)>, folders: &[&str], per_folder: usize) {
+    for folder in folders {
+        for number in 0..per_folder {
+            provider_files.push((format!("{folder}/f{number}.dat"), vec![7u8; 10]));
+        }
+    }
+}
+
+#[tokio::test]
+async fn deletes_a_remote_tree_in_parallel_and_removes_the_emptied_folders() {
+    let mut files = Vec::new();
+    big_tree(
+        &mut files,
+        &["photos", "photos/trip", "photos/trip/day1"],
+        15,
+    );
+    let borrowed: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(path, content)| (path.as_str(), content.as_slice()))
+        .collect();
+    let provider = MemoryProvider::build(
+        &borrowed,
+        &["photos", "photos/trip", "photos/trip/day1"],
+        |provider| provider.delete_delay = Duration::from_millis(10),
+    );
+
+    let finished = start_delete(
+        DeleteRequest {
+            targets: vec![remote(&provider, "photos")],
+        },
+        BatchOptions {
+            max_concurrent: 8,
+            ..options()
+        },
+    )
+    .wait()
+    .await;
+
+    assert_eq!(finished.state, BatchState::Completed);
+    assert_eq!(finished.mode, TransferMode::Delete);
+    assert_eq!(finished.total_files, 45);
+    assert_eq!(finished.done_files, 45);
+    assert!(provider.files.lock().unwrap().is_empty());
+    assert!(provider.dirs.lock().unwrap().is_empty());
+    let peak = provider.peak.load(Ordering::SeqCst);
+    assert!(peak > 1 && peak <= 8, "peak concurrency was {peak}");
+}
+
+#[tokio::test]
+async fn a_file_that_cannot_be_deleted_is_reported_and_keeps_its_folder() {
+    let provider = MemoryProvider::build(
+        &[
+            ("docs/a.txt", b"a"),
+            ("docs/keep.txt", b"k"),
+            ("docs/sub/b.txt", b"b"),
+        ],
+        &["docs", "docs/sub"],
+        |provider| provider.refuse_delete = Some("keep.txt".to_owned()),
+    );
+
+    let finished = start_delete(
+        DeleteRequest {
+            targets: vec![remote(&provider, "docs")],
+        },
+        options(),
+    )
+    .wait()
+    .await;
+
+    assert_eq!(finished.state, BatchState::CompletedWithErrors);
+    assert_eq!(finished.failed_files, 1);
+    assert_eq!(finished.failures[0].name, "docs/keep.txt");
+    assert_eq!(finished.failures[0].reason, FailureReason::PermissionDenied);
+    assert!(provider.has_file("docs/keep.txt"));
+    assert!(!provider.has_file("docs/a.txt"));
+    assert!(!provider.has_file("docs/sub/b.txt"));
+    assert!(provider.dirs.lock().unwrap().contains("docs"));
+    assert!(!provider.dirs.lock().unwrap().contains("docs/sub"));
+}
+
+#[tokio::test]
+async fn deleting_something_that_is_already_gone_is_reported() {
+    let provider = MemoryProvider::with(&[], &[]);
+
+    let finished = start_delete(
+        DeleteRequest {
+            targets: vec![remote(&provider, "missing.txt")],
+        },
+        options(),
+    )
+    .wait()
+    .await;
+
+    assert_eq!(finished.failed_files, 1);
+    assert_eq!(finished.failures[0].reason, FailureReason::NotFound);
+}
+
+#[tokio::test]
+async fn deletes_local_folders_and_single_files() {
+    let local = tempfile::tempdir().unwrap();
+    write_local(
+        local.path(),
+        &[
+            ("tree/a.txt", b"a"),
+            ("tree/deep/er/b.txt", b"b"),
+            ("single.txt", b"s"),
+            ("untouched/c.txt", b"c"),
+        ],
+    );
+
+    let finished = start_delete(
+        DeleteRequest {
+            targets: vec![
+                Endpoint::Local(local.path().join("tree")),
+                Endpoint::Local(local.path().join("single.txt")),
+            ],
+        },
+        options(),
+    )
+    .wait()
+    .await;
+
+    assert_eq!(finished.state, BatchState::Completed);
+    assert!(!local.path().join("tree").exists());
+    assert!(!local.path().join("single.txt").exists());
+    assert!(local.path().join("untouched/c.txt").exists());
+}
+
+#[tokio::test]
+async fn cancelling_a_delete_stops_before_the_rest_are_removed() {
+    let mut files = Vec::new();
+    big_tree(&mut files, &["bulk"], 60);
+    let borrowed: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(path, content)| (path.as_str(), content.as_slice()))
+        .collect();
+    let provider = MemoryProvider::build(&borrowed, &["bulk"], |provider| {
+        provider.delete_delay = Duration::from_millis(20);
+    });
+    let handle = start_delete(
+        DeleteRequest {
+            targets: vec![remote(&provider, "bulk")],
+        },
+        BatchOptions {
+            max_concurrent: 2,
+            ..options()
+        },
+    );
+
+    handle
+        .subscribe()
+        .wait_for(|snapshot| snapshot.done_files >= 2)
+        .await
+        .unwrap();
+    handle.cancel();
+    let finished = handle.wait().await;
+
+    assert_eq!(finished.state, BatchState::Cancelled);
+    assert!(!provider.files.lock().unwrap().is_empty());
+    assert!(provider.dirs.lock().unwrap().contains("bulk"));
+}
+
+#[tokio::test]
+async fn ordered_batches_write_in_path_order() {
+    let local = tempfile::tempdir().unwrap();
+    write_local(
+        local.path(),
+        &[
+            ("set/z.txt", b"z"),
+            ("set/b/y.txt", b"y"),
+            ("set/a.txt", b"a"),
+            ("set/b/c.txt", b"c"),
+            ("set/m.txt", b"m"),
+        ],
+    );
+    let provider = MemoryProvider::with(&[], &["dest"]);
+
+    run_batch(
+        vec![Endpoint::Local(local.path().join("set"))],
+        remote(&provider, "dest"),
+        TransferMode::Copy,
+        BatchOptions {
+            max_concurrent: 1,
+            ordered: true,
+            ..options()
+        },
+    )
+    .await;
+
+    let order = provider.write_order.lock().unwrap().clone();
+    let mut sorted = order.clone();
+    sorted.sort();
+    assert_eq!(order.len(), 5);
+    assert_eq!(order, sorted);
+}
+
+#[tokio::test]
+async fn an_adaptive_batch_raises_parallelism_while_the_server_keeps_up() {
+    let local = tempfile::tempdir().unwrap();
+    let names: Vec<String> = (0..160).map(|number| format!("f{number}.bin")).collect();
+    for name in &names {
+        write_local(local.path(), &[(name.as_str(), b"data")]);
+    }
+    let provider = MemoryProvider::build(&[], &["dest"], |provider| {
+        provider.write_delay = Duration::from_millis(20);
+    });
+
+    let finished = run_batch(
+        names
+            .iter()
+            .map(|name| Endpoint::Local(local.path().join(name)))
+            .collect(),
+        remote(&provider, "dest"),
+        TransferMode::Copy,
+        BatchOptions {
+            max_concurrent: 1,
+            adaptive_ceiling: 8,
+            tune_interval: Duration::from_millis(60),
+            ..options()
+        },
+    )
+    .await;
+
+    assert_eq!(finished.done_files, 160);
+    let peak = provider.peak.load(Ordering::SeqCst);
+    assert!(peak > 2, "parallelism never grew (peak {peak})");
+    assert!(peak <= 8, "parallelism passed its ceiling (peak {peak})");
+}
+
+#[tokio::test]
+async fn the_ceiling_never_passes_the_hard_cap() {
+    let local = tempfile::tempdir().unwrap();
+    let names: Vec<String> = (0..120).map(|number| format!("f{number}.bin")).collect();
+    for name in &names {
+        write_local(local.path(), &[(name.as_str(), b"data")]);
+    }
+    let provider = MemoryProvider::build(&[], &["dest"], |provider| {
+        provider.write_delay = Duration::from_millis(20);
+    });
+
+    run_batch(
+        names
+            .iter()
+            .map(|name| Endpoint::Local(local.path().join(name)))
+            .collect(),
+        remote(&provider, "dest"),
+        TransferMode::Copy,
+        BatchOptions {
+            max_concurrent: 4,
+            adaptive_ceiling: 500,
+            tune_interval: Duration::from_millis(40),
+            ..options()
+        },
+    )
+    .await;
+
+    assert!(provider.peak.load(Ordering::SeqCst) <= 16);
 }

@@ -79,6 +79,7 @@ tauri-plugin-opener = "2.5.4"
 bifrost-linux-fuse = { path = "../../../platforms/linux/fuse" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+bifrost-windows-storage = { path = "../../../platforms/windows/storage" }
 bifrost-windows-winfsp = { path = "../../../platforms/windows/winfsp", features = [
   "native",
 ] }

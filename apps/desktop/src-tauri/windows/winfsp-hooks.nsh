@@ -25,6 +25,7 @@
   !insertmacro BifrostShellHandler "Directory\shellex\ContextMenuHandlers\BifrostDrive"
   !insertmacro BifrostShellHandler "Directory\Background\shellex\ContextMenuHandlers\BifrostDrive"
   !insertmacro BifrostShellHandler "Drive\shellex\ContextMenuHandlers\BifrostDrive"
+  !insertmacro BifrostShellHandler "*\shellex\ContextMenuHandlers\BifrostDrive"
   SetRegView lastused
 !macroend
 
@@ -36,6 +37,7 @@
   !insertmacro BifrostShellHandlerRemove "Directory\shellex\ContextMenuHandlers\BifrostDrive"
   !insertmacro BifrostShellHandlerRemove "Directory\Background\shellex\ContextMenuHandlers\BifrostDrive"
   !insertmacro BifrostShellHandlerRemove "Drive\shellex\ContextMenuHandlers\BifrostDrive"
+  !insertmacro BifrostShellHandlerRemove "*\shellex\ContextMenuHandlers\BifrostDrive"
   DeleteRegKey HKLM "Software\Classes\CLSID\${BIFROST_SHELL_CLSID}"
   DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved" "${BIFROST_SHELL_CLSID}"
   DeleteRegKey HKLM "Software\Bifrost Drive"

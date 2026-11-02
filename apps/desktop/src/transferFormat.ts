@@ -19,6 +19,13 @@ export function formatSpeed(bytesPerSecond: number): string {
     return `${formatBytes(bytesPerSecond)}/s`;
 }
 
+/** Speed shown on the card: data per second, or files per second when nothing is copied. */
+export function formatRate(snapshot: TransferSnapshot): string {
+    return snapshot.mode === "delete"
+        ? `${formatCount(snapshot.files_per_second)} files/s`
+        : formatSpeed(snapshot.bytes_per_second);
+}
+
 export function formatCount(count: number): string {
     return count.toLocaleString("en-US");
 }
@@ -73,10 +80,27 @@ export function segmentFills(
 export function cardTitle(view: TransferView): string {
     const { snapshot } = view;
     const moving = snapshot.mode === "move";
+    const deleting = snapshot.mode === "delete";
     const subject =
         snapshot.total_files === 1 && view.items === 1
             ? view.first_item
             : plural(snapshot.total_files, "file");
+    if (deleting) {
+        switch (snapshot.state) {
+            case "planning":
+                return "Getting ready…";
+            case "completed":
+                return `Deleted ${subject}`;
+            case "completed_with_errors":
+                return `Deleted ${formatCount(snapshot.done_files)} of ${plural(snapshot.total_files, "file")}`;
+            case "cancelled":
+                return "Delete cancelled";
+            case "failed":
+                return "Couldn't start deleting";
+            default:
+                return `Deleting ${subject}`;
+        }
+    }
     switch (snapshot.state) {
         case "planning":
             return "Getting ready…";
@@ -96,6 +120,28 @@ export function cardTitle(view: TransferView): string {
 export function statusLine(view: TransferView): string {
     const { snapshot } = view;
     const files = `${formatCount(snapshot.done_files)} of ${plural(snapshot.total_files, "file")}`;
+    if (snapshot.mode === "delete") {
+        switch (snapshot.state) {
+            case "planning":
+                return "Looking through the selected folders…";
+            case "paused":
+                return `Paused · ${files}`;
+            case "completed":
+                return `${plural(snapshot.total_files, "file")} deleted from ${view.destination}`;
+            case "completed_with_errors":
+                return `${plural(snapshot.failed_files, "item")} couldn't be deleted and ${
+                    snapshot.failed_files === 1 ? "is" : "are"
+                } still there`;
+            case "cancelled":
+                return `Stopped after ${files}`;
+            case "failed":
+                return "Nothing was deleted";
+            default:
+                return snapshot.seconds_left === null
+                    ? `Starting · ${files}`
+                    : `${formatDuration(snapshot.seconds_left)} left · ${files}`;
+        }
+    }
     switch (snapshot.state) {
         case "planning":
             return "Looking through the selected folders…";
@@ -144,5 +190,12 @@ export function directionLabel(direction: TransferView["direction"]): string {
         ? "Upload"
         : direction === "download"
           ? "Download"
-          : "Transfer";
+          : direction === "delete"
+            ? "Delete"
+            : "Transfer";
+}
+
+/** The chip naming what the card does. */
+export function modeLabel(mode: TransferSnapshot["mode"]): string {
+    return mode === "move" ? "Move" : mode === "delete" ? "Delete" : "Copy";
 }

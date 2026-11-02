@@ -15,6 +15,7 @@ export function snapshot(
         failures: [],
         current: [],
         bytes_per_second: 0,
+        files_per_second: 0,
         seconds_left: null,
         conflict: null,
         ...overrides,

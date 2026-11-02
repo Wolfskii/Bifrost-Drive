@@ -3363,6 +3363,9 @@ function activityTitle(kind: string): string {
         transfer_completed: "Explorer transfer finished",
         transfer_failed: "Explorer transfer had problems",
         transfer_cancelled: "Explorer transfer cancelled",
+        delete_completed: "Explorer delete finished",
+        delete_failed: "Explorer delete had problems",
+        delete_cancelled: "Explorer delete cancelled",
         drive_upload_failed: "Upload failed, data kept on this PC",
         drive_operation_failed: "Drive action failed",
     };

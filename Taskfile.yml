@@ -135,6 +135,25 @@ tasks:
       - cargo test -p bifrost-ftp --test fixture -- --ignored --nocapture
       - cargo test -p bifrost-smb --test fixture -- --ignored --nocapture
 
+  bench:local:
+    desc: Time the batch engine on local folders (writes a few hundred MB of temporary files)
+    cmds:
+      - cargo test -p bifrost-transfer --release --test benchmark -- --ignored --nocapture
+
+  bench:sftp:
+    desc: Time uploads, downloads and deletes over the Docker SFTP server
+    env:
+      BIFROST_SFTP_INTEGRATION: "1"
+      SFTP_PORT: "{{.SFTP_TEST_PORT}}"
+    cmds:
+      # Torn down afterwards: the image reads authorized keys only when it starts, so a leftover
+      # container would reject the key the next test run generates.
+      - defer: docker compose down -v --remove-orphans
+      - mkdir -p .cache/sftp_keys
+      - task: docker:up
+      - ssh-keyscan -p "${SFTP_PORT:-2222}" 127.0.0.1 > .cache/sftp_known_hosts
+      - cargo test -p bifrost-sftp --release --test benchmark -- --ignored --nocapture
+
   test:webdav:
     desc: Run the WebDAV verb contract against a local Apache server
     env:

@@ -962,6 +962,7 @@ dependencies = [
  "bifrost-webdav",
  "bifrost-windows-cfapi",
  "bifrost-windows-credentials",
+ "bifrost-windows-storage",
  "bifrost-windows-winfsp",
  "chrono",
  "futures-util",
@@ -1153,6 +1154,7 @@ dependencies = [
  "async-trait",
  "bifrost-common",
  "bifrost-storage",
+ "bifrost-transfer",
  "bytes",
  "chrono",
  "futures-util",
@@ -1266,6 +1268,14 @@ dependencies = [
  "uuid",
  "windows 0.62.2",
  "windows-core 0.62.2",
+]
+
+[[package]]
+name = "bifrost-windows-storage"
+version = "0.3.0"
+dependencies = [
+ "bifrost-transfer",
+ "windows 0.62.2",
 ]
 
 [[package]]
