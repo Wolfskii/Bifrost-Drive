@@ -869,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-api"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bifrost-common",
  "serde",
@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-cache"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bifrost-common",
  "hex",
@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-common"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "serde",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bifrost-api",
  "bifrost-common",
@@ -910,7 +910,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-crypto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -921,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-db"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "bifrost-common",
@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-drive"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -997,7 +997,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-ftp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-channel 2.5.0",
  "async-std",
@@ -1020,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-google-drive"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bifrost-common",
@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-google-photos"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bifrost-common",
@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-immich"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bifrost-common",
@@ -1073,7 +1073,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-linux-credentials"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bifrost-crypto",
@@ -1084,7 +1084,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-linux-fuse"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bifrost-common",
  "bifrost-storage",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-macos-credentials"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bifrost-crypto",
@@ -1108,7 +1108,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-mega"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-std",
  "async-trait",
@@ -1125,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-s3"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-sftp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-smb"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bifrost-common",
@@ -1184,7 +1184,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-storage"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bifrost-common",
@@ -1198,7 +1198,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-sync"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bifrost-common",
  "thiserror 2.0.20",
@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-transfer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bifrost-cache",
@@ -1223,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-webdav"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bifrost-common",
@@ -1240,7 +1240,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-windows-cfapi"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bifrost-common",
  "thiserror 2.0.20",
@@ -1249,7 +1249,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-windows-credentials"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bifrost-crypto",
@@ -1260,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-windows-shell"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-windows-storage"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bifrost-transfer",
  "windows 0.62.2",
@@ -1280,7 +1280,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-windows-winfsp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bifrost-common",
@@ -9744,7 +9744,7 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "semver",
