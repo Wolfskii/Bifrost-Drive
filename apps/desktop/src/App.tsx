@@ -20,6 +20,7 @@ import {
     RefreshCw,
     Trash2,
     TriangleAlert,
+    ArrowLeftRight,
 } from "lucide-react";
 import {
     SiAlibabacloud,
@@ -91,6 +92,10 @@ import {
     installUpdate,
     listConnections,
     listActivity,
+    listTransferHistory,
+    clearTransferHistory,
+    openTransferWindow,
+    type TransferHistoryEntry,
     openRecoveredUploads,
     listConflicts,
     openConnectionLocation,
@@ -118,6 +123,7 @@ import {
     unregisterDriveMount,
     unregisterSyncRoot,
 } from "./api";
+import { TransferLog } from "./TransferLog";
 
 type ProviderChoice =
     | "S3"
@@ -129,7 +135,7 @@ type ProviderChoice =
     | "WebDAV"
     | "FTP"
     | "SMB";
-type AppView = "connections" | "activity" | "settings" | "add";
+type AppView = "connections" | "transfers" | "activity" | "settings" | "add";
 const PRIVACY_POLICY_URL = "https://bifrost.webble.se/privacy/";
 
 type FormDefaults = Record<string, boolean | number | string>;
@@ -588,6 +594,9 @@ export function App() {
     const [connections, setConnections] = useState<ConnectionSummary[]>([]);
     const [conflicts, setConflicts] = useState<ConflictSummary[]>([]);
     const [activity, setActivity] = useState<ActivitySummary[]>([]);
+    const [transferHistory, setTransferHistory] = useState<
+        TransferHistoryEntry[]
+    >([]);
     const [wizardOpen, setWizardOpen] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [credentialStoreStatus, setCredentialStoreStatus] =
@@ -870,6 +879,26 @@ export function App() {
             })
             .catch(() => undefined);
     }, []);
+
+    useEffect(() => {
+        if (activeView !== "transfers") return;
+        let stopped = false;
+        const load = () =>
+            listTransferHistory()
+                .then((entries) => {
+                    if (!stopped) setTransferHistory(entries);
+                })
+                .catch(() => {
+                    if (!stopped) setError("Unable to load the transfer log.");
+                });
+        void load();
+        // Running transfers report their progress, so the log refreshes while it is open.
+        const timer = window.setInterval(() => void load(), 1500);
+        return () => {
+            stopped = true;
+            window.clearInterval(timer);
+        };
+    }, [activeView]);
 
     useEffect(() => {
         if (activeView !== "activity") return;
@@ -1724,6 +1753,13 @@ export function App() {
                         <HardDrive size={17} /> Connections
                     </button>
                     <button
+                        className={`nav-item ${activeView === "transfers" ? "active" : ""}`}
+                        type="button"
+                        onClick={() => setActiveView("transfers")}
+                    >
+                        <ArrowLeftRight size={17} /> Transfers
+                    </button>
+                    <button
                         className={`nav-item ${activeView === "activity" ? "active" : ""}`}
                         type="button"
                         onClick={() => setActiveView("activity")}
@@ -2127,6 +2163,28 @@ export function App() {
                                 </section>
                             )}
                         </>
+                    )}
+                    {activeView === "transfers" && (
+                        <TransferLog
+                            entries={transferHistory}
+                            onClear={() =>
+                                void clearTransferHistory()
+                                    .then(() => listTransferHistory())
+                                    .then(setTransferHistory)
+                                    .catch(() =>
+                                        setError(
+                                            "Unable to clear the transfer log.",
+                                        ),
+                                    )
+                            }
+                            onOpenWindow={() =>
+                                void openTransferWindow().catch(() =>
+                                    setError(
+                                        "Unable to open the transfer window.",
+                                    ),
+                                )
+                            }
+                        />
                     )}
                     {activeView === "activity" && (
                         <section

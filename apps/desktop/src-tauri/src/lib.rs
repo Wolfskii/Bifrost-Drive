@@ -41,6 +41,14 @@ mod transfers {
     pub fn show_window(_app: &tauri::AppHandle) -> Result<(), String> {
         Err(UNAVAILABLE.to_owned())
     }
+
+    pub async fn history(_app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!([]))
+    }
+
+    pub async fn clear_history(_app: &tauri::AppHandle) -> Result<u64, String> {
+        Ok(0)
+    }
 }
 #[cfg(any(target_os = "macos", test))]
 mod macos_file_provider;
@@ -550,6 +558,17 @@ fn transfer_conflict_answer(
     apply_to_all: bool,
 ) -> Result<(), String> {
     transfers::answer_conflict(&app, id, resolution, apply_to_all)
+}
+
+/// The log of Explorer transfers, newest first, with running ones showing live progress.
+#[tauri::command]
+async fn transfer_history_list(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    transfers::history(&app).await
+}
+
+#[tauri::command]
+async fn transfer_history_clear(app: tauri::AppHandle) -> Result<u64, String> {
+    transfers::clear_history(&app).await
 }
 
 /// Opens (or focuses) the transfer window. Window creation must not run on the main thread
@@ -4113,6 +4132,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let database_path = data_dir.join("bifrost-drive.db");
             let database = tauri::async_runtime::block_on(Database::connect_file(&database_path))?;
             tauri::async_runtime::block_on(database.migrate())?;
+            // Transfers that were running when the app last stopped cannot be resumed.
+            if let Err(error) =
+                tauri::async_runtime::block_on(database.interrupt_unfinished_transfers())
+            {
+                tracing::warn!(%error, "could not close out unfinished transfers in the log");
+            }
             let cache = CacheManager::new(data_dir.join("cache"), 1024 * 1024 * 1024)?;
             let transfer_store = Arc::new(SqliteTransferStore {
                 database: database.clone(),
@@ -4220,6 +4245,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             app_explorer_transfer_menu_get,
             app_explorer_transfer_menu_set,
             transfers_list,
+            transfer_history_list,
+            transfer_history_clear,
             transfer_pause,
             transfer_resume,
             transfer_cancel,

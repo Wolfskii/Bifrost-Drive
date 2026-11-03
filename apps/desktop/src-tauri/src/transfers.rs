@@ -12,11 +12,11 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bifrost_common::RemotePath;
-use bifrost_db::Database;
+use bifrost_db::{Database, NewTransferHistory, TransferHistoryUpdate};
 use bifrost_storage::StorageProvider;
 use bifrost_transfer::{
     batch::{
@@ -43,6 +43,11 @@ const REQUEST_VERSION: u32 = 1;
 const MAX_REQUEST_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SOURCES: usize = 100_000;
 const FINISHED_KEPT: usize = 20;
+/// How long a clean "100%" stays on screen before the window closes itself.
+const AUTO_CLOSE_DELAY: Duration = Duration::from_millis(1500);
+/// How many of the selected paths the log keeps for one batch.
+const HISTORY_ITEMS_KEPT: usize = 200;
+const HISTORY_LIMIT: i64 = 500;
 
 #[derive(Debug, Deserialize)]
 pub struct TransferRequest {
@@ -198,6 +203,8 @@ fn direction(sources: &[Location], destination: &Location) -> &'static str {
 #[derive(Clone, Serialize)]
 struct Meta {
     id: u64,
+    /// The row in the transfer log, or 0 when it could not be written.
+    history_id: i64,
     connection: String,
     direction: &'static str,
     items: usize,
@@ -255,6 +262,35 @@ impl TransferManager {
             .get(&id)
             .map(|entry| entry.handle.clone())
             .ok_or_else(|| "That transfer is no longer listed".to_owned())
+    }
+
+    /// Running and finished batches by their log row, so the log can show live progress.
+    fn live(&self) -> HashMap<i64, (u64, BatchSnapshot)> {
+        self.lock()
+            .values()
+            .filter(|entry| entry.meta.history_id > 0)
+            .map(|entry| {
+                (
+                    entry.meta.history_id,
+                    (entry.meta.id, entry.handle.snapshot()),
+                )
+            })
+            .collect()
+    }
+
+    /// True when nothing is running and nothing needs the user's attention.
+    fn all_clean(&self) -> bool {
+        self.lock().values().all(|entry| {
+            matches!(
+                entry.handle.snapshot().state,
+                BatchState::Completed | BatchState::Cancelled
+            )
+        })
+    }
+
+    fn remove_finished(&self) {
+        self.lock()
+            .retain(|_, entry| !entry.handle.snapshot().state.is_final());
     }
 
     fn views(&self) -> Vec<TransferView> {
@@ -325,8 +361,8 @@ pub fn show_window(app: &AppHandle) -> Result<(), String> {
         WebviewUrl::App("index.html?window=transfers".into()),
     )
     .title("Bifrost Drive transfers")
-    .inner_size(520.0, 400.0)
-    .min_inner_size(440.0, 260.0)
+    .inner_size(700.0, 290.0)
+    .min_inner_size(560.0, 250.0)
     .theme(Some(tauri::Theme::Dark))
     .background_color(tauri::window::Color(11, 11, 11, 255))
     .center()
@@ -502,6 +538,7 @@ async fn prepare(
         options,
         meta: Meta {
             id: 0,
+            history_id: 0,
             connection,
             direction,
             items: request.sources.len(),
@@ -532,13 +569,17 @@ pub async fn run_request_file(app: AppHandle, file: PathBuf) {
     }
     let prepared = match prepare(&app, &request, &staging).await {
         Ok(prepared) => prepared,
-        Err(message) => return notify_problem(&app, &message),
+        Err(message) => {
+            record_failed_start(&app, &request, &message).await;
+            return notify_problem(&app, &message);
+        }
     };
     let handle = match prepared.work {
         Work::Batch(batch_request) => batch::start(batch_request, prepared.options),
         Work::Delete(delete_request) => batch::start_delete(delete_request, prepared.options),
     };
-    let meta = prepared.meta;
+    let mut meta = prepared.meta;
+    meta.history_id = record_start(&app, &request, &meta).await;
     let id = app
         .state::<TransferManager>()
         .insert(handle.clone(), meta.clone());
@@ -671,7 +712,131 @@ fn describe_delete(snapshot: &BatchSnapshot, folder: &str) -> (String, String) {
     (headline, detail.to_owned())
 }
 
+fn mode_name(mode: TransferMode) -> &'static str {
+    match mode {
+        TransferMode::Copy => "copy",
+        TransferMode::Move => "move",
+        TransferMode::Delete => "delete",
+    }
+}
+
+fn state_name(state: BatchState) -> String {
+    serde_json::to_value(state)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "failed".to_owned())
+}
+
+/// Adds the batch to the transfer log and returns its row, or 0 if the log is unavailable.
+async fn record_start(app: &AppHandle, request: &TransferRequest, meta: &Meta) -> i64 {
+    let entry = NewTransferHistory {
+        mode: mode_name(request.mode).to_owned(),
+        direction: meta.direction.to_owned(),
+        connection: meta.connection.clone(),
+        destination: meta.destination.clone(),
+        items: request
+            .sources
+            .iter()
+            .take(HISTORY_ITEMS_KEPT)
+            .cloned()
+            .collect(),
+        item_count: request.sources.len() as i64,
+    };
+    match app
+        .state::<Database>()
+        .insert_transfer_history(&entry)
+        .await
+    {
+        Ok(id) => id,
+        Err(error) => {
+            tracing::warn!(%error, "could not record the transfer in the log");
+            0
+        }
+    }
+}
+
+/// A request that could not even start is still worth a line in the log.
+async fn record_failed_start(app: &AppHandle, request: &TransferRequest, message: &str) {
+    let database = app.state::<Database>();
+    let entry = NewTransferHistory {
+        mode: mode_name(request.mode).to_owned(),
+        direction: "transfer".to_owned(),
+        connection: String::new(),
+        destination: request.destination.clone(),
+        items: request
+            .sources
+            .iter()
+            .take(HISTORY_ITEMS_KEPT)
+            .cloned()
+            .collect(),
+        item_count: request.sources.len() as i64,
+    };
+    let Ok(id) = database.insert_transfer_history(&entry).await else {
+        return;
+    };
+    let failures =
+        serde_json::json!([{ "name": "", "reason": { "kind": "other", "detail": message } }]);
+    let _ = database
+        .finish_transfer_history(
+            id,
+            &TransferHistoryUpdate {
+                state: "failed".to_owned(),
+                total_files: 0,
+                done_files: 0,
+                skipped_files: 0,
+                failed_files: 0,
+                total_bytes: 0,
+                done_bytes: 0,
+                failures_json: failures.to_string(),
+            },
+        )
+        .await;
+}
+
+async fn record_finish(app: &AppHandle, meta: &Meta, snapshot: &BatchSnapshot) {
+    if meta.history_id <= 0 {
+        return;
+    }
+    let update = TransferHistoryUpdate {
+        state: state_name(snapshot.state),
+        total_files: snapshot.total_files as i64,
+        done_files: snapshot.done_files as i64,
+        skipped_files: snapshot.skipped_files as i64,
+        failed_files: snapshot.failed_files as i64,
+        total_bytes: snapshot.total_bytes as i64,
+        done_bytes: snapshot.done_bytes as i64,
+        failures_json: serde_json::to_string(&snapshot.failures)
+            .unwrap_or_else(|_| "[]".to_owned()),
+    };
+    if let Err(error) = app
+        .state::<Database>()
+        .finish_transfer_history(meta.history_id, &update)
+        .await
+    {
+        tracing::warn!(%error, "could not update the transfer log");
+    }
+}
+
+/// Closes the transfer window a moment after everything finished cleanly. The finished cards
+/// are cleared too (the log keeps them), so the next transfer opens a fresh window instead of
+/// one stacked with old results.
+fn close_when_clean(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(AUTO_CLOSE_DELAY).await;
+        let manager = app.state::<TransferManager>();
+        // Something else may have started, or failed, while the 100% was showing.
+        if !manager.all_clean() {
+            return;
+        }
+        manager.remove_finished();
+        if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+            let _ = window.close();
+        }
+    });
+}
+
 async fn finish(app: &AppHandle, meta: &Meta, snapshot: &BatchSnapshot, mode: TransferMode) {
+    record_finish(app, meta, snapshot).await;
     let (headline, detail) = describe_result(snapshot, mode, &meta.destination);
     let deleting = mode == TransferMode::Delete;
     let (kind, status) = match (snapshot.state, deleting) {
@@ -702,6 +867,9 @@ async fn finish(app: &AppHandle, meta: &Meta, snapshot: &BatchSnapshot, mode: Tr
         snapshot.state,
         BatchState::Completed | BatchState::Cancelled
     );
+    if snapshot.state == BatchState::Completed {
+        close_when_clean(app.clone());
+    }
     if needs_attention || !window_visible {
         let _ = app
             .notification()
@@ -785,6 +953,106 @@ pub fn remove_menu_setting() -> Result<(), String> {
     } else {
         Err(format!("could not remove the settings key: {}", status.0))
     }
+}
+
+/// Progress of a batch that is still running, shown on its row in the log.
+#[derive(Serialize)]
+struct LiveProgress {
+    /// The id the transfer window and its controls use.
+    transfer_id: u64,
+    bytes_per_second: u64,
+    files_per_second: u64,
+    seconds_left: Option<u64>,
+    current: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct HistoryEntry {
+    id: i64,
+    started_at: String,
+    finished_at: Option<String>,
+    mode: String,
+    direction: String,
+    connection: String,
+    destination: String,
+    items: Vec<String>,
+    item_count: i64,
+    state: String,
+    total_files: i64,
+    done_files: i64,
+    skipped_files: i64,
+    failed_files: i64,
+    total_bytes: i64,
+    done_bytes: i64,
+    failures: serde_json::Value,
+    live: Option<LiveProgress>,
+}
+
+/// The transfer log, newest first, with running batches showing their current progress.
+pub async fn history(app: &AppHandle) -> Result<serde_json::Value, String> {
+    let rows = app
+        .state::<Database>()
+        .list_transfer_history(HISTORY_LIMIT)
+        .await
+        .map_err(|error| error.to_string())?;
+    let live = app.state::<TransferManager>().live();
+    let entries = rows
+        .into_iter()
+        .map(|row| {
+            let running = live
+                .get(&row.id)
+                .filter(|(_, snapshot)| !snapshot.state.is_final());
+            let mut entry = HistoryEntry {
+                failures: serde_json::from_str(&row.failures_json)
+                    .unwrap_or_else(|_| serde_json::json!([])),
+                id: row.id,
+                started_at: row.started_at,
+                finished_at: row.finished_at,
+                mode: row.mode,
+                direction: row.direction,
+                connection: row.connection,
+                destination: row.destination,
+                items: row.items,
+                item_count: row.item_count,
+                state: row.state,
+                total_files: row.total_files,
+                done_files: row.done_files,
+                skipped_files: row.skipped_files,
+                failed_files: row.failed_files,
+                total_bytes: row.total_bytes,
+                done_bytes: row.done_bytes,
+                live: None,
+            };
+            if let Some((transfer_id, snapshot)) = running {
+                entry.state = state_name(snapshot.state);
+                entry.total_files = snapshot.total_files as i64;
+                entry.done_files = snapshot.done_files as i64;
+                entry.skipped_files = snapshot.skipped_files as i64;
+                entry.failed_files = snapshot.failed_files as i64;
+                entry.total_bytes = snapshot.total_bytes as i64;
+                entry.done_bytes = snapshot.done_bytes as i64;
+                entry.failures = serde_json::to_value(&snapshot.failures)
+                    .unwrap_or_else(|_| serde_json::json!([]));
+                entry.live = Some(LiveProgress {
+                    transfer_id: *transfer_id,
+                    bytes_per_second: snapshot.bytes_per_second,
+                    files_per_second: snapshot.files_per_second,
+                    seconds_left: snapshot.seconds_left,
+                    current: snapshot.current.clone(),
+                });
+            }
+            entry
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_value(entries).map_err(|error| error.to_string())
+}
+
+/// Clears the finished entries from the log; running batches stay.
+pub async fn clear_history(app: &AppHandle) -> Result<u64, String> {
+    app.state::<Database>()
+        .clear_finished_transfer_history()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -993,5 +1261,82 @@ mod tests {
 
         assert_eq!(parsed.mode, TransferMode::Delete);
         assert_eq!(parsed.destination, "");
+    }
+
+    fn meta(history_id: i64) -> Meta {
+        Meta {
+            id: 0,
+            history_id,
+            connection: String::new(),
+            direction: "delete",
+            items: 1,
+            first_item: "a.txt".to_owned(),
+            destination: String::new(),
+            started_at_ms: 0,
+        }
+    }
+
+    async fn finished_delete(target: PathBuf) -> BatchHandle {
+        let handle = batch::start_delete(
+            DeleteRequest {
+                targets: vec![Endpoint::Local(target)],
+            },
+            BatchOptions::default(),
+        );
+        handle.wait().await;
+        handle
+    }
+
+    #[tokio::test]
+    async fn the_window_closes_only_when_every_batch_finished_cleanly() {
+        let manager = TransferManager::default();
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("a.txt");
+        std::fs::write(&file, b"a").unwrap();
+        manager.insert(finished_delete(file).await, meta(1));
+        assert!(manager.all_clean());
+
+        manager.insert(
+            finished_delete(folder.path().join("missing.txt")).await,
+            meta(2),
+        );
+
+        assert!(
+            !manager.all_clean(),
+            "a batch with problems keeps the window open"
+        );
+        manager.remove_finished();
+        assert!(manager.views().is_empty());
+        assert!(manager.all_clean(), "an empty list has nothing to show");
+    }
+
+    #[tokio::test]
+    async fn the_log_finds_a_batch_by_its_row() {
+        let manager = TransferManager::default();
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("a.txt");
+        std::fs::write(&file, b"a").unwrap();
+        let transfer_id = manager.insert(finished_delete(file).await, meta(7));
+        manager.insert(finished_delete(folder.path().join("none")).await, meta(0));
+
+        let live = manager.live();
+
+        assert_eq!(live.len(), 1, "batches without a log row are not listed");
+        assert_eq!(live[&7].0, transfer_id);
+        assert_eq!(live[&7].1.state, BatchState::Completed);
+    }
+
+    #[test]
+    fn names_for_the_log_match_what_the_frontend_expects() {
+        assert_eq!(mode_name(TransferMode::Delete), "delete");
+        assert_eq!(mode_name(TransferMode::Move), "move");
+        assert_eq!(
+            state_name(BatchState::CompletedWithErrors),
+            "completed_with_errors"
+        );
+        assert_eq!(
+            state_name(BatchState::WaitingForAnswer),
+            "waiting_for_answer"
+        );
     }
 }

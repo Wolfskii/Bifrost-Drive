@@ -68,6 +68,57 @@ pub struct ActivityRecord {
     pub created_at: String,
 }
 
+/// What is known when a batch transfer starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewTransferHistory {
+    pub mode: String,
+    pub direction: String,
+    pub connection: String,
+    pub destination: String,
+    /// The paths the user selected, as shown to them (capped by the caller).
+    pub items: Vec<String>,
+    /// How many items were selected, which can exceed `items.len()`.
+    pub item_count: i64,
+}
+
+/// How a batch ended (or where it stands), written when it finishes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferHistoryUpdate {
+    pub state: String,
+    pub total_files: i64,
+    pub done_files: i64,
+    pub skipped_files: i64,
+    pub failed_files: i64,
+    pub total_bytes: i64,
+    pub done_bytes: i64,
+    /// A JSON array of what went wrong, produced by the caller.
+    pub failures_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferHistoryRecord {
+    pub id: i64,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub mode: String,
+    pub direction: String,
+    pub connection: String,
+    pub destination: String,
+    pub items: Vec<String>,
+    pub item_count: i64,
+    pub state: String,
+    pub total_files: i64,
+    pub done_files: i64,
+    pub skipped_files: i64,
+    pub failed_files: i64,
+    pub total_bytes: i64,
+    pub done_bytes: i64,
+    pub failures_json: String,
+}
+
+/// Older rows are dropped when the log grows past this many.
+const TRANSFER_HISTORY_LIMIT: i64 = 500;
+
 #[derive(Clone)]
 pub struct Database {
     pool: SqlitePool,
@@ -380,6 +431,123 @@ impl Database {
             .collect()
     }
 
+    /// Records a batch that has just started and returns its row id.
+    pub async fn insert_transfer_history(
+        &self,
+        transfer: &NewTransferHistory,
+    ) -> Result<i64, DatabaseError> {
+        let items = serde_json::to_string(&transfer.items)
+            .map_err(|error| DatabaseError::InvalidValue(error.to_string()))?;
+        let mut transaction = self.pool.begin().await?;
+        let id = sqlx::query(
+            "INSERT INTO transfer_history \
+             (started_at, mode, direction, connection, destination, items_json, item_count, state) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'running')",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(&transfer.mode)
+        .bind(&transfer.direction)
+        .bind(&transfer.connection)
+        .bind(&transfer.destination)
+        .bind(items)
+        .bind(transfer.item_count)
+        .execute(&mut *transaction)
+        .await?
+        .last_insert_rowid();
+        sqlx::query(
+            "DELETE FROM transfer_history WHERE id NOT IN \
+             (SELECT id FROM transfer_history ORDER BY id DESC LIMIT ?)",
+        )
+        .bind(TRANSFER_HISTORY_LIMIT)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(id)
+    }
+
+    /// Stores how a batch ended and stamps its finish time.
+    pub async fn finish_transfer_history(
+        &self,
+        id: i64,
+        update: &TransferHistoryUpdate,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "UPDATE transfer_history SET finished_at = ?, state = ?, total_files = ?, \
+             done_files = ?, skipped_files = ?, failed_files = ?, total_bytes = ?, \
+             done_bytes = ?, failures_json = ? WHERE id = ?",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(&update.state)
+        .bind(update.total_files)
+        .bind(update.done_files)
+        .bind(update.skipped_files)
+        .bind(update.failed_files)
+        .bind(update.total_bytes)
+        .bind(update.done_bytes)
+        .bind(&update.failures_json)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Newest first.
+    pub async fn list_transfer_history(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<TransferHistoryRecord>, DatabaseError> {
+        let rows = sqlx::query("SELECT * FROM transfer_history ORDER BY id DESC LIMIT ?")
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                let items_json: String = row.get("items_json");
+                Ok(TransferHistoryRecord {
+                    id: row.get("id"),
+                    started_at: row.get("started_at"),
+                    finished_at: row.get("finished_at"),
+                    mode: row.get("mode"),
+                    direction: row.get("direction"),
+                    connection: row.get("connection"),
+                    destination: row.get("destination"),
+                    items: serde_json::from_str(&items_json)
+                        .map_err(|error| DatabaseError::InvalidValue(error.to_string()))?,
+                    item_count: row.get("item_count"),
+                    state: row.get("state"),
+                    total_files: row.get("total_files"),
+                    done_files: row.get("done_files"),
+                    skipped_files: row.get("skipped_files"),
+                    failed_files: row.get("failed_files"),
+                    total_bytes: row.get("total_bytes"),
+                    done_bytes: row.get("done_bytes"),
+                    failures_json: row.get("failures_json"),
+                })
+            })
+            .collect()
+    }
+
+    /// Batches that were still running when the app stopped cannot be resumed; mark them so the
+    /// log does not show them as running forever. Returns how many there were.
+    pub async fn interrupt_unfinished_transfers(&self) -> Result<u64, DatabaseError> {
+        let result = sqlx::query(
+            "UPDATE transfer_history SET state = 'interrupted', finished_at = ? \
+             WHERE finished_at IS NULL",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Clears the finished entries; batches still running stay.
+    pub async fn clear_finished_transfer_history(&self) -> Result<u64, DatabaseError> {
+        let result = sqlx::query("DELETE FROM transfer_history WHERE finished_at IS NOT NULL")
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     fn connection_from_row(
         row: sqlx::sqlite::SqliteRow,
     ) -> Result<ConnectionRecord, DatabaseError> {
@@ -401,7 +569,10 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConflictRecord, ConnectionRecord, Database, SyncEntryRecord, MIGRATOR};
+    use super::{
+        ConflictRecord, ConnectionRecord, Database, NewTransferHistory, SyncEntryRecord,
+        TransferHistoryUpdate, MIGRATOR, TRANSFER_HISTORY_LIMIT,
+    };
     use bifrost_common::{ConnectionId, ProviderKind};
     use uuid::Uuid;
 
@@ -502,6 +673,112 @@ mod tests {
             .unwrap()
             .contains("Yggdrasil"));
         assert!(!events[0].created_at.is_empty());
+    }
+
+    fn started(connection: &str) -> NewTransferHistory {
+        NewTransferHistory {
+            mode: "copy".to_owned(),
+            direction: "upload".to_owned(),
+            connection: connection.to_owned(),
+            destination: "Y:\\Filmer".to_owned(),
+            items: vec!["C:\\Videos\\a.mkv".to_owned()],
+            item_count: 1,
+        }
+    }
+
+    fn ended(state: &str) -> TransferHistoryUpdate {
+        TransferHistoryUpdate {
+            state: state.to_owned(),
+            total_files: 3,
+            done_files: 2,
+            skipped_files: 0,
+            failed_files: 1,
+            total_bytes: 3000,
+            done_bytes: 2000,
+            failures_json: r#"[{"name":"c.mkv","reason":{"kind":"permission_denied"}}]"#.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn transfer_history_records_a_batch_from_start_to_finish() {
+        let database = Database::connect("sqlite::memory:").await.unwrap();
+        database.migrate().await.unwrap();
+
+        let id = database
+            .insert_transfer_history(&started("Yggdrasil SFTP"))
+            .await
+            .unwrap();
+        let running = &database.list_transfer_history(10).await.unwrap()[0];
+        assert_eq!(running.state, "running");
+        assert_eq!(running.finished_at, None);
+        assert_eq!(running.items, vec!["C:\\Videos\\a.mkv"]);
+
+        database
+            .finish_transfer_history(id, &ended("completed_with_errors"))
+            .await
+            .unwrap();
+        let finished = &database.list_transfer_history(10).await.unwrap()[0];
+        assert_eq!(finished.state, "completed_with_errors");
+        assert!(finished.finished_at.is_some());
+        assert_eq!((finished.done_files, finished.failed_files), (2, 1));
+        assert!(finished.failures_json.contains("permission_denied"));
+    }
+
+    #[tokio::test]
+    async fn transfer_history_lists_newest_first_and_keeps_a_bounded_log() {
+        let database = Database::connect("sqlite::memory:").await.unwrap();
+        database.migrate().await.unwrap();
+        for number in 0..(TRANSFER_HISTORY_LIMIT + 5) {
+            database
+                .insert_transfer_history(&started(&format!("drive {number}")))
+                .await
+                .unwrap();
+        }
+
+        let all = database
+            .list_transfer_history(TRANSFER_HISTORY_LIMIT + 100)
+            .await
+            .unwrap();
+
+        assert_eq!(all.len() as i64, TRANSFER_HISTORY_LIMIT);
+        assert_eq!(
+            all[0].connection,
+            format!("drive {}", TRANSFER_HISTORY_LIMIT + 4)
+        );
+        assert_eq!(database.list_transfer_history(3).await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn unfinished_transfers_are_marked_interrupted_and_finished_ones_can_be_cleared() {
+        let database = Database::connect("sqlite::memory:").await.unwrap();
+        database.migrate().await.unwrap();
+        let done = database
+            .insert_transfer_history(&started("a"))
+            .await
+            .unwrap();
+        database
+            .finish_transfer_history(done, &ended("completed"))
+            .await
+            .unwrap();
+        database
+            .insert_transfer_history(&started("b"))
+            .await
+            .unwrap();
+
+        assert_eq!(database.interrupt_unfinished_transfers().await.unwrap(), 1);
+        let rows = database.list_transfer_history(10).await.unwrap();
+        assert_eq!(rows[0].state, "interrupted");
+        assert!(rows[0].finished_at.is_some());
+        assert_eq!(rows[1].state, "completed");
+
+        database
+            .insert_transfer_history(&started("c"))
+            .await
+            .unwrap();
+        assert_eq!(database.clear_finished_transfer_history().await.unwrap(), 2);
+        let left = database.list_transfer_history(10).await.unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].connection, "c");
     }
 
     #[tokio::test]

@@ -817,6 +817,56 @@ export interface TransferView {
     snapshot: TransferSnapshot;
 }
 
+/** Progress of a logged transfer that is still running. */
+export interface TransferLiveProgress {
+    transfer_id: number;
+    bytes_per_second: number;
+    files_per_second: number;
+    seconds_left: number | null;
+    current: string[];
+}
+
+/** One line of the transfer log. */
+export interface TransferHistoryEntry {
+    id: number;
+    started_at: string;
+    finished_at: string | null;
+    mode: TransferMode;
+    direction: TransferView["direction"];
+    connection: string;
+    destination: string;
+    items: string[];
+    item_count: number;
+    state: TransferState | "interrupted";
+    total_files: number;
+    done_files: number;
+    skipped_files: number;
+    failed_files: number;
+    total_bytes: number;
+    done_bytes: number;
+    failures: TransferFailure[];
+    live: TransferLiveProgress | null;
+}
+
+export async function listTransferHistory(): Promise<TransferHistoryEntry[]> {
+    if (!tauriAvailable()) {
+        return [];
+    }
+    return invoke<TransferHistoryEntry[]>("transfer_history_list");
+}
+
+/** Removes the finished entries from the log; running transfers stay. */
+export async function clearTransferHistory(): Promise<number> {
+    if (!tauriAvailable()) {
+        return 0;
+    }
+    return invoke<number>("transfer_history_clear");
+}
+
+export async function openTransferWindow(): Promise<void> {
+    await transferCommand("transfers_window_open", {});
+}
+
 export async function listTransfers(): Promise<TransferView[]> {
     if (!tauriAvailable()) {
         return [];

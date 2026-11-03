@@ -134,7 +134,11 @@ export function TransferCard({
     };
 
     return (
-        <article className={`transfer-card state-${snapshot.state}`}>
+        <article
+            className={`transfer-card state-${snapshot.state}${
+                snapshot.conflict ? " has-conflict" : ""
+            }`}
+        >
             <header className="transfer-head">
                 <ul className="transfer-chips" aria-label="Transfer details">
                     {view.connection && <li>{view.connection}</li>}

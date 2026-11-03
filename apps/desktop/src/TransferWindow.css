@@ -27,14 +27,48 @@ html.transfer-root body {
         sans-serif;
 }
 
+/* Wide and short, like the Windows copy dialog: the title and status sit on the left, the big
+   percentage and its badge on the right, and the bar runs the full width underneath. */
 .transfer-card {
-    padding: 14px 18px 18px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+        "head head"
+        "title figure"
+        "rule figure"
+        "status figure"
+        "bar bar"
+        "current current"
+        "problems problems";
+    column-gap: 28px;
+    padding: 12px 18px 16px;
     border: 1px solid var(--line);
     border-radius: 14px;
     background: #0b0b0b;
 }
 
+/* While a name clash waits for an answer the prompt takes the full width. */
+.transfer-card.has-conflict {
+    grid-template-areas:
+        "head head"
+        "title title"
+        "rule rule"
+        "status status"
+        "bar bar"
+        "current current"
+        "problems problems";
+}
+
+.transfer-card.has-conflict .transfer-figure {
+    display: none;
+}
+
+.transfer-card.has-conflict .transfer-rule {
+    margin-bottom: 10px;
+}
+
 .transfer-head {
+    grid-area: head;
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -105,10 +139,12 @@ html.transfer-root body {
 }
 
 .transfer-title {
-    margin: 14px 0 12px;
+    grid-area: title;
+    align-self: end;
+    margin: 6px 0 8px;
     overflow: hidden;
     color: var(--ink);
-    font-size: 30px;
+    font-size: 26px;
     font-weight: 500;
     line-height: 1.15;
     letter-spacing: -0.5px;
@@ -117,26 +153,33 @@ html.transfer-root body {
 }
 
 .transfer-rule {
-    margin: 0 0 14px;
+    grid-area: rule;
+    align-self: start;
+    width: 100%;
+    margin: 0 0 8px;
     border: 0;
     border-top: 1px solid var(--line);
 }
 
 .transfer-status {
+    grid-area: status;
+    align-self: start;
     min-height: 1.45em;
-    margin: 0 0 8px;
+    margin: 0;
     color: var(--ink-soft);
 }
 
 .transfer-figure {
+    grid-area: figure;
     display: flex;
-    align-items: center;
-    gap: 16px;
-    margin-bottom: 16px;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 8px;
 }
 
 .transfer-percent {
-    font-size: 60px;
+    font-size: 54px;
     font-weight: 400;
     line-height: 1;
     letter-spacing: -2px;
@@ -159,12 +202,15 @@ html.transfer-root body {
 
 .transfer-note {
     color: var(--ink-soft);
+    font-size: 12px;
 }
 
 .transfer-bar {
+    grid-area: bar;
     display: flex;
     gap: 5px;
-    height: 70px;
+    height: 34px;
+    margin-top: 12px;
 }
 
 .transfer-segment {
@@ -191,7 +237,8 @@ html.transfer-root body {
 }
 
 .transfer-current {
-    margin: 12px 0 0;
+    grid-area: current;
+    margin: 10px 0 0;
     overflow: hidden;
     color: var(--ink-soft);
     font-size: 13px;
@@ -200,10 +247,13 @@ html.transfer-root body {
 }
 
 .transfer-conflict {
+    grid-area: status;
     display: grid;
-    gap: 10px;
-    margin: 0 0 12px;
-    padding: 12px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px 14px;
+    margin: 0;
+    padding: 8px 12px;
     border: 1px solid var(--ink-soft);
     border-radius: 8px;
 }
@@ -213,6 +263,10 @@ html.transfer-root body {
     gap: 2px;
     margin: 0;
     overflow-wrap: anywhere;
+}
+
+.transfer-conflict p {
+    grid-column: 1 / -1;
 }
 
 .transfer-conflict p span {
@@ -228,6 +282,8 @@ html.transfer-root body {
 }
 
 .transfer-actions {
+    grid-column: 2;
+    grid-row: 2;
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
@@ -249,6 +305,7 @@ html.transfer-root body {
 }
 
 .transfer-problems {
+    grid-area: problems;
     margin-top: 14px;
     color: var(--ink-soft);
 }
@@ -289,6 +346,28 @@ html.transfer-root body {
     border: 1px solid #ff8a80;
     border-radius: 8px;
     color: #ffb4ab;
+}
+
+@media (max-width: 560px) {
+    .transfer-card {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+            "head"
+            "title"
+            "rule"
+            "status"
+            "figure"
+            "bar"
+            "current"
+            "problems";
+    }
+
+    .transfer-figure {
+        flex-direction: row;
+        align-items: center;
+        justify-content: flex-start;
+        margin-top: 10px;
+    }
 }
 
 @media (prefers-reduced-motion: no-preference) {

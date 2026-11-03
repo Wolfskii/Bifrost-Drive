@@ -1,0 +1,154 @@
+.transfer-log-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.transfer-log-list {
+    display: grid;
+}
+
+.transfer-log-row {
+    display: flex;
+    gap: 12px;
+    padding: 12px 15px;
+    border-bottom: 1px solid #edf0f0;
+    color: var(--ink-soft);
+    font:
+        13px/1.45 ui-sans-serif,
+        system-ui,
+        sans-serif;
+}
+
+.transfer-log-row:last-child {
+    border-bottom: 0;
+}
+
+.transfer-log-icon {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    color: var(--accent);
+}
+
+.transfer-log-row.tone-bad .transfer-log-icon,
+.transfer-log-row.tone-warn .transfer-log-icon {
+    color: #8e3939;
+}
+
+.transfer-log-body {
+    display: grid;
+    flex: 1;
+    min-width: 0;
+    gap: 4px;
+}
+
+.transfer-log-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.transfer-log-head strong {
+    overflow: hidden;
+    color: var(--ink);
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.transfer-log-status {
+    flex: none;
+    padding: 1px 9px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--ink-soft);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.transfer-log-status.tone-live {
+    border-color: var(--accent);
+    color: var(--accent-strong);
+}
+
+.transfer-log-status.tone-ok {
+    border-color: #9cc4b8;
+    color: #1d6a52;
+}
+
+.transfer-log-status.tone-warn,
+.transfer-log-status.tone-bad {
+    border-color: #d9a3a3;
+    color: #8e3939;
+}
+
+.transfer-log-detail {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 2px 12px;
+    margin: 0;
+    color: var(--muted);
+}
+
+.transfer-log-progress {
+    display: grid;
+    gap: 3px;
+}
+
+.transfer-log-bar {
+    height: 6px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--surface-muted);
+}
+
+.transfer-log-bar span {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    background: var(--accent);
+    transition: width 200ms linear;
+}
+
+.transfer-log-percent,
+.transfer-log-current {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.transfer-log-more summary {
+    cursor: pointer;
+    color: var(--ink-soft);
+}
+
+.transfer-log-more ul {
+    display: grid;
+    gap: 4px;
+    max-height: 180px;
+    margin: 6px 0 0;
+    padding: 0 0 0 4px;
+    overflow: auto;
+    list-style: none;
+    overflow-wrap: anywhere;
+}
+
+.transfer-log-more.problems li {
+    display: grid;
+    gap: 1px;
+}
+
+.transfer-log-more.problems strong {
+    color: var(--ink);
+    font-weight: 600;
+}
+
+.transfer-log-more.problems span {
+    color: #8e3939;
+}
