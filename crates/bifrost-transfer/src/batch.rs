@@ -1815,6 +1815,16 @@ fn copy_into(
     let copied = if size <= NATIVE_COPY_LIMIT {
         let copied = std::fs::copy(source, written).map_err(io_stop)?;
         progress.add(copied as usize, false);
+        // Windows' native copy keeps the modification time; elsewhere only the permissions are
+        // copied, so a copy would look newer than the original.
+        #[cfg(not(target_os = "windows"))]
+        {
+            let modified = std::fs::metadata(source).and_then(|meta| meta.modified());
+            let opened = std::fs::OpenOptions::new().write(true).open(written);
+            if let (Ok(modified), Ok(file)) = (modified, opened) {
+                let _ = file.set_modified(modified);
+            }
+        }
         copied
     } else {
         let mut input = std::fs::File::open(source).map_err(io_stop)?;
